@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "environment": "development-integration-ci",
+  "authority": {
+    "rootDuration": "87600h",
+    "intermediateDuration": "8760h",
+    "leafDuration": "720h"
+  },
+  "profiles": {
+    "gateway-client": {
+      "key": "ECDSA-P256",
+      "uriPattern": "spiffe://teremoq.local/gateway/<node-id>",
+      "extendedKeyUsage": ["clientAuth"]
+    },
+    "relay-server": {
+      "key": "ECDSA-P256",
+      "uriPattern": "spiffe://teremoq.local/relay/<node-id>",
+      "extendedKeyUsage": ["serverAuth"]
+    },
+    "relay-peer": {
+      "key": "ECDSA-P256",
+      "uriPattern": "spiffe://teremoq.local/relay/<node-id>",
+      "extendedKeyUsage": ["serverAuth", "clientAuth"]
+    }
+  }
+}

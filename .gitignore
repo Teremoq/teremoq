@@ -1,0 +1,8 @@
+# Teremoq PKI runtime and defensive secret patterns
+infra/pki/runtime/**
+!infra/pki/runtime/.gitignore
+key.pem
+*-key.pem
+*password*
+*.token
+tokens/

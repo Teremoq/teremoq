@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Teremoq Signal Supervisor</title>
+  <meta name="description" content="Monitor local del camino de señal de Teremoq Gateway">
+  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/scheduler.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div><p class="eyebrow">TEREMOQ · EDGE CONTROL</p><h1>Signal Supervisor</h1></div>
+      <div class="live"><span class="pulse"></span><span id="connection">CONECTANDO</span></div>
+    </header>
+    <section class="summary" aria-label="Resumen">
+      <div><span>Uptime</span><strong id="uptime">—</strong></div>
+      <div><span>Revisión</span><strong id="revision">—</strong></div>
+      <div><span>Fuentes</span><strong id="source-count">0</strong></div>
+      <div><span>Última lectura</span><strong id="updated">—</strong></div>
+    </section>
+    <section aria-labelledby="live-signal-title">
+      <div class="section-head"><p id="live-signal-title">SEÑAL EN DIRECTO</p><span>Observadores aislados · no forman parte del data plane</span></div>
+      <div class="video-grid">
+        <article class="video-panel">
+          <div class="video-head"><div><span class="video-kicker">ENTRADA</span><h2>SRT · MPEG-TS</h2></div><span id="input-preview-status" class="status waiting">CONFIGURANDO</span></div>
+          <div class="video-stage"><iframe id="input-preview" title="Vista de entrada SRT mediante observador WebRTC aislado" scrolling="no" allow="autoplay; fullscreen; picture-in-picture" sandbox="allow-scripts allow-same-origin allow-forms" hidden></iframe><div id="input-preview-message" class="video-message">Esperando el observador SRT externo</div></div>
+          <p class="video-foot">MediaMTX observa una copia originada en la fuente. El gateway no decodifica esta señal.</p>
+        </article>
+        <article class="video-panel">
+          <div class="video-head"><div><span class="video-kicker">SALIDA</span><h2>MoQ · WebCodecs</h2></div><span class="status active">PLAYER CUSTOM</span></div>
+          <div class="video-stage"><div class="video-message">La salida se reproduce en el Supervisor Web mediante WebTransport, WebCodecs y canvas.</div></div>
+          <p class="video-foot"><a href="http://127.0.0.1:19090/">Abrir el Supervisor Web</a>. El Gateway no transcodifica la señal.</p>
+        </article>
+      </div>
+      <p class="latency-limit">Estas vistas permiten inspección visual. La cifra glass-to-glass seguirá sin declararse hasta correlacionar timecode/PTS de ambos extremos con relojes calibrados.</p>
+    </section>
+    <section><div class="section-head"><p>CAMINO DE SEÑAL</p><span>De RF/IP a Objects MoQ</span></div><div id="phases" class="phase-grid"></div></section>
+    <section><div class="section-head"><p>SCHEDULER POR SUSCRIPTOR</p><span>Colas acotadas · prioridad · Object Dropping</span></div><div class="scheduler-summary"><div><span>Suscriptores</span><strong id="scheduler-subscribers">0</strong></div><div><span>En cola</span><strong id="scheduler-queued">0</strong></div><div><span>Bytes en cola</span><strong id="scheduler-bytes">0 B</strong></div><div><span>Aceptados</span><strong id="scheduler-accepted">0</strong></div><div><span>Descartados</span><strong id="scheduler-dropped">0</strong></div><div><span>Expulsados</span><strong id="scheduler-evicted">0</strong></div></div></section>
+    <section><div class="section-head"><p>PUBLICACIÓN MOQ</p><span>WebTransport · MoQT draft-16 · relay reutilizado</span></div><div class="scheduler-summary"><div><span>Sesión</span><strong id="moq-status">ESPERANDO</strong></div><div><span>Relay</span><strong id="moq-relay">—</strong></div><div><span>Connection ID</span><strong id="moq-connection-id">—</strong></div><div><span>Objects</span><strong id="moq-objects">0</strong></div><div><span>Datos</span><strong id="moq-bytes">0 B</strong></div></div></section>
+    <section><div class="section-head"><p>LATENCIA MEDIDA</p><span>Ventana móvil · reloj monotónico local</span></div><div class="scheduler-summary latency-summary"><div><span>Métrica</span><strong id="latency-metric">INGEST → PUBLISH</strong></div><div><span>Muestras</span><strong id="latency-samples">0</strong></div><div><span>p50</span><strong id="latency-p50">—</strong></div><div><span>p95</span><strong id="latency-p95">—</strong></div><div><span>p99</span><strong id="latency-p99">—</strong></div><div><span>Máximo</span><strong id="latency-max">—</strong></div></div><p class="latency-limit">La latencia de red, presentación y glass-to-glass permanece sin declarar hasta disponer de taps correlacionados y relojes calibrados.</p></section>
+    <section><div class="section-head"><p>TRACKS LÓGICOS</p><span>Media codificada · zero-transcoding</span></div><div id="tracks" class="track-grid"></div></section>
+    <section><div class="section-head"><p>FUENTES SRT</p><span>Identidades de conexión, sin Stream IDs</span></div><div class="table-wrap"><table><thead><tr><th>Estado</th><th>Conexión</th><th>Peer</th><th>Mensajes</th><th>Datos totales</th><th>Actividad</th></tr></thead><tbody id="sources"></tbody></table></div></section>
+  </main>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

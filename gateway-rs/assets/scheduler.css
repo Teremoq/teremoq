@@ -1,0 +1,47 @@
+.scheduler-summary {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  background: rgba(12, 24, 22, .75);
+  border: 1px solid var(--line);
+}
+
+.scheduler-summary div {
+  padding: 16px;
+  border-right: 1px solid var(--line);
+}
+
+.scheduler-summary div:last-child {
+  border: 0;
+}
+
+.scheduler-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: 5px;
+}
+
+.scheduler-summary strong {
+  font: 600 16px ui-monospace, monospace;
+}
+
+.latency-limit {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .scheduler-summary {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 560px) {
+  .scheduler-summary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

@@ -1,0 +1,47 @@
+services:
+  step-ca:
+    image: ${STEP_CA_IMAGE:?load infra/pki/versions.env first}
+    command:
+      - /usr/local/bin/step-ca
+      - --password-file
+      - /home/step/secrets/password
+      - /home/step/config/ca.json
+    user: "${TEREMOQ_PKI_UID:-1000}:${TEREMOQ_PKI_GID:-1000}"
+    ports:
+      - "127.0.0.1:${TEREMOQ_PKI_BIND_PORT:-9443}:9443"
+    volumes:
+      - type: bind
+        source: ${TEREMOQ_PKI_RUNTIME_DIR:-./runtime}/ca
+        target: /home/step
+    networks:
+      pki:
+        aliases:
+          - step-ca
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700,uid=${TEREMOQ_PKI_UID:-1000},gid=${TEREMOQ_PKI_GID:-1000}
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 384m
+    cpus: 1.0
+    healthcheck:
+      test:
+        - CMD
+        - step
+        - ca
+        - health
+        - --ca-url
+        - https://localhost:9443
+        - --root
+        - /home/step/certs/root_ca.crt
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+networks:
+  pki:
+    name: ${TEREMOQ_PKI_NETWORK:-teremoq-pki-net}
+    driver: bridge

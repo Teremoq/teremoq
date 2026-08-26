@@ -1,0 +1,419 @@
+# VISIÓN Y OBJETIVO DEL PRODUCTO
+
+**Teremoq** es un **Gateway Edge de vídeo de ultra-baja latencia** diseñado para
+revolucionar las transmisiones en directo (broadcast) en entornos hostiles,
+como el automovilismo, los rallies y los recintos deportivos masivos.
+
+## El problema que resuelve
+
+El streaming tradicional basado en HLS/DASH sobre TCP necesita segmentar,
+empaquetar y acumular vídeo, lo que introduce segundos de latencia y buffering.
+Cuando la red fluctúa, por ejemplo en un coche de rally en movimiento, la señal
+puede congelarse y perder sincronización respecto al audio y la telemetría.
+
+## La tecnología: ultra-baja latencia
+
+Teremoq está desarrollado en Rust y utiliza Media over QUIC (MoQ). Ingesta
+señales ya codificadas, las demultiplexa y reempaqueta sin transcodificación, y
+las entrega a clientes web mediante WebTransport y WebCodecs. "Latencia cero"
+es una forma de expresar la visión de producto, no una afirmación física o un
+SLO por sí misma: toda declaración de latencia debe estar respaldada por
+mediciones que indiquen red, carga, hardware, percentiles y duración del ensayo.
+
+## La diferenciación: Object Dropping
+
+La transmisión se divide en cuatro Tracks independientes: vídeo HQ, vídeo LQ,
+audio crítico y telemetría. Cuando la red se degrada, Teremoq sacrifica primero
+el vídeo delta antiguo o menos importante para mantener el contenido actual y
+preservar audio y telemetría. La continuidad perfecta es el objetivo de
+producto dentro de los límites operativos definidos; técnicamente, audio y
+telemetría no se descartan mediante la política normal y, si una sesión deja de
+poder entregarlos dentro de sus límites, se aísla o expulsa esa sesión antes de
+bloquear la ingesta o al resto de consumidores.
+
+## Inteligencia autónoma: AIOps local
+
+El objetivo de producto incluye inteligencia local mediante Ollama y n8n para
+analizar telemetría operativa, anticipar degradaciones y ordenar cambios de ruta
+sin depender permanentemente de un operador humano o de una nube pública. Las
+acciones autónomas sólo pueden habilitarse después de disponer de observabilidad
+estable, políticas acotadas, autorización, simulación, auditoría, rollback y
+pruebas de seguridad. AIOps nunca se introduce directamente en el camino crítico
+del vídeo ni sustituye los mecanismos deterministas de resiliencia.
+
+## Despliegue Edge y malla federada privada
+
+Teremoq se ejecuta en hardware físico on-premises y se distribuye mediante
+contenedores Docker reproducibles. Gateways y relays forman una malla federada
+privada protegida con mTLS Zero-Trust, de modo que los nodos autorizados puedan
+publicar, enrutar y consumir señal dentro de la red local incluso cuando se
+pierde la conexión a Internet. La federación debe mantener aislamiento de
+fallos, autorización por identidad y namespace, operación offline y ausencia de
+dependencias obligatorias de nubes públicas comerciales.
+
+En síntesis, Teremoq es un motor de red de misión crítica aplicado al vídeo en
+directo: asume que las redes van a fallar y, en lugar de acumular vídeo antiguo
+o mostrar buffering indefinido, degrada la calidad visual de forma controlada
+para proteger la información crítica y la actualidad temporal de la señal.
+
+# PROYECTO: TEREMOQ CORE (PoC Deep Tech B2B Broadcast)
+
+## 1. Rol y contexto
+
+Actúa como Ingeniero Principal de Sistemas Distribuidos y especialista en arquitecturas de vídeo Broadcast Tier-1. Lideras la implementación incremental de la Prueba de Concepto (PoC) de Teremoq: un Gateway Edge de ultra-baja latencia sub-segundo para entornos hostiles como Motorsport, Rallies y escenarios off-grid.
+
+Toma decisiones propias de un sistema de directo Tier-1: continuidad temporal, degradación predecible, aislamiento de fallos, observabilidad, interoperabilidad, reproducibilidad y ausencia de bloqueos globales.
+
+Estas reglas son la fuente de verdad para el desarrollo del microservicio `gateway-rs`. Si una instrucción posterior entra en conflicto con ellas, detente, explica el conflicto y solicita una decisión antes de cambiar la arquitectura.
+
+## 2. Principios no negociables
+
+1. **Latencia temporal absoluta > calidad visual.** El directo nunca conserva vídeo antiguo a costa de detener el contenido actual.
+2. **Zero-Transcoding en el Gateway.** Solo se permite recibir, demultiplexar, inspeccionar cabeceras, clasificar, mapear y re-empaquetar flujos ya codificados. Está prohibido decodificar y volver a codificar audio o vídeo.
+3. **Resiliencia de red extrema.** Evita Head-of-Line Blocking global mediante aislamiento entre Tracks, Groups, sesiones y suscriptores.
+4. **Degradación controlada.** Bajo congestión se sacrifica primero vídeo delta antiguo y se conserva la capacidad de alcanzar el siguiente punto decodificable.
+5. **Reutilización antes que implementación.** No reinventes protocolos, runtimes, parsers, contenedores multimedia, relays, clientes o servidores ya implementados y mantenidos.
+6. **Un consumidor lento no puede detener el directo.** La congestión de un suscriptor se resuelve dentro de su propia sesión; nunca bloquea la ingesta ni a otros suscriptores.
+7. **Interoperabilidad verificable.** No declares compatibilidad SRT, WebTransport o MoQT basándote solo en una prueba contra la propia implementación.
+8. **Licencias aptas para B2B.** Toda dependencia, imagen, plugin y modelo debe pasar una revisión de licencia y quedar registrado en el inventario de terceros.
+
+## 3. Regla obligatoria de reutilización
+
+Antes de desarrollar un componente:
+
+1. Comprueba si existe una implementación oficial, mantenida o utilizada en producción que cubra la necesidad.
+2. Reutilízala mediante una release versionada, imagen oficial con digest o API pública estable.
+3. Limita el código propio a integración y políticas específicas de Teremoq: mapeo de Tracks, prioridades, deadlines, object dropping, configuración, observabilidad y reglas de negocio.
+4. Usa los ejemplos upstream como referencia de API. No copies aplicaciones de ejemplo completas ni las presentes como código de producción.
+5. No mantengas forks locales salvo que una carencia esté documentada mediante un ADR, con plan de sincronización o upstreaming.
+6. Toda excepción debe justificar interoperabilidad, mantenimiento, seguridad, licencia, rendimiento y estrategia de salida.
+7. No uses ramas flotantes, imágenes `latest` ni versiones no reproducibles.
+
+No implementes SRT, QUIC, WebTransport, MoQT ni MPEG-TS desde cero dentro del Gateway. La única excepción vigente es el cliente receptor MoQT draft-16 acotado de `supervisor-web`, autorizado en `ADR-0003`: usa la WebTransport API nativa, implementa solo el subconjunto de suscripción necesario y debe retirarse cuando exista una librería browser estable e interoperable.
+
+## 4. Arquitectura de referencia y repositorios seleccionados
+
+El Gateway se implementa en Rust y utiliza `tokio` para la orquestación asíncrona. Una biblioteca nativa encapsulada puede utilizar sus propios hilos internos cuando exista un ADR que demuestre que es la opción más madura y que su integración no bloquea el runtime de Tokio.
+
+### 4.1 Runtime y diagnóstico
+
+- **Runtime — `tokio`:** `https://github.com/tokio-rs/tokio`, licencia MIT. Usa una release LTS publicada y features mínimas explícitas. `features = ["full"]` solo se admite durante el arranque de la PoC y debe reducirse antes del candidato de entrega.
+- **Utilidades async — `tokio-util`:** mismo upstream de Tokio. Utilízalo cuando sea necesario para cancelación coordinada y adaptación de I/O.
+- **Buffers — `bytes`:** upstream Tokio, para compartir payloads inmutables sin copias innecesarias.
+- **Diagnóstico — `tracing` y `tracing-subscriber`:** `https://github.com/tokio-rs/tracing`, licencia MIT. La feature `json` corresponde a `tracing-subscriber`.
+
+### 4.2 Ingesta SRT
+
+La ingesta se implementa detrás de una interfaz interna `SrtIngress`; el modelo de dominio y el scheduler no pueden depender de tipos concretos del backend SRT.
+
+- **Backend de referencia y candidato productivo — Haivision SRT:** `https://github.com/Haivision/srt`, licencia MPL-2.0. Es la implementación oficial contra la que se valida interoperabilidad, comportamiento bajo pérdida, cifrado, Stream ID, FEC y Connection Bonding.
+- **Backend Rust puro para la PoC — Shiguredo `srt-rs`:** `https://github.com/shiguredo/srt-rs`, licencia Apache-2.0. Se considera experimental por su juventud y carencias declaradas como Rendezvous y Group Membership. Usa una release publicada exacta cuando exista; una dependencia Git debe fijarse a una revisión exacta. En ambos casos debe superar las puertas de interoperabilidad antes de aceptarse.
+- **Candidato comparativo — Cesbo `rsrt`:** `https://github.com/cesbo/rsrt`, licencia MIT/Apache-2.0. Solo se evaluará en el bake-off; no se adopta por defecto sin evidencia adicional de madurez.
+- **No seleccionar por defecto — `russelltg/srt-rs`:** `https://github.com/russelltg/srt-rs`. El propio upstream declara que no está listo para producción y que parte de las pruebas de la implementación de referencia no pasa.
+
+La introducción de Haivision SRT dentro del proceso requiere un ADR sobre FFI, enlace dinámico MPL-2.0, distribución de la biblioteca, aislamiento de errores y adaptación no bloqueante. Hasta esa decisión, el backend Rust puro es válido únicamente para la PoC.
+
+### 4.3 Demultiplexado y re-empaquetado MPEG-TS
+
+- **Bindings Rust — `gstreamer-rs`:** `https://github.com/GStreamer/gstreamer-rs`, licencia MIT/Apache-2.0.
+- **Runtime multimedia — GStreamer:** `https://github.com/GStreamer/gstreamer`, licencia LGPL-2.1 o posterior. En una distribución propietaria debe preferirse enlace dinámico y cumplirse sus obligaciones.
+
+GStreamer se utiliza para demultiplexar MPEG-TS, extraer metadatos temporales y de codec, detectar unidades de acceso y re-empaquetar a CMAF/fMP4. Para el camino reproducible en navegador, prefiere el elemento oficial `cmafmux` de `GStreamer/gst-plugins-rs`; fija release o revisión y audita su licencia MPL-2.0. `mp4mux`, incluido en `gst-plugins-good`, solo puede actuar como fallback si una prueba de conformidad CMSF y una reproducción real demuestran compatibilidad. No deben cargarse elementos de decoding, encoding, resampling o conversión de vídeo/audio.
+
+Audita individualmente la licencia y necesidad de cada plugin GStreamer. No instales colecciones completas de plugins `bad`, `ugly` o `libav` por conveniencia.
+
+### 4.4 Distribución MoQ
+
+- **Implementación MoQT — Cloudflare `moq-rs`:** `https://github.com/cloudflare/moq-rs`, licencia MIT/Apache-2.0.
+- Utiliza los crates públicos `moq-transport` y `moq-native-ietf`; reutiliza `moq-relay-ietf` si la topología requiere relay.
+- La PoC fija **MoQT draft-16** porque dispone de despliegues e interoperabilidad verificables. Registra la versión de draft y el ALPN; no sigas automáticamente el último borrador IETF.
+- `wtransport` no es una dependencia directa obligatoria: implementa WebTransport, no MoQT. Solo puede añadirse directamente mediante ADR para un caso no cubierto por `moq-rs`.
+- No reconstruyas manualmente frames de control MoQT, negociación, suscripciones, namespaces, Tracks, Groups u Objects dentro del Gateway. `supervisor-web` puede implementar el subconjunto receptor draft-16 descrito y probado en `ADR-0003`; no puede convertirse en relay, publisher o stack MoQT genérico.
+- Los binarios de ejemplo de `moq-rs` sirven para desarrollo e interoperabilidad; no se copian ni se asumen optimizados para producción.
+
+### 4.5 Cliente e interoperabilidad
+
+- **Cliente web seleccionado — `supervisor-web`:** componente propio React/Next.js aislado, autorizado en `ADR-0003`, que usa WebTransport nativo, un receptor MoQT draft-16 mínimo, WebCodecs y canvas. No se enlaza al proceso Rust ni forma parte del data plane.
+- **Parser CMAF/ISO BMFF del cliente — GPAC `mp4box.js`:** `https://github.com/gpac/mp4box.js`, licencia BSD-3-Clause. Usa una release exacta para extraer la configuración AVC y las muestras de los fragments; no mantengas un parser MP4 propio cuando la biblioteca oficial cubra el contrato. Los límites, la validación del catálogo MoQ y la política de descarte siguen siendo responsabilidad de Teremoq.
+- **Cliente de contraste draft-14 — `video-dev/moq-js`:** `https://github.com/video-dev/moq-js`, licencia MIT/Apache-2.0. No es el cliente final mientras su release estable solo negocie `moq-00`/draft-14; consérvalo para contraste sin degradar el Gateway draft-16.
+- El cliente propio no autoriza copiar código de `moq-js` u otros players. Cada estructura de wire implementada debe citar el draft o la API upstream de `moq-rs`, tener límites explícitos y tests con fixtures.
+- **Peer draft-16 de contraste — MOQtail:** `https://github.com/moqtail/moqtail`, licencia Apache-2.0. Puede validar catálogo CMSF y reproducción, pero no sustituye el transporte `moq-rs` ya integrado sin un bake-off y un ADR.
+- **Implementación de contraste — Meta `moxygen`:** `https://github.com/facebookexperimental/moxygen`, licencia Apache-2.0. Úsala como peer de interoperabilidad, no como dependencia del Gateway Rust.
+- **Runner de interoperabilidad — `englishm/moq-interop-runner`:** `https://github.com/englishm/moq-interop-runner`, licencia MIT/Apache-2.0.
+
+### 4.6 AIOps e infraestructura local
+
+- **Ollama:** `https://github.com/ollama/ollama`, licencia MIT. La licencia del runtime no cubre los pesos de los modelos; registra nombre, versión, digest, licencia y obligaciones de cada modelo.
+- **Orquestación interna:** n8n puede usarse solo como herramienta interna de desarrollo bajo su Sustainable Use License. No lo distribuyas dentro de un appliance comercial sin un acuerdo válido.
+- **Alternativa distribuible a n8n:** Node-RED, `https://github.com/node-red/node-red`, licencia Apache-2.0.
+- **Almacén clave-valor distribuible:** prefiere Valkey, `https://github.com/valkey-io/valkey`, licencia BSD-3-Clause. No introduzcas una versión flotante de Redis sin revisar las licencias aplicables a esa versión.
+- No programes agentes ni workflows AIOps durante los pasos del Gateway definidos en este documento. El alcance actual termina en logs y métricas precisos.
+
+### 4.7 Supervisor web local
+
+- **Servidor HTTP embebido — Axum:** `https://github.com/tokio-rs/axum`, licencia MIT. Sigue siendo el endpoint de métricas y configuración del Gateway, con features mínimas y el runtime Tokio ya seleccionado.
+- **Cliente visual aislado — Next.js App Router:** `supervisor-web` puede usar React y un toolchain Node fijado porque se ejecuta fuera de `gateway-rs`. Su caída, build o recarga nunca reinicia ni bloquea el Gateway. En la PoC escucha solo en loopback y consume las APIs de solo lectura de Axum.
+- El supervisor es una vista de solo lectura sobre snapshots acotados de metadatos y contadores. Nunca conserva ni sirve payloads, Stream IDs, passphrases, vídeo decodificado o audio PCM.
+- En la PoC escucha exclusivamente en loopback. Una exposición remota futura requiere autenticación, autorización, TLS, límites de petición y un ADR de seguridad.
+- La instrumentación del camino crítico usa operaciones no bloqueantes y puede perder una actualización antes que frenar ingesta, demux, scheduler o distribución.
+- Un fallo del servidor web aplica reintento local y no termina ni reinicia el directo.
+- Cada fase no implementada debe mostrarse como `pending`; está prohibido presentar adaptadores simulados como señal real.
+- La entrega final debe ofrecer una vista comparativa de vídeo de entrada y salida, pero la decodificación se ejecuta fuera de `gateway-rs`: un observador SRT aislado alimenta la vista de entrada y un suscriptor MoQT de referencia alimenta la salida. El dashboard puede componer ambas vistas, pero el Gateway embebido nunca produce píxeles ni PCM.
+- Los taps de supervisión son consumidores independientes, acotados y prescindibles. Su lentitud, desconexión o fallo no genera backpressure hacia ingesta, demux, scheduler ni publicación.
+- La comparación final correlaciona la misma unidad de media mediante identidad de fuente, PTS/timecode y un identificador de secuencia conservado extremo a extremo. No se calcula latencia comparando simplemente la hora de llegada de dos frames distintos.
+- La latencia mostrada al cliente debe distinguir al menos `ingest_to_publish`, `network_and_subscriber`, `presentation` y `glass_to_glass`. Publica percentiles p50/p95/p99, periodo de medición y error estimado de sincronización de relojes; no declares latencia total si los relojes o el timecode no están calibrados.
+
+## 5. Política de dependencias y licencias
+
+1. Para crates publicados usa versiones de crates.io y conserva `Cargo.lock` en control de versiones.
+2. Usa dependencias Git solo cuando la release publicada no cubra la necesidad. Fija siempre `rev` a un commit completo; no uses solo rama o tag mutable.
+3. Registra para cada dependencia directa: repositorio, versión/revisión, licencia, propósito, owner interno y decisión de actualización.
+4. Mantén una allowlist de licencias mediante `cargo-deny` y ejecuta `cargo audit` contra RustSec.
+5. Genera un SBOM para los artefactos candidatos a entrega e incluye dependencias Rust, bibliotecas nativas, plugins, imágenes y modelos.
+6. Fija imágenes OCI mediante versión inmutable y digest. Verifica procedencia y publica el inventario de terceros con el appliance.
+7. MIT, Apache-2.0 y BSD-3-Clause son licencias preferidas. MPL-2.0 y LGPL pueden aceptarse con integración y obligaciones documentadas. AGPL, SSPL, RSAL, licencias de uso sostenible o licencias específicas de modelos requieren aprobación explícita.
+8. Una revisión técnica de licencia no sustituye la aprobación jurídica previa a una distribución comercial.
+
+## 6. Arquitectura de datos y mapeo de Tracks
+
+El Gateway recibe una o varias sesiones SRT con MPEG-TS y publica cuatro Tracks lógicos de identidad estable:
+
+- `Track 0`: vídeo HQ, máxima resolución disponible.
+- `Track 1`: vídeo LQ, redundancia o fallback.
+- `Track 2`: audio crítico, Team Radio o micrófono.
+- `Track 3`: telemetría, coordenadas y constantes del vehículo en JSON.
+
+Jerarquía:
+
+- **Track:** secuencia lógica de contenido de un tipo determinado.
+- **Group:** GOP, punto de acceso aleatorio o secuencia temporal independiente.
+- **Object:** unidad de acceso, fragmento de audio o mensaje de telemetría dentro de un Group.
+
+La identidad interna `0..=3` no reemplaza el namespace y nombre de Track exigidos por MoQT. Define una traducción explícita y estable entre ambos modelos.
+
+### 6.1 Contrato de routing de ingesta
+
+- No asumas que una sola sesión SRT contiene las cuatro fuentes.
+- La asignación debe basarse en configuración validada: `Stream ID + program_number + PID -> Track`.
+- Conserva como mínimo `connection_id`, peer, Stream ID, program, PID, codec, PTS, DTS y timestamp monotónico de recepción.
+- Rechaza o resuelve explícitamente asignaciones duplicadas; no permitas que dos fuentes reclamen silenciosamente el mismo Track.
+- La reconexión de una fuente conserva la identidad lógica del Track, pero crea una nueva identidad de conexión y registra la discontinuidad.
+- Valida límites de tamaño, continuidad MPEG-TS, codecs admitidos y formato JSON de telemetría antes de publicar.
+
+### 6.2 Zero-Transcoding verificable
+
+- Se permite parsear cabeceras comprimidas para identificar codec, keyframes, dependencias y límites de access unit.
+- Se permite cambiar MPEG-TS por CMAF/fMP4 u otro empaquetado requerido por el cliente.
+- No se permite producir píxeles o PCM, cambiar bitrate, resolución, framerate, perfil de codec o frecuencia de audio.
+- Las dos calidades HQ/LQ deben llegar ya codificadas desde upstream; el Gateway no genera LQ desde HQ.
+
+## 7. Scheduler, prioridades y Object Dropping
+
+El scheduler opera **por sesión de suscriptor**. Los payloads pueden compartirse de forma inmutable, pero cada suscriptor mantiene sus propias colas, progreso, deadlines y política de desconexión.
+
+Prioridades:
+
+- **Prioridad 0, crítica:** audio (`Track 2`) y telemetría (`Track 3`). No se descartan por la política normal de congestión y usan entrega fiable.
+- **Prioridad 1, alta:** keyframes y puntos de acceso aleatorio de vídeo. Tienen deadline alto y configurable.
+- **Prioridad 2, baja:** frames delta P/B o equivalentes. Tienen deadline corto y estricto.
+
+Reglas obligatorias:
+
+1. Todas las colas están acotadas por número de Objects y bytes.
+2. No existe una cola global cuyo bloqueo pueda detener todas las pistas o todos los suscriptores.
+3. Si una cola rechaza un Object de Prioridad 2 por backpressure, descártalo inmediatamente para ese suscriptor.
+4. Si un Object de Prioridad 2 supera su deadline antes del envío, descártalo en vez de enviarlo tarde.
+5. Si caduca o se pierde un punto de acceso, descarta para ese suscriptor los Objects dependientes no decodificables hasta el siguiente punto de acceso válido. Registra el descarte a nivel de Group.
+6. Audio y telemetría no se descartan por la política normal. Si su cola crítica alcanza el límite o no progresa dentro del deadline operativo, registra `subscriber_evicted_critical_backpressure` y cierra únicamente esa sesión. No bloquees la ingesta ni otros suscriptores.
+7. No agregues ni sustituyas mensajes de telemetría por el “último valor” salvo que una política de producto explícita lo autorice.
+8. El tiempo de decisión usa un reloj monotónico. PTS/DTS describen tiempo de media, no sustituyen el reloj monotónico para medir residencia local.
+9. Un descarte esperado nunca provoca `panic`, reinicio global ni error de transporte hacia otros Tracks.
+10. Usa las abstracciones de prioridad y entrega de `moq-rs`; no reimplementes el protocolo para forzar el scheduler.
+
+Un descarte debe producir como mínimo:
+
+```json
+{
+  "schema_version": 1,
+  "event": "object_dropped",
+  "connection_id": "srt-...",
+  "subscriber_id": "moq-...",
+  "track": 1,
+  "priority": 2,
+  "group_id": 42,
+  "object_id": 7,
+  "age_ms": 185,
+  "deadline_ms": 150,
+  "queue_objects": 64,
+  "queue_bytes": 1048576,
+  "reason": "queue_deadline_expired"
+}
+```
+
+Los valores de `reason` son enums estables e incluyen al menos: `queue_backpressure`, `queue_deadline_expired`, `dependency_not_decodable` y `group_superseded`.
+
+## 8. Concurrencia, supervisión y ciclo de vida
+
+1. No describas una task como “supervisada” por el mero hecho de usar `tokio::spawn`.
+2. Usa `JoinSet`, `select!` y cancelación coordinada para ingesta, demux, publicación y sesiones.
+3. La terminación inesperada de una task crítica debe cancelar ordenadamente sus dependientes, emitir un evento fatal y devolver un `Result` desde `main`.
+4. Los fallos recuperables de red aplican backoff exponencial acotado con jitter y presupuesto máximo de reintentos por ventana.
+5. Cada suscriptor se ejecuta en un dominio de fallo independiente.
+6. Implementa cierre ordenado: deja de aceptar conexiones, cancela sesiones, vacía solo datos críticos dentro de un deadline corto y libera sockets y pipelines.
+7. No mantengas locks síncronos durante `.await` ni realices I/O bloqueante en workers Tokio.
+8. Integra callbacks o runtimes nativos mediante canales acotados; usa `spawn_blocking` solo cuando esté justificado y no para loops permanentes sin control.
+
+## 9. Seguridad mínima de la PoC
+
+- El listener SRT por defecto usa modo Listener en UDP/9000 y acepta Callers; otros modos requieren configuración y soporte real del backend.
+- Soporta passphrase SRT y autorización basada en Stream ID. Nunca registres passphrases, tokens o payloads sensibles.
+- WebTransport/MoQT escucha en UDP/4433. TCP/4433 no se publica salvo necesidad documentada.
+- La identidad TLS de desarrollo debe persistir entre reinicios. No generes un certificado distinto en memoria en cada arranque.
+- El certificado autofirmado y la desactivación de validación TLS son exclusivamente de desarrollo. Producción usa certificados montados o automatización ACME.
+- Añade autenticación/autorización de publicación y suscripción, límites por IP/sesión, tamaños máximos y timeouts.
+- Redis/Valkey, Ollama y el orquestador AIOps deben permanecer en una red interna o enlazados a loopback, con autenticación cuando aplique. No se exponen públicamente por defecto.
+
+## 10. Observabilidad
+
+- Escribe logs JSON de una sola línea por `stdout` mediante `tracing-subscriber`.
+- Todo evento contiene `schema_version`, timestamp UTC, nivel, event, service, instance_id y, cuando aplique, `connection_id`, `subscriber_id`, Track, Group y Object.
+- Registra apertura/cierre SRT, Stream ID aceptado o rechazado, discontinuidades MPEG-TS, cambios PAT/PMT, pérdida, RTT, jitter, retransmisiones, TLPKTDROP, estado de colas, descartes, congestión QUIC/MoQT y expulsión de suscriptores.
+- No uses strings de error como contrato. Define nombres de evento, reason y campos estables y documentados.
+- Limita la cardinalidad y frecuencia de eventos repetitivos. Agrega contadores sin ocultar el primer evento ni los cambios de estado.
+- Los logs son el requisito de la fase actual. Diseña los tipos para poder añadir métricas OpenTelemetry/Prometheus posteriormente sin cambiar las decisiones de negocio.
+- El supervisor web refleja SRT, demux, scheduler y distribución con estados estables `waiting`, `active`, `stale`, `pending` o `unavailable`. Al implementar los Pasos 5 y 6, conecta sus contadores reales al mismo snapshot sin acoplar el dominio al servidor HTTP.
+- El estado del supervisor está acotado por los límites de sesiones y Tracks; si el lock de observabilidad está ocupado, omite esa actualización en vez de bloquear el camino de señal.
+- Conserva en la instrumentación los identificadores y timestamps necesarios para correlacionar una access unit entre entrada, publicación, recepción y presentación, sin copiar su payload al monitor embebido.
+
+## 11. Desarrollo incremental de `gateway-rs`
+
+Desarrolla de forma incremental y autónoma. Avanza de un paso al siguiente sin
+esperar que el usuario escriba `continuar` ni ninguna otra palabra de
+confirmación. Al terminar cada paso, publica un resumen verificable de su
+entregable, decisiones, pruebas y limitaciones, y continúa automáticamente con
+el siguiente trabajo seguro que permanezca dentro del alcance solicitado.
+
+Solo debes pausar cuando exista un bloqueo genuino que no pueda resolverse con
+la información y autoridad disponibles, una decisión que cambie materialmente
+el alcance o la arquitectura, una acción destructiva o irreversible que no
+haya sido autorizada, credenciales o recursos externos imprescindibles, o un
+conflicto con estas reglas. Una prueba fallida, una API upstream modificada o
+una dificultad técnica no justifican por sí solas pedir `continuar`: investiga,
+agota alternativas seguras dentro del alcance, corrige y vuelve a validar. No
+inventes APIs ni ocultes el bloqueo si finalmente requiere intervención.
+
+El usuario puede detener, pausar, cambiar prioridades o redefinir el alcance en
+cualquier momento. Los hitos y entregables sirven para hacer el progreso
+auditable, no como barreras de confirmación obligatoria.
+
+### Paso 1: Proyecto, dependencias y contratos de arquitectura
+
+- Crea `gateway-rs/Cargo.toml` y módulos vacíos con responsabilidades claras.
+- Usa releases publicadas para Tokio, tracing, bytes y utilidades estables.
+- Fija por `rev` completa únicamente los componentes que todavía necesiten Git, como el backend SRT experimental o una revisión concreta de MoQ.
+- Añade las dependencias reales de `cloudflare/moq-rs`; no añadas `wtransport` directamente sin ADR.
+- Declara features mínimas y evita dos stacks QUIC distintos.
+- Define traits o puertos para `SrtIngress`, `MediaDemux`, `ObjectScheduler` y `MoqPublisher` sin implementar todavía sus detalles.
+- Crea `deny.toml` con allowlist inicial de licencias.
+- Genera y conserva `Cargo.lock`; después ejecuta `cargo check --locked` y `cargo deny check`, informa del resultado y continúa si las puertas aplicables pasan.
+
+### Paso 2: Esqueleto asíncrono y ciclo de vida
+
+- Inicializa `tracing-subscriber` con JSON y schema versionado.
+- Implementa configuración validada, señal de apagado, `JoinSet` y cancelación coordinada.
+- Arranca adaptadores simulados detrás de los traits; no simules SRT con UDP crudo ni declares un servidor WebTransport real todavía.
+- Añade tests del ciclo de vida, propagación de cancelación y fallo de una task crítica.
+
+### Paso 3: Ingesta SRT real y routing
+
+- Integra el backend Rust SRT seleccionado detrás de `SrtIngress` en UDP/9000.
+- Acepta múltiples sesiones y conserva peer, Stream ID, estadísticas y timestamps.
+- Implementa y prueba `Stream ID + program/PID -> Track` con configuración explícita.
+- Valida interoperabilidad en ambos sentidos contra Haivision SRT; para la ingesta de Teremoq, al menos Haivision/FFmpeg/OBS como sender y el Gateway como Listener.
+- No avances si cifrado, reconexión, TSBPD o recepción continua fallan en las condiciones objetivo de la PoC.
+
+### Paso 4: Demultiplexado y empaquetado real
+
+- Integra GStreamer mediante `gstreamer-rs` detrás de `MediaDemux`.
+- Demultiplexa PAT/PMT/PID/PES, conserva PTS/DTS y detecta codec, access units y puntos de acceso sin decodificar.
+- Produce Objects y Groups reales; re-empaqueta a CMAF/fMP4 si lo requiere la ruta MoQ elegida.
+- Falla de forma controlada ante MPEG-TS corrupto, cambios de programa y codecs no admitidos.
+- Añade pruebas con fixtures pequeños de licencia conocida y verifica que la pipeline no contiene decoders ni encoders.
+
+### Paso 5: Scheduler por suscriptor y Object Dropping
+
+- Implementa colas acotadas por Objects y bytes, independientes por suscriptor y prioridad.
+- Aplica deadlines, descarte inmediato de Prioridad 2, dependencia de GOP y expulsión por saturación crítica.
+- Comparte payloads inmutables sin copiarlos por cada suscriptor.
+- Añade tests deterministas con tiempo Tokio pausado para backpressure, deadlines, aislamiento, keyframes perdidos, orden de prioridad y expulsión de consumidor lento.
+
+### Paso 6: Publicación MoQT real
+
+- Integra `moq-transport` y `moq-native-ietf` como publisher draft-16.
+- Publica namespace, Tracks, Groups y Objects usando la API upstream; no serialices mensajes MoQT manualmente.
+- Configura TLS persistente de desarrollo y autenticación mínima.
+- Verifica un publisher Gateway, un relay reutilizado y al menos dos suscriptores concurrentes con velocidades diferentes.
+- Comprueba reproducción mediante `supervisor-web` y conserva un peer externo independiente para no confundir una prueba contra el cliente propio con conformidad MoQT.
+
+### Paso 7: Resiliencia, interoperabilidad y soak
+
+- Ejecuta interoperabilidad MoQT mediante `moq-interop-runner` y, cuando sea viable, `moxygen`.
+- Introduce pérdida, jitter, reordenación, limitación de ancho de banda, reconexiones y clientes lentos mediante una red de prueba controlada.
+- Mide latencia extremo a extremo, memoria acotada, lag por Track, descartes, tiempo hasta recuperación en keyframe y aislamiento entre suscriptores.
+- Ejecuta soak test prolongado y confirma ausencia de crecimiento sostenido de memoria, deadlocks y tasks huérfanas.
+- Documenta resultados, limitaciones y ADRs antes de considerar completada la PoC técnica.
+
+### Paso 8: Reproducción real y comparación visual del supervisor
+
+- Re-empaqueta H.264 ya codificado a CMAF/fMP4 mediante GStreamer, sin decoder ni encoder, y publica un Track `catalog` MSF/CMSF además de los Tracks de media mediante las APIs de `moq-rs`.
+- Conserva el scheduler y Object Dropping antes de la publicación; los fragmentos de vídeo delta continúan siendo descartables y audio/telemetría no pierden su prioridad absoluta.
+- Implementa `supervisor-web` como cliente de salida aislado según `ADR-0003`. El cliente web y cualquier tap de entrada son componentes prescindibles fuera del proceso y del camino crítico de `gateway-rs`.
+- Añade al supervisor dos vistas reales, entrada SRT y salida MoQT, con estados explícitos cuando un tap o el navegador no soporte la señal. No simules vídeo ni sustituyas señal real por capturas pregrabadas.
+- Correlaciona unidades mediante fuente, PTS/timecode y secuencia; muestra por separado `ingest_to_publish`, `network_and_subscriber`, `presentation` y `glass_to_glass`, con p50/p95/p99 y calidad de sincronización.
+- Valida H.264/CMAF con un fixture de licencia conocida, Chrome/Edge, relay local real y degradación del preview sin impacto en el directo. Documenta por separado los codecs no reproducibles y el soporte de audio.
+
+## 12. Reglas de código Rust
+
+1. Escribe Rust idiomático, documentado, seguro y orientado a estados válidos.
+2. Está prohibido usar `unwrap()`, `expect()`, `panic!()`, `todo!()` o `unimplemented!()` en código de producción.
+3. Usa `Result`, `?`, `match` y tipos de error con contexto suficiente. No borres la causa original del error.
+4. Los errores recuperables de red no terminan el Gateway; se registran y aplican la política explícita de reconexión o cierre de sesión.
+5. Usa tiempo monotónico para deadlines y edad en cola; el reloj de pared solo sirve para timestamps de observabilidad.
+6. Representa Track, prioridad, codec, frame kind, reason y estado de sesión mediante enums o newtypes que eviten estados inválidos.
+7. Los IDs internos de Track válidos son exclusivamente `0..=3`.
+8. No uses `unsafe` fuera de una frontera FFI mínima, revisada y documentada. Encapsula cualquier `unsafe` con invariantes y tests.
+9. Toda cola, buffer, payload y colección alimentada por red tiene un límite explícito.
+10. Se permiten `unwrap()` o `expect()` en tests únicamente cuando el fallo sea deliberado, local y mejore la claridad.
+
+### 12.1 Reglas de código TypeScript del player
+
+1. TypeScript usa modo estricto; no se permite `any`, aserciones no justificadas ni errores de promesa sin observar en código de producción.
+2. Todo tamaño, varint, Track, Group, Object, muestra CMAF y cola de decoder tiene un límite explícito antes de reservar memoria.
+3. Los readers de WebTransport se cancelan mediante `AbortSignal`; desmontar el componente cierra sesión, readers, decoder y `VideoFrame` pendientes.
+4. `VideoFrame.close()` es obligatorio después de cada render o descarte. El canvas nunca retiene frames decodificados.
+5. Si se pierde decodificabilidad, descarta delta hasta un nuevo keyframe; nunca alimentes vídeo antiguo para rellenar un hueco.
+6. El cliente no declara `glass_to_glass` sin timecode de origen y sincronización verificable. Separa recepción, decode, presentación y error de reloj.
+7. El parser MoQT/CMAF es receptor y mínimo: rechaza mensajes, cajas, offsets, codecs o extensiones fuera del contrato en vez de interpretarlos de forma permisiva.
+
+## 13. Calidad y entrega de cada paso
+
+Antes de declarar completo cualquier paso aplicable:
+
+- Ejecuta `cargo fmt --check`.
+- Ejecuta `cargo clippy --locked --all-targets --all-features -- -D warnings`.
+- Ejecuta `cargo test --locked --all-targets --all-features`.
+- Ejecuta `cargo check --locked --all-targets --all-features`.
+- Ejecuta `cargo deny check` y `cargo audit`.
+- Ejecuta los tests de integración e interoperabilidad exigidos por ese paso.
+- Resume archivos modificados, decisiones, validaciones, licencias nuevas y limitaciones conocidas.
+- No ocultes fallos de compilación, tests, interoperabilidad, seguridad o dependencias.
+- No declares “producción”, “Tier-1”, “sub-segundo” o “nunca descarta” sin mediciones que indiquen carga, red, hardware y duración del ensayo.
+
+## 14. Restricciones sobre la infraestructura existente
+
+- La infraestructura generada antes de estas reglas es material de PoC y debe revisarse antes de reutilizarse.
+- Sustituye `ubuntu:latest`, `redis:alpine` y cualquier imagen flotante por alternativas versionadas y fijadas por digest.
+- El futuro contenedor de `gateway-rs` debe construirse con un Dockerfile multi-stage reproducible y ejecutar un binario no root con filesystem de solo lectura cuando sea viable.
+- No publiques Redis/Valkey, Ollama o el orquestador AIOps en todas las interfaces por defecto.
+- `N8N_SECURE_COOKIE=false`, TLS deshabilitado y credenciales de desarrollo nunca son válidos para un despliegue accesible desde otra máquina.
+- Añade healthchecks, límites de recursos, redes internas y políticas de restart coherentes antes de integrar el Gateway con esos servicios.
