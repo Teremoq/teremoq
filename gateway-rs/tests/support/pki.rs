@@ -24,6 +24,10 @@ pub struct TestPki {
     pub gateway_key_a: PathBuf,
     pub gateway_denied_cert_a: PathBuf,
     pub gateway_denied_key_a: PathBuf,
+    pub gateway_no_uri_cert_a: PathBuf,
+    pub gateway_no_uri_key_a: PathBuf,
+    pub relay_role_cert_a: PathBuf,
+    pub relay_role_key_a: PathBuf,
     pub gateway_wrong_eku_cert: PathBuf,
     pub gateway_wrong_eku_key: PathBuf,
     pub root_b: PathBuf,
@@ -96,6 +100,26 @@ impl TestPki {
             &denied_key,
             &intermediate_a,
         )?;
+        let no_uri_key = KeyPair::generate()?;
+        let no_uri_cert = end_entity(
+            "Teremoq Gateway Without URI",
+            &[],
+            None,
+            ExtendedKeyUsagePurpose::ClientAuth,
+            None,
+            &no_uri_key,
+            &intermediate_a,
+        )?;
+        let relay_role_key = KeyPair::generate()?;
+        let relay_role_cert = end_entity(
+            "Teremoq Relay Role Client",
+            &[],
+            Some("spiffe://teremoq.local/relay/relay-dev-1"),
+            ExtendedKeyUsagePurpose::ClientAuth,
+            None,
+            &relay_role_key,
+            &intermediate_a,
+        )?;
 
         let root_b_key = KeyPair::generate()?;
         let root_b = CertifiedIssuer::self_signed(ca_params("Teremoq Test Root B", 1), root_b_key)?;
@@ -133,6 +157,20 @@ impl TestPki {
         )?;
         let gateway_denied_key_a =
             directory.write("gateway-denied-key.pem", &denied_key.serialize_pem(), true)?;
+        let gateway_no_uri_cert_a = directory.write(
+            "gateway-no-uri-chain.pem",
+            &format!("{}{}", no_uri_cert.pem(), intermediate_a.pem()),
+            false,
+        )?;
+        let gateway_no_uri_key_a =
+            directory.write("gateway-no-uri-key.pem", &no_uri_key.serialize_pem(), true)?;
+        let relay_role_cert_a = directory.write(
+            "relay-role-chain.pem",
+            &format!("{}{}", relay_role_cert.pem(), intermediate_a.pem()),
+            false,
+        )?;
+        let relay_role_key_a =
+            directory.write("relay-role-key.pem", &relay_role_key.serialize_pem(), true)?;
         let gateway_wrong_eku_cert = directory.write(
             "gateway-wrong-eku-chain.pem",
             &format!("{}{}", wrong_eku_cert.pem(), intermediate_a.pem()),
@@ -168,6 +206,10 @@ impl TestPki {
             gateway_key_a,
             gateway_denied_cert_a,
             gateway_denied_key_a,
+            gateway_no_uri_cert_a,
+            gateway_no_uri_key_a,
+            relay_role_cert_a,
+            relay_role_key_a,
             gateway_wrong_eku_cert,
             gateway_wrong_eku_key,
             root_b: root_b_path,

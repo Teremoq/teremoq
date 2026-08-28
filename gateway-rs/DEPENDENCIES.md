@@ -28,6 +28,12 @@ Este inventario registra las decisiones del Paso 1. `Cargo.lock` conserva la res
 
 Las dependencias de desarrollo `moq-relay-ietf 0.7.25` (mismo commit completo del derivado), `rcgen 0.14.9`, `pem 3.0.6`, `sha2 0.10.9`, `time 0.3.55`, `async-trait 0.1.89` y `anyhow 1.0.104` existen para los relays locales, la PKI efímera de tests, el certificado WebTransport de vigencia acotada, su fingerprint DER y la prueba de interoperabilidad. Todas son MIT o MIT/Apache-2.0. `hyper 1.4.1` y `hyper-util 0.1.3` reproducen el lockfile de la revisión upstream: versiones posteriores rompen la compilación de `hyper-serve 0.6.2`. No entran en el binario `gateway-rs`. La feature `test-util` de Tokio controla el reloj monotónico en tests.
 
+`web-transport` es una dependencia directa exclusivamente de desarrollo:
+
+| Dependencia | Fuente fijada | Licencia SPDX | Propósito | Owner | Política de actualización |
+| --- | --- | --- | --- | --- | --- |
+| `web-transport` | crates.io exacta `0.10.9`; upstream oficial [`moq-dev/web-transport`](https://github.com/moq-dev/web-transport) | `MIT OR Apache-2.0` | Inspeccionar mediante su API pública el código y la razón exactos del cierre de capacidad en las regresiones raw QUIC/WebTransport | Seguridad/Distribución | Mantener versión exacta y actualizar sólo junto con los tres crates MoQ, con revisión de la API pública de cierre y la matriz raw QUIC/WebTransport |
+
 ## Autorización federada y parser X.509
 
 - `x509-parser 0.18.1` se declara directamente con features por defecto
