@@ -16,6 +16,8 @@ NETWORK="${TEREMOQ_PKI_NETWORK:-teremoq-pki-net}"
 root="${RUNTIME_DIR}/trust/root-ca.pem"
 intermediate="${RUNTIME_DIR}/ca/certs/intermediate_ca.crt"
 
+"${PKI_ROOT}/tests/identity-policy.sh"
+
 TEREMOQ_PKI_RUNTIME_DIR="${RUNTIME_DIR}" TEREMOQ_STEP_NETWORK="${NETWORK}" \
   "${SCRIPT_DIR}/step-container.sh" ca health --ca-url https://step-ca:9443 --root /home/step/certs/root_ca.crt >/dev/null
 
@@ -34,6 +36,12 @@ done
 
 gateway_text="$(openssl x509 -in "${RUNTIME_DIR}/identities/gateway-dev-1/cert.pem" -noout -text)"
 relay_text="$(openssl x509 -in "${RUNTIME_DIR}/identities/relay-dev-1/cert.pem" -noout -text)"
+gateway_san="$(openssl x509 -in "${RUNTIME_DIR}/identities/gateway-dev-1/cert.pem" -noout -ext subjectAltName)"
+relay_san="$(openssl x509 -in "${RUNTIME_DIR}/identities/relay-dev-1/cert.pem" -noout -ext subjectAltName)"
+gateway_uri_count="$(printf '%s\n' "${gateway_san}" | grep -o 'URI:' | wc -l | tr -d '[:space:]')"
+relay_uri_count="$(printf '%s\n' "${relay_san}" | grep -o 'URI:' | wc -l | tr -d '[:space:]')"
+[[ "${gateway_uri_count}" == 1 ]] || { echo "gateway must contain exactly one URI SAN" >&2; exit 1; }
+[[ "${relay_uri_count}" == 1 ]] || { echo "relay must contain exactly one URI SAN" >&2; exit 1; }
 [[ "${gateway_text}" == *'TLS Web Client Authentication'* ]]
 [[ "${gateway_text}" != *'TLS Web Server Authentication'* ]]
 [[ "${gateway_text}" == *'CA:FALSE'* ]]

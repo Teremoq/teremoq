@@ -12,6 +12,16 @@ The bootstrap creates an ECDSA P-256 root and intermediate, then three independe
 
 The CN is informational. Future authorization uses the URI SAN. These are SPIFFE-shaped URIs only: this task does not deploy SPIRE, the SPIFFE Workload API, workload attestation or automatic SVID rotation.
 
+`config/identity-policy.json` is the approved development/integration authorization contract, not a private key or a production policy engine. It is fail-closed and grants only:
+
+- `gateway-dev-1` on the exact connection path `/publish`;
+- operations `Publish` and `PublishNamespace`;
+- the exact namespace `teremoq/live`.
+
+Every other gateway identity, operation, path or namespace is denied. Relay identities are default-deny until a separately reviewed relay-to-relay mapping exists; the presence of a valid relay certificate never grants a relay permission by itself. Capacity limits, certificate validity, IP, DNS SAN, SNI and the requested path are not principals.
+
+Before parsing an already rustls-verified leaf from the same connection, the runtime contract caps the presented chain at 8 certificates, the leaf DER at 16 KiB and the complete DER chain at 64 KiB. Those are defensive product input bounds, not CA issuance settings. The runtime owner must enforce them before its maintained X.509 parser and reduce every failure to a fixed, redacted authentication denial. PKI tests validate this declarative contract; enforcement inside the Rust relay remains the responsibility of the product integration.
+
 Development defaults are root 10 years, intermediate 1 year and leaf 30 days. They are configurable in `versions.env` or by environment override. They are not production recommendations: production should use short-lived leaf certificates, automated renewal, audited policy, and protected HSM/KMS-backed CA keys.
 
 ## Layout and operation
@@ -55,6 +65,8 @@ set +a
 ```
 
 The public browser/WebTransport MoQ listener remains UDP/4433. The private mTLS federation development endpoint is TCP/4443. The CA management endpoint is TCP/9443 and Compose publishes it only on `127.0.0.1`.
+
+The versioned identity policy lives at `infra/pki/config/identity-policy.json`. It contains no secrets and must remain independently reviewable. The current PKI scripts validate and publish the contract but do not make the Rust relay enforce it; the runtime owner must implement the same fail-closed decisions at the required authorization gates. Do not infer authorization from the `.env` files: they provide paths and bind settings only.
 
 ## Revocation limitation
 
