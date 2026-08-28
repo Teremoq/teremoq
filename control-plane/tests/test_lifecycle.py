@@ -81,6 +81,41 @@ class LifecycleTest(unittest.TestCase):
         self.assertNotEqual(old_node.node_id, replacement[0].node_id)
         self.assertEqual(1, self.plane.counters["nodes_replaced_total"])
 
+    def test_session_overflow_is_rejected_atomically(self) -> None:
+        before = self.plane.set_sessions(10, now=1)
+        with self.assertRaisesRegex(ValueError, "ready distributor capacity"):
+            self.plane.set_sessions(61, now=2)
+        self.assertEqual(before, self.plane.session_distribution())
+        self.assertEqual(10, len(self.plane.sessions))
+
+    def test_one_distributor_failure_replaces_before_drain_without_session_loss(self) -> None:
+        self.plane.set_sessions(10, now=1)
+        old_node = self.plane._ready_nodes(Tier.CORE)[0]
+        actions = self.plane.fail_and_replace(old_node.node_id, now=2)
+        self.assertEqual(1, len(actions))
+        self.assertEqual(Lifecycle.TERMINATED, old_node.state)
+        distribution = self.plane.session_distribution()
+        self.assertEqual(10, sum(distribution.values()))
+        self.assertEqual(10, len(self.plane.sessions))
+        self.assertEqual(0, self.plane.counters["drain_unresolved_total"])
+
+    def test_drain_without_peer_preserves_assignments_and_is_not_reported_clean(self) -> None:
+        before = self.plane.set_sessions(10, now=1)
+        only_node = self.plane._ready_nodes(Tier.CORE)[0]
+        self.assertFalse(self.plane._drain_node(only_node.node_id, now=2))
+        self.assertEqual(before, self.plane.session_distribution())
+        self.assertEqual(10, len(only_node.sessions))
+        self.assertEqual(10, len(self.plane.sessions))
+        events = self.plane.events_since(0)
+        self.assertFalse(any(event.event_type == "node_drained" for event in events))
+        self.assertTrue(
+            any(
+                event.event_type == "alert_raised"
+                and event.payload["code"] == "node_drain_unresolved"
+                for event in events
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

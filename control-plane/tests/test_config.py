@@ -5,7 +5,7 @@ import unittest
 
 from teremoq_control.config import ConfigError, load_config
 from teremoq_control.engine import ControlPlane
-from teremoq_control.model import MetricsSample, Tier
+from teremoq_control.model import MetricsSample, Tier, VerifiedAuthContext
 
 from support import CONFIG_PATH, raw_config, temporary_config
 
@@ -57,6 +57,7 @@ class ConfigTest(unittest.TestCase):
             authorized_viewers=123457,
             active_sessions=123457,
             egress_mbps=1,
+            auth_context=VerifiedAuthContext("config-probe", "test-principal", 0),
         )
         signal = plane._capacity_signal(sample, reserved=0)
         self.assertGreater(signal.required_nodes, 100)

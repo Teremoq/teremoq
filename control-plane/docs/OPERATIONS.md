@@ -6,13 +6,14 @@
 service, instance, generation, configured controllers, queue depth/capacity,
 active sessions, desired nodes by tier, lifecycle nodes by state and counters.
 Stable counters include accepted/rejected metrics, scale-out/scale-in, node
-replacement, session reassignment and ignored stale events.
+replacement, session reassignment, unresolved drains and ignored stale events.
 
 Events use stable `event_type` values and include event ID, partition, sequence,
 generation, logical observation time and bounded payload. The main events are:
 
 - `node_requested`, `node_state_changed`, `node_drained`;
-- `sessions_reconciled`, `sessions_rebalanced`;
+- `node_drain_unresolved` is an alert event, never a successful drain event;
+- `sessions_reconciled`;
 - `snapshot_created`, `snapshot_rolled_back`;
 - `stale_event_ignored`, `out_of_order_event_ignored`;
 - `alert_raised`, `control_plane_shutdown`.
@@ -22,7 +23,8 @@ Alerts are structured with `code`, `severity`, `partition`, `reason` and time:
 - `invalid_metrics_fail_closed`;
 - `node_limit_reached`;
 - `spend_limit_reached`;
-- `lifecycle_timeout`.
+- `lifecycle_timeout`;
+- `node_drain_unresolved`.
 
 Provider/region/zone and node/session IDs are audit fields, not unbounded metric
 labels. Production telemetry should export aggregates using an existing

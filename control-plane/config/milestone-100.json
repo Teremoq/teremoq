@@ -66,7 +66,9 @@
     "metrics_max_age_seconds": 20,
     "maximum_sequence_gap": 100,
     "maximum_demand_increase_per_second": 20.0,
+    "maximum_initial_unreserved_demand": 20,
     "maximum_reservations_per_sample": 4096,
+    "reservation_registry_limit": 4096,
     "maximum_actions_per_reconcile": 8,
     "drain_timeout_seconds": 15
   },

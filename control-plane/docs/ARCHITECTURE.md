@@ -61,9 +61,11 @@ Each node is bound to image digest, configuration digest and generation.
 Transitions are idempotent. Duplicate transitions are accepted as no-ops;
 events from an older generation and backward transitions are ignored and
 counted. Provisioning, bootstrap, authentication, registration, drain and
-replacement have separate timeouts. A failed ready node is drained, replaced
-at its placement, terminated and then sessions are deterministically balanced
-over ready peers.
+replacement have separate timeouts. A failed ready node enters `replacing`, its
+replacement must reach `ready`, and only then are assignments drained within
+per-node capacity before the old node terminates. If no ready peer has enough
+capacity, assignments remain intact, `node_drain_unresolved` is raised and no
+clean drain or termination is claimed.
 
 ## Provider boundary
 
@@ -97,24 +99,31 @@ Scale-in additionally requires utilization below a configured hysteresis
 threshold. No incoming-connection count is accepted as a capacity signal and
 no AI participates in a capacity decision.
 
-Samples require an authenticated upstream decision, nondecreasing bounded
-sequence progression, freshness, nonnegative values and unique bounded replay
-nonces. Active sessions cannot exceed authorized viewers plus live reservations.
-Expired reservations consume no capacity. Any invalid sample produces a
-structured critical alert and preserves current capacity without applying a
-plan. A configurable maximum aggregate demand increase per second rejects
-unreserved bursts; reservations are themselves protected by ID and nonce replay
-windows. Reobserving the same unchanged live reservation is idempotent; changing
-its capacity, authorization, expiry or nonce is rejected as replay/mutation.
+Samples require an opaque verified-auth context supplied by the external PKI
+boundary, nondecreasing bounded sequence progression, freshness, nonnegative
+values and unique bounded replay nonces. The control plane neither parses
+certificates nor verifies signatures. Active sessions cannot exceed authorized
+viewers plus live reservations. Expired reservations consume no capacity. Any
+invalid sample produces a structured critical alert and preserves current
+capacity without applying a plan. A configurable initial unreserved-demand
+maximum protects an empty metrics history, and a configurable maximum aggregate
+demand increase per second rejects later unreserved bursts. Reservations are
+protected by ID and nonce replay records. Reobserving the same unchanged live
+reservation is idempotent; changing its capacity, authorization, expiry or nonce
+is rejected as replay/mutation.
 
 ## Bounded state
 
 - Event and alert history: `controller.event_queue_limit`.
 - Replay nonce history: the same bounded window.
 - Reservations per metrics sample: `scaling.maximum_reservations_per_sample`.
+- Live replay records: `scaling.reservation_registry_limit`. Only expired
+  records are purged; saturation rejects new reservations fail closed.
 - Provider actions per pass: `scaling.maximum_actions_per_reconcile`; larger
   changes converge in deterministic batches.
 - Snapshots: `controller.snapshot_limit`.
 - Session registry: `controller.session_registry_limit`.
+- Session assignments: sum of ready-node `capacity_viewers`; every node is also
+  checked independently before an atomic assignment update.
 - Nodes: tier `maximum_nodes`.
 - No media buffers or payload queues exist in the control plane.

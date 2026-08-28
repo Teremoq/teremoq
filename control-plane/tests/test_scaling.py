@@ -5,7 +5,7 @@ import unittest
 
 from teremoq_control.config import load_config
 from teremoq_control.engine import ControlPlane
-from teremoq_control.model import MetricsSample, Reservation, Tier
+from teremoq_control.model import MetricsSample, Reservation, Tier, VerifiedAuthContext
 
 from support import CONFIG_PATH, raw_config, temporary_config
 
@@ -17,7 +17,7 @@ def sample(
     active: int,
     egress: int,
     reservations: tuple[Reservation, ...] = (),
-    signature_valid: bool = True,
+    authenticated: bool = True,
 ) -> MetricsSample:
     return MetricsSample(
         sample_id=f"sample-{sequence}",
@@ -28,7 +28,11 @@ def sample(
         active_sessions=active,
         egress_mbps=egress,
         reservations=reservations,
-        signature_valid=signature_valid,
+        auth_context=(
+            VerifiedAuthContext(f"verification-{sequence}", "test-principal", now)
+            if authenticated
+            else None
+        ),
     )
 
 
@@ -55,30 +59,33 @@ class ScalingTest(unittest.TestCase):
         replay = self.plane.reconcile(sample(2, 2, 10, 10, 1), now=2)
         self.assertTrue(replay.fail_closed)
         self.assertEqual("replayed_sequence", replay.reason)
-        unsigned = self.plane.reconcile(sample(3, 3, 10, 10, 1, signature_valid=False), now=3)
+        unsigned = self.plane.reconcile(sample(3, 3, 10, 10, 1, authenticated=False), now=3)
         self.assertTrue(unsigned.fail_closed)
 
     def test_invalid_control_sample_does_not_cut_existing_sessions(self) -> None:
         before = self.plane.set_sessions(10, now=1)
-        rejected = self.plane.reconcile(sample(1, 2, 10, 10, 8, signature_valid=False), now=2)
+        rejected = self.plane.reconcile(sample(1, 2, 10, 10, 8, authenticated=False), now=2)
         self.assertTrue(rejected.fail_closed)
         self.assertEqual(before, self.plane.session_distribution())
         self.assertEqual(10, len(self.plane.sessions))
 
     def test_scale_out_requires_stability_then_creates_capacity(self) -> None:
-        first = self.plane.reconcile(sample(1, 1, 100, 100, 80), now=1)
+        baseline = self.plane.reconcile(sample(1, 1, 10, 10, 8), now=1)
+        self.assertEqual("stable", baseline.reason)
+        first = self.plane.reconcile(sample(2, 6, 100, 100, 80), now=6)
         self.assertEqual("scale_out_stability_pending", first.reason)
-        second = self.plane.reconcile(sample(2, 11, 100, 100, 80), now=11)
+        second = self.plane.reconcile(sample(3, 16, 100, 100, 80), now=16)
         self.assertEqual("scaled_out", second.reason)
         self.assertEqual(1, len(second.actions))
         self.assertEqual(2, len(self.plane._ready_nodes(Tier.CORE)))
 
     def test_scale_in_hysteresis_and_independent_cooldown(self) -> None:
-        self.plane.reconcile(sample(1, 1, 100, 100, 80), now=1)
-        self.plane.reconcile(sample(2, 11, 100, 100, 80), now=11)
-        pending = self.plane.reconcile(sample(3, 12, 10, 10, 8), now=12)
+        self.plane.reconcile(sample(1, 1, 10, 10, 8), now=1)
+        self.plane.reconcile(sample(2, 6, 100, 100, 80), now=6)
+        self.plane.reconcile(sample(3, 16, 100, 100, 80), now=16)
+        pending = self.plane.reconcile(sample(4, 17, 10, 10, 8), now=17)
         self.assertEqual("scale_in_stability_pending", pending.reason)
-        scaled = self.plane.reconcile(sample(4, 42, 10, 10, 8), now=42)
+        scaled = self.plane.reconcile(sample(5, 47, 10, 10, 8), now=47)
         self.assertEqual("scaled_in", scaled.reason)
         self.assertEqual(1, len(self.plane._ready_nodes(Tier.CORE)))
 
@@ -142,13 +149,27 @@ class ScalingTest(unittest.TestCase):
         self.assertEqual("demand_rate_exceeded", burst.reason)
         self.assertEqual((), burst.actions)
 
+    def test_fraudulent_first_sample_fails_closed_but_milestone_bootstrap_is_valid(self) -> None:
+        fraudulent = self.plane.reconcile(sample(1, 1, 100, 100, 80), now=1)
+        self.assertTrue(fraudulent.fail_closed)
+        self.assertEqual("initial_demand_exceeded", fraudulent.reason)
+        self.assertEqual((), fraudulent.actions)
+
+        fresh = ControlPlane(self.config)
+        fresh.bootstrap(now=0)
+        valid = fresh.reconcile(sample(1, 1, 10, 10, 8), now=1)
+        self.assertTrue(valid.accepted)
+        self.assertFalse(valid.fail_closed)
+        self.assertEqual("stable", valid.reason)
+
     def test_maximum_nodes_blocks_all_capacity_actions(self) -> None:
         value = raw_config()
         value["tiers"]["core"]["maximum_nodes"] = 1
         with temporary_config(value) as path:
             plane = ControlPlane(load_config(path))
         plane.bootstrap(now=0)
-        blocked = plane.reconcile(sample(1, 1, 100, 100, 80), now=1)
+        plane.reconcile(sample(1, 1, 10, 10, 8), now=1)
+        blocked = plane.reconcile(sample(2, 6, 100, 100, 80), now=6)
         self.assertTrue(blocked.fail_closed)
         self.assertEqual("node_limit_fail_closed", blocked.reason)
         self.assertEqual((), blocked.actions)
@@ -162,11 +183,59 @@ class ScalingTest(unittest.TestCase):
         with temporary_config(value) as path:
             plane = ControlPlane(load_config(path))
         plane.bootstrap(now=0)
-        blocked = plane.reconcile(sample(1, 1, 100, 100, 80), now=1)
+        plane.reconcile(sample(1, 1, 10, 10, 8), now=1)
+        blocked = plane.reconcile(sample(2, 6, 100, 100, 80), now=6)
         self.assertTrue(blocked.fail_closed)
         self.assertEqual("spend_limit_fail_closed", blocked.reason)
         self.assertEqual((), blocked.actions)
         self.assertEqual(1, len(plane._ready_nodes(Tier.CORE)))
+
+    def test_live_reservation_registry_fails_closed_and_recovers_after_expiry(self) -> None:
+        value = raw_config()
+        value["scaling"]["reservation_registry_limit"] = 2
+        with temporary_config(value) as path:
+            plane = ControlPlane(load_config(path))
+        plane.bootstrap(now=0)
+        first = (
+            Reservation("reservation-a", 1, 10, "auth-a", "nonce-a"),
+            Reservation("reservation-b", 1, 10, "auth-b", "nonce-b"),
+        )
+        accepted = plane.reconcile(sample(1, 1, 10, 10, 8, first), now=1)
+        self.assertTrue(accepted.accepted)
+        for sequence in range(2, 8):
+            flooded = plane.reconcile(
+                sample(
+                    sequence,
+                    sequence,
+                    10,
+                    10,
+                    8,
+                    (
+                        Reservation(
+                            f"reservation-flood-{sequence}",
+                            1,
+                            20,
+                            f"auth-flood-{sequence}",
+                            f"nonce-flood-{sequence}",
+                        ),
+                    ),
+                ),
+                now=sequence,
+            )
+            self.assertTrue(flooded.fail_closed)
+            self.assertEqual("reservation_registry_full", flooded.reason)
+            self.assertEqual((), flooded.actions)
+        replay = plane.reconcile(
+            sample(8, 8, 10, 10, 8, (Reservation("reservation-a", 2, 10, "auth-a", "nonce-new"),)),
+            now=8,
+        )
+        self.assertEqual("replayed_reservation_id", replay.reason)
+        recovered = plane.reconcile(
+            sample(9, 11, 10, 10, 8, (Reservation("reservation-c", 1, 20, "auth-c", "nonce-c"),)),
+            now=11,
+        )
+        self.assertTrue(recovered.accepted)
+        self.assertFalse(recovered.fail_closed)
 
 
 if __name__ == "__main__":

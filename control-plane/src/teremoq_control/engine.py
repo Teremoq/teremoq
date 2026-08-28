@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
 from .config import Config
+from .contracts import validate_audit_event, validate_desired_state
 from .model import (
     FORWARD_TRANSITIONS,
     Action,
@@ -76,7 +77,7 @@ class ControlPlane:
         self._seen_nonce_set: set[str] = set()
         self._last_metrics_sequence: dict[str, int] = {}
         self._last_demand: dict[str, tuple[int, int]] = {}
-        self._reservation_order: deque[str] = deque(maxlen=config.controller.event_queue_limit)
+        self._reservation_order: deque[str] = deque()
         self._reservation_records: dict[str, tuple[int, int, str, str]] = {}
         self._reservation_nonce_owner: dict[str, str] = {}
         self._pending_direction: str | None = None
@@ -92,6 +93,7 @@ class ControlPlane:
             "scale_in_total": 0,
             "nodes_replaced_total": 0,
             "sessions_reassigned_total": 0,
+            "drain_unresolved_total": 0,
             "stale_events_ignored_total": 0,
         }
 
@@ -181,10 +183,17 @@ class ControlPlane:
             self._emit(action.placement.region, action.generation, "node_requested", now, action.to_dict())
         for transition in self.provider.apply(creates):
             self.apply_lifecycle_event(transition.node_id, transition.generation, transition.state, now)
+        unresolved_drains: set[str] = set()
         for transition in self.provider.destroy(destroys):
             if transition.state == Lifecycle.DRAINING:
-                self._drain_node(transition.node_id, now)
-            self.apply_lifecycle_event(transition.node_id, transition.generation, transition.state, now)
+                if not self.apply_lifecycle_event(
+                    transition.node_id, transition.generation, transition.state, now
+                ) or not self._drain_node(transition.node_id, now):
+                    unresolved_drains.add(transition.node_id)
+            elif transition.node_id not in unresolved_drains:
+                self.apply_lifecycle_event(
+                    transition.node_id, transition.generation, transition.state, now
+                )
 
     def apply_lifecycle_event(self, node_id: str, generation: int, state: Lifecycle, now: int) -> bool:
         node = self.nodes.get(node_id)
@@ -214,11 +223,8 @@ class ControlPlane:
     def _remember_reservation(self, reservation: Reservation) -> None:
         if reservation.reservation_id in self._reservation_records:
             return
-        if len(self._reservation_order) == self._reservation_order.maxlen and self._reservation_order:
-            removed_id = self._reservation_order.popleft()
-            removed = self._reservation_records.pop(removed_id, None)
-            if removed is not None:
-                self._reservation_nonce_owner.pop(removed[3], None)
+        if len(self._reservation_records) >= self.config.scaling.reservation_registry_limit:
+            raise RuntimeError("reservation registry capacity invariant violated")
         self._reservation_order.append(reservation.reservation_id)
         self._reservation_records[reservation.reservation_id] = (
             reservation.viewers,
@@ -228,11 +234,31 @@ class ControlPlane:
         )
         self._reservation_nonce_owner[reservation.nonce] = reservation.reservation_id
 
+    def _purge_expired_reservations(self, now: int) -> None:
+        retained: deque[str] = deque()
+        for reservation_id in self._reservation_order:
+            record = self._reservation_records.get(reservation_id)
+            if record is None:
+                continue
+            if record[1] <= now:
+                self._reservation_records.pop(reservation_id, None)
+                self._reservation_nonce_owner.pop(record[3], None)
+            else:
+                retained.append(reservation_id)
+        self._reservation_order = retained
+
     def _validate_metrics(self, sample: MetricsSample, now: int) -> tuple[str | None, int]:
         if sample.partition not in self.config.controller.partitions:
             return "unknown_partition", 0
-        if not sample.signature_valid:
-            return "invalid_signature", 0
+        if sample.auth_context is None:
+            return "missing_verified_auth_context", 0
+        if (
+            not sample.auth_context.verification_id
+            or not sample.auth_context.principal_ref
+            or sample.auth_context.verified_at < 0
+            or sample.auth_context.verified_at > sample.observed_at
+        ):
+            return "invalid_verified_auth_context", 0
         if sample.observed_at > now or now - sample.observed_at > self.config.scaling.metrics_max_age_seconds:
             return "stale_or_future_metrics", 0
         if min(sample.sequence, sample.authorized_viewers, sample.active_sessions, sample.egress_mbps) < 0:
@@ -247,11 +273,19 @@ class ControlPlane:
             return "replayed_sample", 0
         if len(sample.reservations) > self.config.scaling.maximum_reservations_per_sample:
             return "reservation_limit_exceeded", 0
+        self._purge_expired_reservations(now)
         reservation_nonces: set[str] = set()
         reservation_ids: set[str] = set()
+        live_reservation_ids: set[str] = set()
         reserved = 0
         for reservation in sample.reservations:
-            if reservation.viewers < 0 or not reservation.authorization_id or not reservation.nonce:
+            if (
+                reservation.viewers < 0
+                or reservation.expires_at < 0
+                or not reservation.reservation_id
+                or not reservation.authorization_id
+                or not reservation.nonce
+            ):
                 return "invalid_reservation", 0
             if reservation.reservation_id in reservation_ids or reservation.nonce in reservation_nonces:
                 return "duplicate_reservation", 0
@@ -271,11 +305,22 @@ class ControlPlane:
             reservation_nonces.add(reservation.nonce)
             if reservation.expires_at > now:
                 reserved += reservation.viewers
+                live_reservation_ids.add(reservation.reservation_id)
+        new_reservation_ids = live_reservation_ids - self._reservation_records.keys()
+        if (
+            len(self._reservation_records) + len(new_reservation_ids)
+            > self.config.scaling.reservation_registry_limit
+        ):
+            return "reservation_registry_full", 0
         if sample.active_sessions > sample.authorized_viewers + reserved:
             return "sessions_exceed_authorized_demand", 0
         aggregate_demand = max(sample.authorized_viewers, sample.active_sessions)
         previous_demand = self._last_demand.get(sample.partition)
-        if previous_demand is not None and aggregate_demand > previous_demand[1]:
+        if previous_demand is None:
+            allowed_initial = self.config.scaling.maximum_initial_unreserved_demand + reserved
+            if aggregate_demand > allowed_initial:
+                return "initial_demand_exceeded", 0
+        elif aggregate_demand > previous_demand[1]:
             elapsed = sample.observed_at - previous_demand[0]
             if elapsed <= 0:
                 return "demand_rate_unmeasurable", 0
@@ -286,7 +331,8 @@ class ControlPlane:
         self._last_demand[sample.partition] = (sample.observed_at, aggregate_demand)
         self._remember_nonce(sample.sample_id)
         for reservation in sorted(sample.reservations, key=lambda item: item.reservation_id):
-            self._remember_reservation(reservation)
+            if reservation.expires_at > now:
+                self._remember_reservation(reservation)
         return None, reserved
 
     def _capacity_signal(self, sample: MetricsSample, reserved: int) -> CapacitySignal:
@@ -399,16 +445,17 @@ class ControlPlane:
         nodes = self._ready_nodes(self.config.scaling.target_tier)
         if count and not nodes:
             raise RuntimeError("no ready distributor capacity")
-        target_ids = {f"viewer-{index:09d}" for index in range(1, count + 1)}
-        for session_id in sorted(set(self.sessions) - target_ids):
-            node_id = self.sessions.pop(session_id)
-            node = self.nodes.get(node_id)
-            if node is not None:
-                node.sessions.discard(session_id)
-        for session_id in sorted(target_ids - set(self.sessions)):
-            node = min(nodes, key=lambda item: (len(item.sessions), item.node_id))
-            node.sessions.add(session_id)
-            self.sessions[session_id] = node.node_id
+        ready_ids = {node.node_id for node in nodes}
+        if any(node_id not in ready_ids for node_id in self.sessions.values()):
+            raise RuntimeError("unresolved session assignments must be drained before reconciliation")
+        total_capacity = sum(node.capacity_viewers for node in nodes)
+        if count > total_capacity:
+            raise ValueError("session count exceeds ready distributor capacity")
+        target_ids = tuple(f"viewer-{index:09d}" for index in range(1, count + 1))
+        assignments, planned = self._plan_assignments(target_ids, nodes)
+        for node in nodes:
+            node.sessions = planned[node.node_id]
+        self.sessions = assignments
         self._emit("global", self.generation, "sessions_reconciled", now, {"active_sessions": count})
         return self.session_distribution()
 
@@ -418,21 +465,75 @@ class ControlPlane:
             for node in self._ready_nodes(self.config.scaling.target_tier)
         }
 
-    def _drain_node(self, node_id: str, now: int) -> None:
+    def _plan_assignments(
+        self, session_ids: tuple[str, ...] | list[str], nodes: list[Node]
+    ) -> tuple[dict[str, str], dict[str, set[str]]]:
+        if len(session_ids) > sum(node.capacity_viewers for node in nodes):
+            raise ValueError("session assignments exceed ready distributor capacity")
+        planned = {node.node_id: set() for node in nodes}
+        assignments: dict[str, str] = {}
+        for session_id in sorted(session_ids):
+            eligible = [
+                node
+                for node in nodes
+                if len(planned[node.node_id]) < node.capacity_viewers
+            ]
+            if not eligible:
+                raise RuntimeError("capacity planning invariant violated")
+            target = min(eligible, key=lambda item: (len(planned[item.node_id]), item.node_id))
+            planned[target.node_id].add(session_id)
+            assignments[session_id] = target.node_id
+        return assignments, planned
+
+    def _drain_node(self, node_id: str, now: int) -> bool:
         node = self.nodes.get(node_id)
         if node is None:
-            return
+            return False
         peers = [candidate for candidate in self._ready_nodes(node.tier) if candidate.node_id != node_id]
+        available = sum(max(0, peer.capacity_viewers - len(peer.sessions)) for peer in peers)
+        if len(node.sessions) > available:
+            self.counters["drain_unresolved_total"] += 1
+            self._alert(
+                "node_drain_unresolved",
+                "critical",
+                node.placement.region,
+                "insufficient_ready_peer_capacity",
+                now,
+            )
+            return False
+        planned_additions = {peer.node_id: set() for peer in peers}
         for session_id in sorted(node.sessions):
-            if not peers:
-                self.sessions.pop(session_id, None)
-                continue
-            target = min(peers, key=lambda item: (len(item.sessions), item.node_id))
-            target.sessions.add(session_id)
-            self.sessions[session_id] = target.node_id
-            self.counters["sessions_reassigned_total"] += 1
+            eligible = [
+                peer
+                for peer in peers
+                if len(peer.sessions) + len(planned_additions[peer.node_id])
+                < peer.capacity_viewers
+            ]
+            if not eligible:
+                raise RuntimeError("drain capacity invariant violated")
+            target = min(
+                eligible,
+                key=lambda item: (
+                    len(item.sessions) + len(planned_additions[item.node_id]),
+                    item.node_id,
+                ),
+            )
+            planned_additions[target.node_id].add(session_id)
+        moved = len(node.sessions)
+        for peer in peers:
+            for session_id in planned_additions[peer.node_id]:
+                peer.sessions.add(session_id)
+                self.sessions[session_id] = peer.node_id
         node.sessions.clear()
-        self._emit(node.placement.region, node.generation, "node_drained", now, {"node_id": node_id})
+        self.counters["sessions_reassigned_total"] += moved
+        self._emit(
+            node.placement.region,
+            node.generation,
+            "node_drained",
+            now,
+            {"node_id": node_id, "sessions_reassigned": moved},
+        )
+        return True
 
     def fail_and_replace(self, node_id: str, now: int) -> tuple[Action, ...]:
         node = self.nodes.get(node_id)
@@ -445,29 +546,17 @@ class ControlPlane:
     def _replace_failed_node(self, node: Node, now: int) -> tuple[Action, ...]:
         if node.state != Lifecycle.FAILED:
             raise ValueError("replacement requires a failed node")
-        self._drain_node(node.node_id, now)
         self.apply_lifecycle_event(node.node_id, node.generation, Lifecycle.REPLACING, now)
         self.generation += 1
         replacement_id = self._next_node_id(node.tier)
         node.replace_node_id = replacement_id
         action = Action("create", replacement_id, self.generation, node.tier, node.placement, "failed_node_replacement")
         self._execute((action,), now)
+        if not self._drain_node(node.node_id, now):
+            return (action,)
         self.apply_lifecycle_event(node.node_id, node.generation, Lifecycle.TERMINATED, now)
         self.counters["nodes_replaced_total"] += 1
-        self._rebalance(now)
         return (action,)
-
-    def _rebalance(self, now: int) -> None:
-        session_ids = sorted(self.sessions)
-        for node in self.nodes.values():
-            node.sessions.clear()
-        self.sessions.clear()
-        nodes = self._ready_nodes(self.config.scaling.target_tier)
-        for session_id in session_ids:
-            target = min(nodes, key=lambda item: (len(item.sessions), item.node_id))
-            target.sessions.add(session_id)
-            self.sessions[session_id] = target.node_id
-        self._emit("global", self.generation, "sessions_rebalanced", now, {"active_sessions": len(session_ids)})
 
     def enforce_timeouts(self, now: int) -> tuple[str, ...]:
         failed: list[str] = []
@@ -483,15 +572,26 @@ class ControlPlane:
             timeout = self.config.lifecycle.timeouts.get(node.state.value)
             if timeout is not None and now - node.state_entered_at > timeout:
                 timed_out_state = node.state
-                target_state = Lifecycle.TERMINATED if node.state == Lifecycle.REPLACING else Lifecycle.FAILED
+                if timed_out_state in {Lifecycle.DRAINING, Lifecycle.REPLACING} and node.sessions:
+                    failed.append(node.node_id)
+                    self._alert(
+                        "lifecycle_timeout",
+                        "critical",
+                        node.placement.region,
+                        f"{timed_out_state.value}_sessions_unresolved",
+                        now,
+                    )
+                    node.state_entered_at = now
+                    continue
+                target_state = Lifecycle.TERMINATED if timed_out_state in {
+                    Lifecycle.DRAINING,
+                    Lifecycle.REPLACING,
+                } else Lifecycle.FAILED
                 if self.apply_lifecycle_event(node.node_id, node.generation, target_state, now):
                     failed.append(node.node_id)
                     self._alert("lifecycle_timeout", "critical", node.placement.region, timed_out_state.value, now)
                     if target_state == Lifecycle.FAILED:
-                        if timed_out_state == Lifecycle.DRAINING:
-                            self.apply_lifecycle_event(node.node_id, node.generation, Lifecycle.TERMINATED, now)
-                        else:
-                            self._replace_failed_node(node, now)
+                        self._replace_failed_node(node, now)
         return tuple(failed)
 
     def snapshot(self, name: str, now: int) -> dict[str, Any]:
@@ -618,6 +718,20 @@ class ControlPlane:
             "counters": dict(sorted(self.counters.items())),
         }
 
+    def desired_state(self, partition: str) -> dict[str, Any]:
+        if partition not in self.config.controller.partitions:
+            raise ValueError("unknown desired-state partition")
+        value = {
+            "schema_version": 1,
+            "partition": partition,
+            "generation": self.generation,
+            "image_digest": self.config.image_digest,
+            "config_digest": self.config.config_digest,
+            "desired_nodes": {tier.value: self.desired[tier] for tier in Tier},
+        }
+        validate_desired_state(value)
+        return value
+
     def events_since(self, sequence: int) -> tuple[Event, ...]:
         if self._events and sequence < self._events[0].sequence - 1:
             raise ValueError("replication cursor expired; restore a snapshot")
@@ -625,17 +739,17 @@ class ControlPlane:
 
     def _emit(self, partition: str, generation: int, event_type: str, now: int, payload: dict[str, Any]) -> None:
         self._event_sequence += 1
-        self._events.append(
-            Event(
-                event_id=f"{self.instance_id}-{self._event_sequence:012d}",
-                partition=partition,
-                sequence=self._event_sequence,
-                generation=generation,
-                event_type=event_type,
-                observed_at=now,
-                payload=payload,
-            )
+        event = Event(
+            event_id=f"{self.instance_id}-{self._event_sequence:012d}",
+            partition=partition,
+            sequence=self._event_sequence,
+            generation=generation,
+            event_type=event_type,
+            observed_at=now,
+            payload=payload,
         )
+        validate_audit_event(event.to_dict())
+        self._events.append(event)
 
     def _alert(self, code: str, severity: str, partition: str, reason: str, now: int) -> Alert:
         alert = Alert(code, severity, partition, reason, now)

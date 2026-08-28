@@ -87,6 +87,21 @@ class Reservation:
     authorization_id: str
     nonce: str
 
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedAuthContext:
+    """Opaque reference created only by the external authentication boundary."""
+
+    verification_id: str
+    principal_ref: str
+    verified_at: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass(frozen=True, slots=True)
 class MetricsSample:
@@ -98,7 +113,23 @@ class MetricsSample:
     active_sessions: int
     egress_mbps: int
     reservations: tuple[Reservation, ...] = ()
-    signature_valid: bool = True
+    auth_context: VerifiedAuthContext | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        if self.auth_context is None:
+            raise ValueError("verified external auth context is required for serialization")
+        return {
+            "schema_version": 1,
+            "sample_id": self.sample_id,
+            "partition": self.partition,
+            "sequence": self.sequence,
+            "observed_at": self.observed_at,
+            "authorized_viewers": self.authorized_viewers,
+            "active_sessions": self.active_sessions,
+            "egress_mbps": self.egress_mbps,
+            "reservations": [reservation.to_dict() for reservation in self.reservations],
+            "auth_context": self.auth_context.to_dict(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,4 +184,4 @@ class Event:
     payload: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {"schema_version": 1, **asdict(self)}

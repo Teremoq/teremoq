@@ -15,6 +15,9 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual("pass", report["result"])
         self.assertEqual([10, 25, 50, 100], [item["viewers"] for item in report["scenarios"]])
         self.assertEqual(2, report["gate"]["distributor_nodes"])
+        final_distribution = report["scenarios"][-1]["session_distribution"]
+        self.assertEqual(100, sum(final_distribution.values()))
+        self.assertLessEqual(max(final_distribution.values()), 60)
         self.assertEqual(100, report["failure_recovery"]["sessions_recovered"])
         self.assertEqual(1, len(report["failure_recovery"]["replacement_actions"]))
         self.assertEqual(0, report["cleanup"]["active_sessions"])

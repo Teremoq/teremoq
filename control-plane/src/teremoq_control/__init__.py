@@ -3,7 +3,7 @@
 
 from .config import ConfigError, load_config
 from .engine import ControlPlane, ReconcileResult
-from .model import Lifecycle, MetricsSample, Reservation, Tier
+from .model import Lifecycle, MetricsSample, Reservation, Tier, VerifiedAuthContext
 
 __all__ = [
     "ConfigError",
@@ -13,5 +13,6 @@ __all__ = [
     "ReconcileResult",
     "Reservation",
     "Tier",
+    "VerifiedAuthContext",
     "load_config",
 ]

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teremoq.invalid/control-plane/audit-event.schema.json",
+  "title": "Teremoq bounded control-plane audit event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "partition", "sequence", "generation", "event_type", "observed_at", "payload"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "partition": {"type": "string", "minLength": 1, "maxLength": 128},
+    "sequence": {"type": "integer", "minimum": 1},
+    "generation": {"type": "integer"},
+    "event_type": {"type": "string", "minLength": 1, "maxLength": 128},
+    "observed_at": {"type": "integer", "minimum": 0},
+    "payload": {"type": "object", "maxProperties": 32}
+  }
+}

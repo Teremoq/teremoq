@@ -14,7 +14,7 @@ from typing import Any
 
 from .config import Config, ConfigError, load_config
 from .engine import ControlPlane, canonical_digest
-from .model import MetricsSample, Tier
+from .model import MetricsSample, Tier, VerifiedAuthContext
 
 
 def _sample(viewers: int, sequence: int, now: int, partition: str, config: Config) -> MetricsSample:
@@ -27,6 +27,11 @@ def _sample(viewers: int, sequence: int, now: int, partition: str, config: Confi
         active_sessions=viewers,
         egress_mbps=math.ceil(
             viewers * config.cost.workload_mbps_per_viewer * (1.0 + config.cost.protocol_overhead_ratio)
+        ),
+        auth_context=VerifiedAuthContext(
+            verification_id=f"local-verification-{sequence:04d}",
+            principal_ref="local-milestone-principal",
+            verified_at=now,
         ),
     )
 
@@ -151,6 +156,8 @@ def run_demo(config: Config) -> dict[str, Any]:
         "limitations": [
             "The simulator does not create remote resources or forward video.",
             "The local milestone runs one controller; leases and replicated storage are integration contracts.",
+            "The opaque local auth context is test input, not a PKI or signature verification result.",
+            "Unresolved drain preserves assignments; no forced session-termination policy is enabled.",
             "External provider cost estimates remain unavailable until dated tariffs are supplied.",
             "The 100-viewer result is simulated control-state evidence, not real media capacity evidence.",
         ],

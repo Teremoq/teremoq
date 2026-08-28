@@ -86,7 +86,9 @@ class ScalingConfig:
     metrics_max_age_seconds: int
     maximum_sequence_gap: int
     maximum_demand_increase_per_second: float
+    maximum_initial_unreserved_demand: int
     maximum_reservations_per_sample: int
+    reservation_registry_limit: int
     maximum_actions_per_reconcile: int
     drain_timeout_seconds: int
 
@@ -290,7 +292,9 @@ def load_config(path: str | Path) -> Config:
         "metrics_max_age_seconds",
         "maximum_sequence_gap",
         "maximum_demand_increase_per_second",
+        "maximum_initial_unreserved_demand",
         "maximum_reservations_per_sample",
+        "reservation_registry_limit",
         "maximum_actions_per_reconcile",
         "drain_timeout_seconds",
     }
@@ -319,11 +323,23 @@ def load_config(path: str | Path) -> Config:
             float(MAX_SAFE_JSON_INTEGER),
             "scaling.maximum_demand_increase_per_second",
         ),
+        maximum_initial_unreserved_demand=_integer(
+            scaling["maximum_initial_unreserved_demand"],
+            0,
+            MAX_SAFE_JSON_INTEGER,
+            "scaling.maximum_initial_unreserved_demand",
+        ),
         maximum_reservations_per_sample=_integer(
             scaling["maximum_reservations_per_sample"],
             0,
             MAX_CONFIG_COLLECTION_LIMIT,
             "scaling.maximum_reservations_per_sample",
+        ),
+        reservation_registry_limit=_integer(
+            scaling["reservation_registry_limit"],
+            1,
+            MAX_CONFIG_COLLECTION_LIMIT,
+            "scaling.reservation_registry_limit",
         ),
         maximum_actions_per_reconcile=_integer(
             scaling["maximum_actions_per_reconcile"],

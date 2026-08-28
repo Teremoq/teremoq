@@ -9,8 +9,10 @@ The implementation uses Python's standard library only. Every queue and state
 registry is configured and bounded. Capacity is calculated from authorized
 viewers, active sessions, valid unexpired reservations and egress together. An
 invalid, stale, replayed or unauthenticated sample fails closed and cannot
-create or delete capacity. Configurable rate-of-change, maximum-node and dated
-cost limits also fail closed without partial provider actions.
+create or delete capacity. Authentication is represented only by an opaque
+`VerifiedAuthContext` created by the external PKI boundary; this code performs
+no cryptography. Configurable initial-demand, rate-of-change, maximum-node and
+dated-cost limits also fail closed without partial provider actions.
 
 ## Quick verification
 
@@ -44,8 +46,9 @@ scenarios are the only load scenarios executed by the gate.
   values are data, not global program constants.
 - `src/teremoq_control/`: strict loader, domain model, provider interface,
   regional reconciler, snapshots, cost model and CLI.
-- `contracts/`: JSON Schema state/event contracts. They define payloads, not a
-  new transport protocol.
+- `contracts/`: JSON Schema state/event contracts matched to real serializers
+  and checked by stdlib validators. They define payloads, not a new transport
+  protocol.
 - `tests/`: unit and fast local E2E coverage.
 - `docs/`: architecture, external integration requirements and operations.
 - `reports/`: generated measured evidence and SHA-256 manifest.

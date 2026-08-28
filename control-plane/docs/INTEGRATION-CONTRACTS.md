@@ -23,7 +23,10 @@ The Gateway must retain last-known routing/configuration locally so existing
 sessions continue when controllers are unavailable. It must never synchronously
 query the control plane for an Object, Group, Track or per-packet decision.
 
-The schemas in `contracts/` describe state payloads only. Integration must use
+The schemas in `contracts/` describe state payloads only. `audit-event` matches
+`Event.to_dict()`, `metrics-sample` matches `MetricsSample.to_dict()` and
+`desired-state` matches `ControlPlane.desired_state()`. Stdlib validators reject
+unknown/missing fields and structural divergence. Integration must use
 an existing authenticated transport and serialization selected by ADR (for
 example an existing HTTPS/gRPC or durable event-store interface); it must not
 invent a Teremoq wire protocol. Payload size, request rate, authentication,
@@ -31,11 +34,14 @@ authorization and cardinality limits remain mandatory.
 
 ## Security/PKI review gate
 
-`signature_valid` in the local model is test input, not cryptography. Before
-integration, `TP-SEC-PKI` must define how the authenticated node/principal is
-bound to the sample and reservation before reconciliation. Raw certificates,
-keys, tokens and customer namespaces must never enter events, metrics, reports
-or this repository. Authentication failure must map to a stable rejection code.
+`VerifiedAuthContext` is only an opaque reference containing verification ID,
+principal reference and verification time. Its presence means an external,
+reviewed PKI adapter already verified the sample; the control plane does not
+verify signatures or parse trust material. Before integration, `TP-SEC-PKI`
+must define how that context is created and bound to the sample and reservation.
+Raw certificates, keys, tokens, signatures and customer namespaces must never
+enter events, metrics, reports or this repository. Missing/invalid context maps
+to stable fail-closed rejection codes.
 
 ADR-0005 still blocks authenticated SPIFFE-to-namespace authorization in the
 pinned relay. This task does not weaken that boundary or infer identity from IP,
@@ -69,6 +75,16 @@ tariffs produce `external_provider_estimate=null`, never an invented value.
 
 No real provider adapter, API request, credential, billing action or remote
 resource is included in this foundation.
+
+## Session capacity and unresolved drain
+
+An assignment update is rejected before mutation unless the ready distributors
+have enough aggregate and per-node viewer capacity. A drain plans all moves
+before changing any assignment. Insufficient peer capacity leaves the original
+assignments on the draining/replacing node and emits `node_drain_unresolved`;
+it never emits `node_drained`. Timeout repeats the explicit unresolved alert and
+preserves assignments. A future data-plane policy may authorize forced session
+termination, but that policy is not invented or enabled by Task 09.
 
 ## Compose/infrastructure follow-up
 

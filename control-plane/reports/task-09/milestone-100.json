@@ -1,6 +1,6 @@
 {
   "alerts": [],
-  "audit_digest": "sha256:e8f04fbb4593339fbdc38ee65c0b85cd528a4ba2dd2f32f2666cdb2e96f865b7",
+  "audit_digest": "sha256:cfc74e9c6a26d15fe8db8f1e3a94a0d0e47d59e967a2c1ae9feae8672d037772",
   "bootstrap_actions": [
     {
       "generation": 1,
@@ -132,7 +132,7 @@
     "viewers": 100
   },
   "inputs": {
-    "config_digest": "sha256:ae6d9e003b9a03d25c2928f8c99a9578234fc15f7f8af6a06a704b5fa6dfb8c5",
+    "config_digest": "sha256:533176b1adee2016df050ba7d74a68add407c91e8e19d149b0e4c7591a963a7d",
     "controller_replicas": 1,
     "image_digest_identifier": "sha256:07265afea47294d8bac3e450fb16c8c06403e9e4b86575d5816210f76ed8dd0b",
     "partitions": [
@@ -143,6 +143,8 @@
   "limitations": [
     "The simulator does not create remote resources or forward video.",
     "The local milestone runs one controller; leases and replicated storage are integration contracts.",
+    "The opaque local auth context is test input, not a PKI or signature verification result.",
+    "Unresolved drain preserves assignments; no forced session-termination policy is enabled.",
     "External provider cost estimates remain unavailable until dated tariffs are supplied.",
     "The 100-viewer result is simulated control-state evidence, not real media capacity evidence."
   ],
@@ -150,6 +152,7 @@
     "active_sessions": 100,
     "controllers_configured": 1,
     "counters": {
+      "drain_unresolved_total": 0,
       "metrics_accepted_total": 5,
       "metrics_rejected_total": 0,
       "nodes_replaced_total": 1,
@@ -165,7 +168,7 @@
       "viewer-edge": 0
     },
     "event_queue_capacity": 4096,
-    "event_queue_depth": 36,
+    "event_queue_depth": 35,
     "generation": 4,
     "instance_id": "control-1",
     "lifecycle_nodes": {
@@ -183,10 +186,10 @@
     "schema_version": 1,
     "service": "teremoq-control-plane"
   },
-  "report_content_digest": "sha256:7d24b9f4c336358d662c48f586b767d95b2e8540954859959b68bf4289a0acf5",
+  "report_content_digest": "sha256:4cd2cd5d463fbd24816e1d76b2b924aa05138deb3aa154cc83f06baad19b0ad0",
   "result": "pass",
   "runtime": {
-    "elapsed_ns_measured": 4671154,
+    "elapsed_ns_measured": 7514527,
     "logical_time_seconds": 54,
     "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
     "python": "3.14.4"
@@ -325,8 +328,8 @@
   "schema_version": 1,
   "scope": "local deterministic control-plane simulation; no real video or provider capacity",
   "snapshot_rollback": {
-    "initial_digest": "sha256:2587f1d636cf67f367ee16624825ff597a26852bb6eeece29b01a9e33fe3e639",
-    "recovered_digest": "sha256:83bde0228112d5bd9b4396b75e4838cd8c6cf8e18751a0eb86d20f972e46baa6",
+    "initial_digest": "sha256:0625f59661b6bc4f9b1823a2145134a914a22c197fc842e9f3e5b74806524e67",
+    "recovered_digest": "sha256:455c24841bcd77bb25c1bbd706dd20c93ebcdb9002daa602ee76973a3e270aba",
     "rollback_generation": 4
   }
 }
