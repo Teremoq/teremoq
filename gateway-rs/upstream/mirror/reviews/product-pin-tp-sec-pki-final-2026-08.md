@@ -258,3 +258,164 @@ parser URI propio viola una decisión de seguridad vinculante y faltan las prueb
 de composición/adversariales obligatorias. F-01..F-04 deben cerrarse en un nuevo
 snapshot owner y someterse a rerevisión TP-SEC-PKI. Este veredicto no autoriza
 publicación.
+
+---
+
+## Rereview F-01..F-04
+
+Fecha de rerevisión: 2026-08-28
+
+Modo: **REREVISIÓN FINAL INDEPENDIENTE READ-ONLY / SIN IMPLEMENTACIÓN / SIN
+PUSH / SIN PUBLICACIÓN**
+
+Esta sección es histórica y aditiva: conserva íntegramente el rechazo anterior y
+evalúa sólo los commits correctivos `42c5e74b1a3bce0f1093cf0e28671894c6ea0297`
+y `8d1936f78182c4d2f6c497a7113bd4d428fa5a25` sobre el parent revisado
+`0976b52578aebd5c0e9226dcdb7545d6bfdff04c`.
+
+### Hallazgos de la rerevisión
+
+#### MEDIUM — RR-F03-01: se perdió la regresión de dos URI SAN idénticas
+
+`gateway-rs/src/security/federated_identity.rs:432-464` contiene ahora el caso de
+dos URI distintas, pero el hunk correctivo sustituyó el caso anterior de dos URI
+idénticas en vez de conservar ambos. La evidencia exacta es:
+
+- parent `0976b525...`, líneas históricas `378-383`: dos entradas
+  `uri(GATEWAY_URI)` y rechazo `AmbiguousUriIdentity`;
+- HEAD `8d1936f...`, `gateway-rs/src/security/federated_identity.rs:449-453`:
+  `gateway-dev-1` más `gateway-dev-2`, con el mismo rechazo;
+- no existe otro test que construya una única extensión SAN con dos
+  `GeneralName::URI` idénticos. El test de
+  `gateway-rs/src/security/federated_identity.rs:477-487` construye dos
+  **extensiones** SAN, no dos URI idénticas dentro de una SAN.
+
+La implementación observada sigue siendo fail-closed: el segundo URI, idéntico o
+distinto, entra en `uri.replace(...)` y retorna `AmbiguousUriIdentity` en
+`gateway-rs/src/security/federated_identity.rs:208-215`. Por tanto, no se ha
+demostrado un bypass productivo; el hallazgo es una regresión de cobertura en una
+matriz adversarial vinculante. F-03 no puede declararse cerrado mientras esa rama
+no quede fijada por una prueba independiente.
+
+Cambio comprobable para `TP-RUST-DIST`: conservar el caso actual de dos URI
+distintas y añadir otro certificado con
+`vec![uri(GATEWAY_URI)?, uri(GATEWAY_URI)?]`, exigiendo exactamente
+`FederatedIdentityError::AmbiguousUriIdentity`. Debe ejecutarse junto con todos
+los tests focales de identidad y composición sin modificar producción,
+manifests ni lock.
+
+No se encontraron hallazgos nuevos en el código productivo de F-01, F-02 o F-04.
+
+### Cierre individual F-01..F-04
+
+| Finding histórico | Estado | Evidencia independiente |
+|---|---|---|
+| F-01 — parser URI propio | **CLOSED** | `gateway-rs/src/security/federated_identity.rs:238-293` usa `url::Url` ya fijado, rechaza `%` y no ASCII antes de parsear, exige scheme/host exactos, ausencia de userinfo/password/port/query/fragment, dos segmentos, allowlist de `node-id` y comparación final byte a byte contra la reconstrucción canónica. Mayúsculas, trailing dot, IDNA, Unicode, percent-encoding, userinfo, port, query, fragment, backslash, CR/LF/NUL y segmentos extra quedan rechazados. |
+| F-02 — composición E2E incompleta | **CLOSED** | `gateway-rs/tests/moq_derivative_contracts.rs:246-417` recorre raw QUIC y WebTransport con identidad válida, denegadas y concurrencia. `:561-658` envía `PUBLISH` y `PUBLISH_NAMESPACE` reales; `:592-610` espera respuestas y efectos independientes. `:419-499` envía negativos reales para namespace ajeno, Subscribe, SubscribeNamespace y TrackStatus; DiscoverNamespace/RelayPeer son inaccesibles después del default-deny de identidad/operación y se validan directamente contra la misma policy, mientras que el derivado fijado conserva los gates de colocación previamente revisados. `:509-559` prueba certificado TLS válido de la misma CA sin URI, gateway no allowlisted y rol relay, antes de scope/efecto. `:670-787` exige N+1 público `0x3` y razón fija sin segunda autenticación ni mutación. |
+| F-03 — matriz adversarial/lifecycle/redacción | **OPEN** | Se añadieron límites exactos/+1, DER completo, extensiones SAN duplicadas, `GeneralName::Invalid`, SAN por rol, URI sólo en intermediate, gramática canónica, lifecycle, concurrencia y canarios (`federated_identity.rs:391-662`; `moq_derivative_contracts.rs:121-145,246-417,561-658`). No obstante, RR-F03-01 deja sin regresión el caso obligatorio de dos URI idénticas en una SAN. |
+| F-04 — `web-transport` sin inventario | **CLOSED** | `gateway-rs/DEPENDENCIES.md:31-35` registra versión exacta `0.10.9`, repositorio oficial, licencia `MIT OR Apache-2.0`, propósito test-only, owner y política de actualización. Cargo metadata confirma que el edge sigue siendo sólo `dev`. |
+
+### Auditoría de la frontera de seguridad
+
+- Los límites de 8 certificados, 16 KiB de leaf y 64 KiB totales se aplican en
+  `gateway-rs/src/security/federated_identity.rs:175-195`, antes de
+  `X509Certificate::from_der` en `:197-202`; el total usa `checked_add` y el DER
+  debe consumirse completo.
+- Sólo se parsea el leaf de `VerifiedPeerEvidence` tomado prestado. El principal
+  resultante retiene únicamente rol y `node_id` (`:53-56,289-292`); no retiene
+  DER, PEM, subject, SAN, serial ni fingerprint. `Debug`, `Display` y los errores
+  son redactados y de cardinalidad fija (`:84-145`).
+- La policy autentica sólo `gateway-dev-1`, autoriza exclusivamente `Publish` y
+  `PublishNamespace` sobre `teremoq/live`, y mantiene relay y el wildcard de
+  operaciones en default-deny (`federated_identity.rs:164-173` y
+  `moq_derivative_contracts.rs:940-1005`). Un certificado válido no obtiene
+  acceso por sí solo.
+- Los certificados nuevos de test se firman por el mismo intermediate sintético,
+  usan `ClientAuth` para atravesar rustls y diferenciar authn de authz, y se
+  escriben sólo en un directorio efímero con claves `0600`
+  (`gateway-rs/tests/support/pki.rs:40-122,137-220,304-350`). TLS se restringe a
+  1.3 con el provider ring explícito (`:227-250`). No son secretos operativos.
+- La captura required comprueba trazas redactadas y directorios mlog/qlog vacíos;
+  los tests usan deadlines/semaforización, no sleeps. Las pruebas concurrentes
+  ejercen dos conexiones simultáneas y verifican que sólo el principal permitido
+  alcanza scope (`moq_derivative_contracts.rs:269-351`).
+- El delta total está limitado a cuatro rutas. `gateway-rs/Cargo.toml` y
+  `gateway-rs/Cargo.lock` conservan exactamente los mismos blobs Git que el
+  parent. No cambia protocolo, wire, draft, ALPN, rustls/provider, TTL,
+  manifests, lock ni el derivado.
+
+### Snapshot congelado y procedencia
+
+#### Producto revisado
+
+- Worktree: `/home/jimbomilk/teremoq-product-pin-owner-work`.
+- Branch local: `codex/product-pin-auth-cache-local`, sin tracking.
+- HEAD: `8d1936f78182c4d2f6c497a7113bd4d428fa5a25`.
+- Tree: `72373e3441ca0cccc1f356177cd950fded8e1be5`.
+- Parent revisado: `0976b52578aebd5c0e9226dcdb7545d6bfdff04c`.
+- Commits correctivos: `42c5e74b1a3bce0f1093cf0e28671894c6ea0297`
+  y `8d1936f78182c4d2f6c497a7113bd4d428fa5a25`; ambos tienen DCO exacto
+  `Jose María <12586102+jimbomilk@users.noreply.github.com>`.
+- Status SHA-256 vacío:
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+  stage/unstaged vacíos.
+- Pathset exacto de cuatro rutas SHA-256:
+  `95e9e8b924d9a9850144618e14d2ed277e6955ab5d6df101daf3eeab71e81df0`.
+
+| Ruta cambiada | SHA-256 en HEAD |
+|---|---|
+| `gateway-rs/DEPENDENCIES.md` | `f8908e80a581fdcfedde0402daca84ba0abf7cce51d1cfae0fea69f6f78322c9` |
+| `gateway-rs/src/security/federated_identity.rs` | `6aa3828c369ef06a85071cd7111e453e8e9b405f572496403295cfe33f48e9bd` |
+| `gateway-rs/tests/moq_derivative_contracts.rs` | `47c57ff35b1a4e20e91a713c994b3462fa34335ca0ee5f1edad37a4ad5c52cc4` |
+| `gateway-rs/tests/support/pki.rs` | `4daf0518ce73358fb663facc43b0bebcaa15273a8db495c06451542e5d158bc2` |
+
+Los blobs de `gateway-rs/Cargo.toml`
+(`b157c042e5a5157e48daa077f81e54aea375170a`) y `gateway-rs/Cargo.lock`
+(`45fe6539dbbba99bee15c3deffa60a89ce1ba7d0`) son idénticos en
+`0976b525...` y `8d1936f...`.
+
+#### Derivado reproducible
+
+- Worktree: `/home/jimbomilk/moq-rs-teremoq-cache-work`.
+- HEAD: `4b50958c121edfa2d6778c0586b30a78ee3e6f83`.
+- Tree: `c0668647d8d2d6836320bc9662fe8ae717192795`.
+- Branch `codex/required-cache-ttl-89cb179`, sin tracking; status/stage vacíos.
+- Se montó read-only únicamente para que Cargo resolviera localmente los tres
+  crates MoQ mediante `--config patch...path`; no se editó ni publicó.
+
+### Comandos y resultados de la rerevisión
+
+| Gate read-only/offline | Resultado |
+|---|---|
+| lectura completa de `.cursorrules`, ADR-0004/0005/0006/0007, policy PKI y dictamen histórico; `sha256sum` | PASS; hashes conservados: `.cursorrules` `88d7c6...`, ADRs `6bbf8b...`, `8b4b9b...`, `ca08d1...`, `0085bd...`, policy `d4005d...`, informe previo `a72120...` |
+| `git rev-parse`, parent/tree, branch, tracking, `git status --porcelain=v1 -z`, pathset y hashes | PASS; snapshot exacto, limpio y estable |
+| `git show`, `git diff` completo, `git diff --check` y `git diff-tree --check` para ambos commits | PASS; cuatro rutas, DCO válido, sin whitespace errors |
+| Rust/rustfmt 1.93.0 en `teremoq-local-rust193-components:c2-review-20260828@sha256:f522c28d5beb21591f46e8c165030f70b32dd5b51107577ad196910e7147a007`; `cargo fmt --all -- --check` con source read-only y red deshabilitada | PASS |
+| Cargo 1.93.0 en `teremoq-step7-lab:rust-1.93-full@sha256:ba076cf0a26aa41efdd2f0f80687ef97009d1526680751456c19cc944dff1d0b`; `cargo metadata --offline --locked --no-deps` con los tres patches locales read-only | PASS; `url = 2.5.8`, `x509-parser = 0.18.1` sin defaults, `web-transport = 0.10.9` dev-only y pins MoQ exactos |
+| `cargo test --offline --locked --lib security::federated_identity::tests` con el mismo snapshot/patch local | `BLOCKED_OFFLINE_CACHE`: resolución aborta antes de compilar porque la caché preservada no contiene `sha2 0.10.9`; no hubo descarga, instalación ni reconstrucción repetida |
+| Gitleaks 8.30.1, imagen fijada `zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f`, `--network none --no-git --redact` | PASS; 1.13 MB inspeccionados, cero leaks |
+| revalidación final de producto y derivado | PASS; HEAD/tree/branch/status/stage/tracking permanecen idénticos |
+
+La imposibilidad de ejecutar el binario de tests de forma independiente queda
+declarada, no ocultada ni sustituida por el informe del owner. RR-F03-01 se
+demuestra directamente por el diff y decide el gate aun sin esa compilación.
+
+### Limitaciones residuales
+
+- `4b50958c121edfa2d6778c0586b30a78ee3e6f83` continúa sin publicar: el pin Git
+  no es consumible por un builder limpio. Esta revisión no autoriza publicarlo.
+- El batch criptográfico T continúa fuera de alcance y no autorizado.
+- Esta policy es inicial/de desarrollo; no implica readiness comercial o
+  productiva, revocación efectiva, HSM/KMS ni aprobación jurídica.
+- No se modificaron producto, derivado, manifests, lock, protocolo, refs ni
+  remotos. No hubo red, fetch, push, PR, issue, release, credenciales ni
+  publicación.
+
+### Veredicto de la rerevisión
+
+**CHANGES REQUIRED**
+
+F-01, F-02 y F-04 quedan cerrados. F-03 permanece abierto exclusivamente por
+RR-F03-01. El siguiente snapshot debe añadir el test de dos URI idénticas sin
+eliminar el de dos URI distintas y volver a ejecutar los gates focales. Este
+dictamen no autoriza integración local, publicación ni push.
