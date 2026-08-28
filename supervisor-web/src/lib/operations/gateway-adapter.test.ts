@@ -102,14 +102,31 @@ describe("adaptador de operaciones del Gateway", () => {
     expect(freshnessFromAge(10_001)).toBe("stale");
   });
 
-  it("rechaza un payload que supera el máximo antes de interpretarlo", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("x".repeat(512 * 1024 + 1), { status: 200 })),
-    );
+  it("cancela una respuesta chunked del Gateway exactamente en límite + 1", async () => {
+    const limit = 512 * 1024;
+    let produced = 0;
+    let canceled = false;
+    const body = new ReadableStream({
+      type: "bytes",
+      pull(controller) {
+        const request = controller.byobRequest;
+        if (request === null) throw new Error("BYOB required");
+        const view = request.view;
+        if (view === null) throw new Error("BYOB view required");
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength).fill(0x78);
+        produced += view.byteLength;
+        request.respond(view.byteLength);
+      },
+      cancel() {
+        canceled = true;
+      },
+    } as UnderlyingByteSource) as ReadableStream<Uint8Array>;
+    vi.stubGlobal("fetch", vi.fn(async () => ({ status: 200, ok: true, headers: new Headers(), body }) as Response));
 
     await expect(loadOperationsGatewaySnapshot(new AbortController().signal)).rejects.toThrow(
       "payload-excessive",
     );
+    expect(produced).toBe(limit + 1);
+    expect(canceled).toBe(true);
   });
 });

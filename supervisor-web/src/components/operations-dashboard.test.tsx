@@ -135,4 +135,21 @@ describe("dashboard de operaciones", () => {
       else process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION = previous;
     }
   });
+
+  it("sirve sólo la proyección redactada del artefacto Task 09 aceptado con opt-in", async () => {
+    const previous = process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION;
+    process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION = "task-09";
+    try {
+      const response = await getControlPlaneProjection();
+      expect(response.status).toBe(200);
+      const projection = JSON.stringify(await response.json());
+      expect(projection).toContain("Task 09 · simulación local");
+      for (const forbidden of ["sha256:", "milestone-local-core", "idempotency_key", "principal_ref"]) {
+        expect(projection).not.toContain(forbidden);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION;
+      else process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION = previous;
+    }
+  });
 });

@@ -1,11 +1,13 @@
-import { readFile, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
+import { readUtf8FileLimited } from "../../../../lib/operations/bounded-file";
 import { parseTask09Report } from "../../../../lib/operations/control-plane-adapter";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const MAX_FIXTURE_BYTES = 2 * 1024 * 1024;
+const TASK_09_RAW_SHA256 = "99ccc74f6e8ceeeaaf86b18aa16a9610b7f6185feec8037a94e41b8c4bf1a77f";
 const TASK_09_REPORT = path.resolve(
   process.cwd(),
   "../control-plane/reports/task-09/milestone-100.json",
@@ -16,13 +18,12 @@ export async function GET() {
     return safeJson({ status: "not-configured" }, 503);
   }
   try {
-    const metadata = await stat(TASK_09_REPORT);
-    if (!metadata.isFile() || metadata.size > MAX_FIXTURE_BYTES) {
+    const fixture = await readUtf8FileLimited(TASK_09_REPORT, MAX_FIXTURE_BYTES);
+    if (createHash("sha256").update(fixture.text, "utf8").digest("hex") !== TASK_09_RAW_SHA256) {
       return safeJson({ status: "data-rejected" }, 422);
     }
-    const body = await readFile(TASK_09_REPORT, "utf8");
-    const report: unknown = JSON.parse(body);
-    const projection = parseTask09Report(report, metadata.mtime);
+    const report: unknown = JSON.parse(fixture.text);
+    const projection = parseTask09Report(report, fixture.modifiedAt);
     return safeJson(projection, 200);
   } catch {
     return safeJson({ status: "data-rejected" }, 422);

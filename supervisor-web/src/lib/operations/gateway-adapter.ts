@@ -1,4 +1,5 @@
 import type { GatewayOperationsSnapshot } from "./types";
+import { readResponseTextLimited } from "./bounded-response";
 import {
   OperationsDataError,
   array,
@@ -33,15 +34,11 @@ const ROOT_KEYS = [
 
 export async function loadOperationsGatewaySnapshot(signal: AbortSignal, receivedAt = new Date()) {
   const response = await fetch("/gateway/api/v1/snapshot", { cache: "no-store", signal });
-  if (!response.ok) throw new Error("source-unreachable");
-  const declaredLength = response.headers.get("content-length");
-  if (declaredLength !== null && integerHeader(declaredLength) > MAX_GATEWAY_PAYLOAD_BYTES) {
-    throw new OperationsDataError("payload-excessive");
+  if (!response.ok) {
+    void response.body?.cancel("source-unreachable").catch(() => undefined);
+    throw new Error("source-unreachable");
   }
-  const body = await response.text();
-  if (new TextEncoder().encode(body).byteLength > MAX_GATEWAY_PAYLOAD_BYTES) {
-    throw new OperationsDataError("payload-excessive");
-  }
+  const body = await readResponseTextLimited(response, MAX_GATEWAY_PAYLOAD_BYTES);
   let value: unknown;
   try {
     value = JSON.parse(body);
@@ -203,9 +200,4 @@ export function parseOperationsGatewaySnapshot(
 
 function nonDecreasing(values: number[]) {
   return values.every((value, index) => index === 0 || value >= values[index - 1]!);
-}
-
-function integerHeader(value: string) {
-  if (!/^\d+$/.test(value)) throw new OperationsDataError("data-invalid");
-  return integer(Number(value));
 }

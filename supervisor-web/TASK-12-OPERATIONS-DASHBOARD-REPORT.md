@@ -297,3 +297,44 @@ Limitaciones honestas:
 
 **READY FOR MASTER REVIEW** — pendiente de aceptación del Master y revisión
 posterior obligatoria de `TP-SEC-PKI`.
+
+## Corrección de hallazgos Task 13
+
+Tras el dictamen `CAMBIOS REQUERIDOS` de `TP-SEC-PKI`, se corrigieron sin
+ampliar el pathset ni la capacidad funcional del dashboard:
+
+- `B-F01`: Gateway y plano de control usan un lector incremental BYOB que
+  solicita como máximo 64 KiB y reduce la última lectura a `límite + 1`;
+  cancela el body inmediatamente al cruzar el límite. Si una implementación
+  sólo ofrece reader por defecto, cancela en el primer chunk que cruza el
+  límite y nunca lo acumula. El fixture se abre una vez, se verifica
+  y lee sobre ese mismo descriptor con límite durante la lectura y cierre en
+  `finally`, eliminando la ventana `stat(path)`/`readFile(path)`.
+- `B-F02`: el validador Task 09 v1 cierra `runtime`, `inputs`, rollback,
+  cleanup, acciones, envelopes, recovery, métricas, distribuciones y cada uno
+  de los cuatro escenarios/reconciles. Aplica los invariantes y hashes cerrados
+  por `TP-CONTROL-AUTOSCALE` sólo al artefacto local Task 09; la proyección
+  provider/region continúa neutral y no define un contrato cloud.
+- `B-F03`: se añadió el índice normalizado
+  `reports/task-12/README.md`, enlazado a este informe y a la evidencia
+  preservada.
+
+Pruebas añadidas: streams BYOB adversariales de Gateway/control-plane con
+cancelación observable exactamente en `límite + 1`; crecimiento del fichero
+después de la verificación con cierre observable del descriptor; objetos
+anidados desconocidos/faltantes; escenario intermedio, orden y cardinalidad
+malformados; y proyección real opt-in del artefacto cuyo SHA-256 raw es
+`99ccc74f6e8ceeeaaf86b18aa16a9610b7f6185feec8037a94e41b8c4bf1a77f`.
+
+La configuración continúa GET-only, read-only, opt-in y redactada. Los nueve
+controles permanecen nativamente deshabilitados.
+
+Puerta final de la corrección (`node:22-bookworm-slim`, montando la raíz local
+para leer el artefacto contractual junto a `supervisor-web`):
+
+- `npm test`: PASS, 15 ficheros / 93 tests.
+- `npm run lint`: PASS.
+- `npx tsc --noEmit`: PASS.
+- `npm run build`: PASS.
+- `npm audit --audit-level=high`: PASS, 0 vulnerabilidades.
+- `git diff --check`: PASS.
