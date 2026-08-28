@@ -1,0 +1,14 @@
+{
+  "manifest_version": "1.0",
+  "model": {
+    "exact_name": "unapproved/model:1",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source": "https://models.invalid/unapproved",
+    "weights_size_bytes": 1024,
+    "context_tokens": 1024,
+    "reviewed_on": "2026-08-28",
+    "reviewed_by_role": "model_risk_owner",
+    "allowed_use": "offline_observation_and_recommendation_only",
+    "approval_state": "pending"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "role": "gateway_ops",
+  "trigger_event": {
+    "type": "congestion",
+    "timestamp": "2026-08-28T10:15:30Z",
+    "payload": { "arbitrary": true }
+  },
+  "analysis_result": {
+    "summary": "Legacy output",
+    "severity": "warning"
+  },
+  "action_required": {
+    "needed": true,
+    "type": "adjust_bitrate_hint"
+  }
+}

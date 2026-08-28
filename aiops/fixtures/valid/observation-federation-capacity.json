@@ -1,0 +1,21 @@
+{
+  "contract_version": "1.0",
+  "kind": "observation",
+  "event_id": "obs-fedcba9876543210",
+  "observed_at": "2026-08-28T10:16:00.250Z",
+  "service": "gateway-rs",
+  "source_component": "federation",
+  "event_name": "federation_capacity_status",
+  "window": {
+    "duration_seconds": 60,
+    "sample_count": 1
+  },
+  "dimensions": {
+    "state": "unavailable",
+    "reason": "upstream_api_missing"
+  },
+  "measurements": {
+    "capacity_enforced": false,
+    "healthy": false
+  }
+}

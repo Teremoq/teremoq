@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aiops-recommendation-v1.schema.json",
+  "title": "Teremoq AIOps recommendation v1",
+  "description": "Bounded advisory output. It is always dry-run, non-executable and has no operational authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "kind", "recommendation_id", "created_at", "based_on_event_ids", "severity", "confidence", "summary", "rationale_codes", "proposed_follow_up", "dry_run", "executable", "authority", "requires_future_policy_authorization"],
+  "properties": {
+    "contract_version": { "const": "1.0" },
+    "kind": { "const": "recommendation" },
+    "recommendation_id": { "type": "string", "pattern": "^rec-[a-f0-9]{16}$" },
+    "created_at": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,6})?Z$" },
+    "based_on_event_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^obs-[a-f0-9]{16}$" }
+    },
+    "severity": { "enum": ["info", "warning", "critical"] },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[^\\r\\n\\u0000-\\u001f]*$" },
+    "rationale_codes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "enum": ["elevated_loss", "elevated_latency", "queue_pressure", "repeated_drops", "critical_backpressure", "capacity_not_enforced", "service_degraded", "insufficient_evidence"] }
+    },
+    "proposed_follow_up": { "enum": ["observe", "investigate_locally", "review_capacity", "inspect_upstream_signal", "escalate_to_operator"] },
+    "dry_run": { "const": true },
+    "executable": { "const": false },
+    "authority": { "const": "none" },
+    "requires_future_policy_authorization": { "const": true }
+  }
+}

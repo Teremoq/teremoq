@@ -1,0 +1,5 @@
+algorithm: sha256
+payload_patch_scope: staged binary diff for aiops excluding TASK-08-REPORT.md and TASK-08-HASHES.txt
+payload_patch_sha256: e40d5b1c72e6939a17d34ec0fc7f0ee95537bf95b541a0221cae8037d5f1d461
+report_scope: exact bytes of aiops/TASK-08-REPORT.md
+report_sha256: 17c61fe44bca7115291ae8c280b751faa5d846e3f033fb80f9b7b96bd7ea31c2

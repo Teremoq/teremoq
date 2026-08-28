@@ -1,0 +1,16 @@
+{
+  "contract_version": "1.0",
+  "kind": "recommendation",
+  "recommendation_id": "rec-8888888888888888",
+  "created_at": "2026-08-28T10:16:01Z",
+  "based_on_event_ids": ["obs-0123456789abcdef"],
+  "severity": "critical",
+  "confidence": 0.9,
+  "summary": "Change the active route immediately.",
+  "rationale_codes": ["elevated_loss"],
+  "proposed_follow_up": "reroute_gateway",
+  "dry_run": false,
+  "executable": true,
+  "authority": "llm",
+  "requires_future_policy_authorization": false
+}

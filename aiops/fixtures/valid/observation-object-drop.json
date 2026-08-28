@@ -1,0 +1,24 @@
+{
+  "contract_version": "1.0",
+  "kind": "observation",
+  "event_id": "obs-0123456789abcdef",
+  "observed_at": "2026-08-28T10:15:30Z",
+  "service": "gateway-rs",
+  "source_component": "scheduler",
+  "event_name": "object_drop_aggregate",
+  "window": {
+    "duration_seconds": 30,
+    "sample_count": 400
+  },
+  "dimensions": {
+    "track": 1,
+    "priority": 2,
+    "reason": "queue_deadline_expired"
+  },
+  "measurements": {
+    "event_count": 18,
+    "dropped_objects": 18,
+    "queue_objects": 64,
+    "queue_bytes": 1048576
+  }
+}

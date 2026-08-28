@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aiops-observation-v1.schema.json",
+  "title": "Teremoq AIOps observation v1",
+  "description": "Bounded, low-cardinality aggregates derived only from documented Gateway logs or metrics. No raw payload or operational identity is accepted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "kind", "event_id", "observed_at", "service", "source_component", "event_name", "window", "dimensions", "measurements"],
+  "properties": {
+    "contract_version": { "const": "1.0" },
+    "kind": { "const": "observation" },
+    "event_id": { "type": "string", "pattern": "^obs-[a-f0-9]{16}$" },
+    "observed_at": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,6})?Z$" },
+    "service": { "const": "gateway-rs" },
+    "source_component": { "enum": ["runtime", "srt_ingress", "media", "scheduler", "moq_distribution", "federation"] },
+    "event_name": {
+      "enum": ["service_state_change", "ingest_quality_snapshot", "transport_quality_snapshot", "queue_pressure_snapshot", "object_drop_aggregate", "subscriber_eviction_aggregate", "federation_capacity_status"]
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["duration_seconds", "sample_count"],
+      "properties": {
+        "duration_seconds": { "type": "integer", "minimum": 1, "maximum": 300 },
+        "sample_count": { "type": "integer", "minimum": 1, "maximum": 1000000 }
+      }
+    },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "maxProperties": 4,
+      "properties": {
+        "track": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "state": { "enum": ["waiting", "active", "stale", "pending", "unavailable"] },
+        "reason": {
+          "enum": ["queue_backpressure", "queue_deadline_expired", "dependency_not_decodable", "group_superseded", "critical_queue_backpressure", "critical_queue_deadline_expired", "upstream_api_missing", "transport_error", "state_transition"]
+        }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 12,
+      "properties": {
+        "active_count": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "event_count": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
+        "queue_objects": { "type": "integer", "minimum": 0, "maximum": 65536 },
+        "queue_bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+        "dropped_objects": { "type": "integer", "minimum": 0, "maximum": 1000000000 },
+        "evicted_subscribers": { "type": "integer", "minimum": 0, "maximum": 256 },
+        "loss_rate_percent_x100": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "rtt_microseconds": { "type": "integer", "minimum": 0, "maximum": 60000000 },
+        "jitter_microseconds": { "type": "integer", "minimum": 0, "maximum": 60000000 },
+        "ingest_to_publish_p95_ms": { "type": "integer", "minimum": 0, "maximum": 600000 },
+        "capacity_enforced": { "type": "boolean" },
+        "healthy": { "type": "boolean" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "event_name": { "const": "object_drop_aggregate" } } },
+      "then": {
+        "properties": {
+          "source_component": { "const": "scheduler" },
+          "dimensions": { "required": ["track", "priority", "reason"] },
+          "measurements": { "required": ["event_count", "dropped_objects"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_name": { "const": "subscriber_eviction_aggregate" } } },
+      "then": {
+        "properties": {
+          "source_component": { "const": "scheduler" },
+          "dimensions": { "required": ["reason"] },
+          "measurements": { "required": ["evicted_subscribers"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_name": { "const": "federation_capacity_status" } } },
+      "then": {
+        "properties": {
+          "source_component": { "const": "federation" },
+          "dimensions": { "required": ["state", "reason"] },
+          "measurements": { "required": ["capacity_enforced"] }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "event_name": { "const": "service_state_change" } } },
+      "then": {
+        "properties": {
+          "dimensions": { "required": ["state"] },
+          "measurements": { "required": ["healthy"] }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "model-manifest-v1.schema.json",
+  "title": "Teremoq local model approval manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest_version", "model"],
+  "properties": {
+    "manifest_version": { "const": "1.0" },
+    "model": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["exact_name", "digest", "source", "weights_license", "weights_size_bytes", "context_tokens", "reviewed_on", "reviewed_by_role", "allowed_use", "approval_state"],
+          "properties": {
+            "exact_name": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+            "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "source": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^https://[^?#\\s]+$" },
+            "weights_license": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9 .()+_-]*$" },
+            "weights_size_bytes": { "type": "integer", "minimum": 1, "maximum": 1099511627776 },
+            "context_tokens": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+            "reviewed_on": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-([0-2][0-9]|3[01])$" },
+            "reviewed_by_role": { "const": "model_risk_owner" },
+            "allowed_use": { "const": "offline_observation_and_recommendation_only" },
+            "approval_state": { "const": "approved" }
+          }
+        }
+      ]
+    }
+  }
+}

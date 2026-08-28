@@ -1,0 +1,19 @@
+{
+  "contract_version": "1.0",
+  "kind": "observation",
+  "event_id": "obs-3333333333333333",
+  "observed_at": "2026-08-28T10:15:30Z",
+  "service": "gateway-rs",
+  "source_component": "srt_ingress",
+  "event_name": "ingest_quality_snapshot",
+  "window": { "duration_seconds": 30, "sample_count": 10 },
+  "dimensions": {},
+  "measurements": { "event_count": 2 },
+  "credential": "REDACTED-NEGATIVE-FIXTURE",
+  "certificate": "NOT-A-CERTIFICATE",
+  "fingerprint": "NOT-A-FINGERPRINT",
+  "url": "https://customer.invalid/operational-path",
+  "video": "NOT-MEDIA",
+  "audio": "NOT-MEDIA",
+  "customer": "NOT-A-CUSTOMER-ID"
+}

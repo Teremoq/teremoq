@@ -1,0 +1,12 @@
+{
+  "contract_version": "1.0",
+  "kind": "observation",
+  "event_id": "obs-2222222222222222",
+  "observed_at": "2026-08-28T10:15:30Z",
+  "service": "gateway-rs",
+  "source_component": "scheduler",
+  "event_name": "queue_pressure_snapshot",
+  "window": { "duration_seconds": 30, "sample_count": 1000001 },
+  "dimensions": { "connection_id": "per-connection-value" },
+  "measurements": { "queue_objects": 64 }
+}

@@ -1,0 +1,16 @@
+{
+  "contract_version": "1.0",
+  "kind": "recommendation",
+  "recommendation_id": "rec-0123456789abcdef",
+  "created_at": "2026-08-28T10:16:01Z",
+  "based_on_event_ids": ["obs-0123456789abcdef"],
+  "severity": "warning",
+  "confidence": 0.82,
+  "summary": "Repeated deadline drops warrant bounded local investigation.",
+  "rationale_codes": ["repeated_drops", "queue_pressure"],
+  "proposed_follow_up": "investigate_locally",
+  "dry_run": true,
+  "executable": false,
+  "authority": "none",
+  "requires_future_policy_authorization": true
+}

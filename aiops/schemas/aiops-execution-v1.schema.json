@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aiops-execution-v1.schema.json",
+  "title": "Teremoq AIOps execution v1 - disabled",
+  "description": "Execution is outside Task 08. This fail-closed sentinel intentionally rejects every instance.",
+  "not": {}
+}

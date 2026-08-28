@@ -1,0 +1,13 @@
+{
+  "contract_version": "1.0",
+  "kind": "observation",
+  "event_id": "obs-5555555555555555",
+  "observed_at": "2026-08-28T10:15:30Z",
+  "service": "gateway-rs",
+  "source_component": "media",
+  "event_name": "service_state_change",
+  "window": { "duration_seconds": 30, "sample_count": 1 },
+  "dimensions": { "state": "active" },
+  "measurements": { "healthy": true },
+  "payload": "not-media-data"
+}
