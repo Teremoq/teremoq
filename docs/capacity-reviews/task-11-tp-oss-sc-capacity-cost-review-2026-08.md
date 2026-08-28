@@ -5,8 +5,8 @@
 
 Fecha de revisión: 2026-08-28
 
-Estado: **HITO 100 BLOQUEADO HASTA RECIBIR LOS ARTEFACTOS Y LA EVIDENCIA
-LOCAL; HITO 1.000 PROHIBIDO**
+Estado: **ARTEFACTOS RECIBIDOS Y REVISADOS DIFERENCIALMENTE; HITO 100
+BLOQUEADO POR GATES DE PUBLICACIÓN/CAPACIDAD; HITO 1.000 PROHIBIDO**
 
 Esta es una revisión técnica, no asesoría legal. No autoriza contratar un
 proveedor, crear recursos remotos, usar credenciales, publicar, cambiar el
@@ -14,49 +14,52 @@ producto ni extrapolar capacidad.
 
 ## Hallazgos primero
 
-### Alta — el paquete apareció durante la revisión, pero no es reproducible aún
+### Alta, resuelta — el commit inicial fijó un hash de runtime incorrecto
 
-En la inspección inicial de las 15:26 CEST no existían
-`infra/virtual-nodes/` ni `control-plane/`. Por tanto no hay imágenes,
-Dockerfiles, manifests, herramientas, schemas o inventarios de Task 11 sobre
-los que verificar licencia, digest, procedencia, compatibilidad Apache-2.0 o
-exposición de secretos.
+La evidencia temporal se conserva: en la inspección inicial de las 15:26 CEST
+no existían `infra/virtual-nodes/` ni `control-plane/`; a las 15:31 apareció el
+primer paquete de virtual-nodes; después cerraron los commits DCO
+`51fc10b755090d0045397138f8f19cd98f8d8a82` y
+`a541644a9a1127652414ca5dd911514c5b89f30b`. La afirmación anterior de
+“ausentes” ya no describe el estado actual.
 
-La reinspección obligatoria de las 15:31 CEST detectó una entrega concurrente
-nueva bajo `infra/virtual-nodes/`: Compose, dos scripts, topología y un
-`versions.env`. Se auditó ese segundo snapshot read-only. `control-plane/`
-continuó ausente. Esto no es un resultado limpio: el gate sigue incompleto y
-cualquier cambio posterior necesita una revisión diferencial.
+`git ls-tree -r --name-only` confirma que `versions.env` forma parte de
+`51fc10b...` y que los cuatro perfiles `.env` forman parte de `a541644...`.
+Aunque `.gitignore:13` coincide con sus nombres, un patrón ignore no elimina
+paths ya tracked: un checkout limpio de esos commits sí los contiene. Se retira
+el blocker preliminar de inventario Git.
 
-El pin inmutable de imagen está en `infra/virtual-nodes/versions.env:4-5`, pero
-`.gitignore:13` ignora todos los `*.env`. El fichero no aparece en `rg --files`
-ni en el inventario Git y no acompañaría un commit normal. Compose exige ese
-valor en `infra/virtual-nodes/compose.yaml:5`; sin una excepción Git explícita
-o un formato versionable no-secreto, el harness no se reproduce desde el
-repositorio. Severidad alta; owner `TP-PLATFORM-CHAOS`.
+El defecto real del commit `51fc10b...` está en
+`infra/virtual-nodes/versions.env:6`: espera runtime SHA `591844...`, mientras
+el `node-runtime.sh` comprometido produce `b91762...`. La evidencia PASS no es
+reproducible desde ese commit. En el working tree existe una corrección local
+que cambia el valor esperado a `b91762...`. El owner la cerró con DCO en
+`85299072201564032480308b1ce90a4bebb2b552`; la comprobación independiente
+posterior obtuvo expected = observed = `b91762...`, y adapter/policy/harness
+volvieron a pasar. El PASS de `51fc10b...` aislado no se acepta, pero el blocker
+queda resuelto en el snapshot final `8529907...`.
 
-### Alta — el adaptador no bloquea capacidades 1.000
+### Alta — falta integrar un límite autorizado por run/acción
 
-`infra/virtual-nodes/provider-adapter.sh:27-29` sólo exige que capacity sea un
-entero sin signo. Las validaciones/selecciones de las líneas 103, 136 y 153-154 no aplican un
-máximo, por lo que `1000` y valores mayores son sintácticamente válidos. La
-topología fija 25 para cada distribuidor, pero `--capacity` puede sobrescribir
-ese valor en create/configure.
+El CLI del control-plane sí restringe su demo a `[10,25,50,100]` y rechaza
+escenarios que alcancen `forbidden_execution_viewers=1000`
+(`control-plane/src/teremoq_control/cli.py:36-37`); el harness también valida
+perfiles 1..100 (`chaos/autoscaling/lib.sh:31-36`). Estos controles positivos
+impiden que los comandos revisados ejecuten accidentalmente el perfil 1.000.
 
-El gate requerido es fail-closed `<=100`, idealmente con un máximo de contrato
-único y tests de 100/101/1000. No se corrige aquí porque el adaptador pertenece
-a otra Task. Severidad alta; owner `TP-CONTROL-AUTOSCALE`/
-`TP-PLATFORM-CHAOS`.
+`infra/virtual-nodes/provider-adapter.sh:27-29,110,150,167-175` sólo exige que
+`capacity` sea un entero sin signo. Esto no debe “corregirse” con un máximo
+global 100: la arquitectura aprobada es configurable para futuros hitos
+1k/10k/100k. Además, la configuración admite
+`maximum_nodes=1000000` y capacidades por nodo de hasta 10.000.000
+(`control-plane/config/milestone-100.json:15-18,25-29,35-51`), lo cual es
+deliberado. Lo que falta es que cada acción consumida por el adapter lleve y
+valide un capacity/budget envelope autorizado para ese run. Para el hito actual
+ese envelope/configuración debe rechazar 101/1000; para futuros hitos podrá
+cambiar sólo mediante la autorización correspondiente. El gate 100 está hoy
+acotado al harness/CLI, no integrado en el boundary de proveedor.
 
-### Alta — `control-plane/` continúa ausente
-
-No existen todavía formatos desired-state, reconciliación, límites globales,
-cost ledger ni lifecycle de Task 11 que auditar. No puede demostrarse que el
-plano de control vaya a respetar el máximo 100 aunque el adaptador se corrija.
-Referencia: `control-plane/`, path ausente, línea no aplicable. Owner
-`TP-CONTROL-AUTOSCALE`; revisor `TP-OSS-SC`.
-
-### Media — la imagen está fijada localmente, pero carece de SBOM/provenance cerrada
+### Media — la imagen ejecutable está fijada localmente, pero carece de SBOM/provenance cerrada
 
 La referencia local
 `teremoq-step7-lab:rust-1.93-full@sha256:ba076cf0a26aa41efdd2f0f80687ef97009d1526680751456c19cc944dff1d0b`
@@ -80,21 +83,70 @@ lo que no se afirma un pase. Sin inventario de paquetes/licencias no puede
 declararse compatibilidad de la imagen completa con la política Apache-2.0.
 El uso interno no relicencia FFmpeg, GStreamer, Debian ni Rust.
 
-### Informativa — source y escaneo focal no exponen secretos
+### Media — el digest del control-plane es sólo un identificador sintético
 
-Los cuatro artefactos versionables y `versions.env` contienen SPDX
-`Apache-2.0`; REUSE 5.1.1 pasó el árbol completo con 272/272. Gitleaks 8.30.1,
-imagen oficial fijada y redacción 100 %, escaneó 12,55 KB y no encontró leaks.
-La búsqueda complementaria no halló asignaciones de credenciales, PEM privado,
-URLs autenticadas ni rutas locales. No se muestran valores sensibles.
+`control-plane/config/milestone-100.json:4` y
+`control-plane/reports/task-09/milestone-100.json:137` registran
+`sha256:07265afe...`, que no corresponde a ninguna imagen local inspeccionable.
+El simulador nunca ejecuta esa imagen y el informe dice correctamente que no
+crea capacidad real; por tanto no es un secreto ni una sustitución remota. Sin
+embargo, llamarlo `image_digest` no demuestra procedencia de un artefacto. El
+único OCI local demostrado es el de Task 10, `sha256:ba076c...`, cuyo ID y
+RepoDigest coinciden. El control-plane debe etiquetar inequívocamente su valor
+como fixture/identificador o enlazarlo a un OCI inventariado antes de usarlo
+como evidencia supply-chain.
 
-`bash -n`, PyYAML 6.0.3 y `docker compose config --quiet` pasaron. No había
-`shellcheck` ni validador Markdown/link local instalado. La etiqueta
-`infra/virtual-nodes/compose.yaml:42` conserva `teremoq.task: "10"`; cualquier
-evidencia reutilizada por Task 11 debe distinguir el owner/run real para no
-atribuirla al hito equivocado.
+### Media — los JSON Schemas no expresan todos los límites aplicados por código
 
-### Alta — no hay evidencia que permita convertir 100 espectadores en nodos
+`control-plane/contracts/metrics-sample.schema.json:12-28` no fija máximos para
+secuencia, espectadores, sesiones, egress ni `maxItems` para reservas;
+`control-plane/contracts/desired-state.schema.json:11,19-22` tampoco fija
+máximos de generación/nodos. El loader y reconciler sí aplican varios límites,
+incluido `maximum_reservations_per_sample` en
+`control-plane/src/teremoq_control/engine.py:219-272`. Un consumidor que valide
+sólo el contrato JSON aceptaría cargas que después serán rechazadas o que puede
+intentar materializar en memoria. Owner `TP-CONTROL-AUTOSCALE`; se requiere
+alinear schema y límites efectivos antes de presentar estos contratos como
+boundary de integración.
+
+### Media — los parámetros de egress son supuestos, no mediciones del hito
+
+El report publicable separa correctamente “remote infrastructure cost = 0” de
+la estimación externa ausente, y declara que no prueba vídeo real. No obstante,
+`control-plane/config/milestone-100.json:91,101-102` usa `rate_source` =
+`local-simulation-measured` junto a `0.8 Mbit/s` por espectador y 8 % de
+overhead. Esos dos valores alimentan los 38,88 GB calculados del report
+(`control-plane/reports/task-09/milestone-100.json:73-92`) pero no fueron
+medidos por transporte/media. Deben denominarse parámetros/fixtures y no cerrar
+`b` ni `o`; el coste cloud sigue sin poder calcularse hasta medir egress real.
+
+### Baja — Python no añade runtime deps, pero no hay build backend declarado
+
+`control-plane/pyproject.toml:3-11` declara `dependencies=[]` y el análisis AST
+de source/tests sólo encontró stdlib e imports internos. No existe requirements,
+lock ni proveedor SDK. Tampoco hay `[build-system]`; esto es aceptable para la
+ejecución install-free revisada, pero no demuestra un sdist/wheel reproducible.
+Si se distribuye como paquete Python deberá fijarse y auditarse el backend o
+declararse expresamente que no es artefacto de distribución.
+
+### Informativa — licencia, tests y escaneo focal pasan
+
+REUSE 5.1.1 pasó el checkout compartido 282/282 y el aislado 290/290 en el
+snapshot final. Gitleaks 8.30.1 con redacción 100 %, sin red y mounts
+read-only escaneó 29,95 KB (virtual-nodes), 205,55 KB (Chaos) y 165,80 KB
+(control-plane), sin leaks. La búsqueda complementaria no halló claves, PEM
+privado, credenciales, URLs autenticadas, namespaces productivos ni rutas
+locales persistidas. No se muestran valores sensibles.
+
+Pasaron JSON/TOML con Python 3.14.4, `bash -n`, adapter-test,
+compose-policy-test, los cuatro perfiles del harness y 36 tests del
+control-plane. `control-plane/reports/task-09/SHA256SUMS` verificó 30/30
+entradas. Los reports ignorados bajo `reports/latest/` quedaron fuera de la
+frontera publicable y estaban desfasados; no deben confundirse con la evidencia
+versionada `reports/task-09/`. No había `shellcheck` ni validador Markdown/link
+local instalado.
+
+### Alta — la simulación no convierte 100 espectadores en capacidad real
 
 No se ha medido aún el bitrate agregado de todos los Tracks, retransmisiones,
 overhead QUIC/IP, capacidad por nodo, tiempo de warm-up, cooldown ni reserva.
@@ -145,35 +197,53 @@ presupuesto, alertas, apagado automático, antifraude, prueba progresiva y
 autorización expresa antes de cualquier recurso remoto. Extrapolar linealmente
 la prueba 100 no es evidencia.
 
-## Snapshot local y límites
+## Snapshot local diferencial y límites
 
 | Evidencia | Resultado |
 | --- | --- |
 | `.cursorrules` | SHA-256 `88d7c6d3c8366b242b0fb49c56751713bdebd6229b779dd336d4de3896f6e6d2`; 488 líneas leídas completas |
 | Git inicial | rama `main`, HEAD `0faee5dec127e47649a08b82bade8f3faf69c8ab` |
+| Git compartido intermedio | rama `main`, HEAD `997fb38ecdf339bdb65fde03b3302d876d284876` antes de los commits propietarios |
+| Git compartido final | rama `main`, HEAD `85299072201564032480308b1ce90a4bebb2b552`, tree `50676b3838d056543465f33a71d8d521e4059cc9` |
+| Worktree aislado control-plane final | commit `77c1c9fadc60235f2dd3e39dbf81c49f3b141a51`, parent `547d379fbc3fc28ef1029e77bdf3cbb45dc5140c`, tree `9ed18aba2e6023e0fbac97b8960d6da8e3b24152` |
 | Estado Git | árbol sucio con cambios ajenos; ninguno fue revertido, modificado ni incluido |
-| `infra/virtual-nodes/` | ausente inicialmente; cinco artefactos presentes en la reinspección 15:31 CEST |
-| `control-plane/` | ausente en inspección inicial y reinspección |
+| `infra/virtual-nodes/` | ausente inicialmente; 10 paths tracked finales, incluido `versions.env` |
+| `chaos/autoscaling/` | 12 paths tracked finales, incluidos cuatro perfiles `.env`; 10 reports locales ignorados adicionales |
+| `control-plane/` | ausente inicialmente; 31 paths tracked finales más 3 artefactos ignorados en `reports/latest/` |
 | Directorio propiedad de esta revisión | sólo `docs/capacity-reviews/` |
 | Recursos/servicios remotos creados | ninguno |
 | Credenciales usadas | ninguna |
 
-Inventario supply-chain congelado tras la entrega concurrente:
+Inventario agregado del snapshot final. `pathset` es SHA-256 de paths relativos
+ordenados con newline; `inventory` es SHA-256 del listado ordenado
+`sha256  path`:
+
+| Alcance | Paths | Pathset SHA-256 | Inventory SHA-256 |
+| --- | ---: | --- | --- |
+| virtual-nodes, tree `8529907...` | 10 | `99085f1f7e08d6ecc8ddb2e114cb6523b75e809b6e9ea8e3539ca5c8cd56d981` | `89f5d3e183557ee571d05828e0a1cd3a363a029d45198f5d7289b280920bfe93` |
+| Chaos, tree `8529907...` | 12 | `eeb4d76ac662cbf5fc56c9bcb4fbdd4f063a9866e29fc2b7a2857110d5f8fe3f` | `480f800bc0d75101a5f6bff8626ea2b2268c0a5d879f355ad07847da223e5701` |
+| control-plane, tree `77c1c9f...` | 31 | `a44c7535da0d56fa28fda666e2e4d5de5f25e527d71aee2c0d42b84173199daa` | `0656030ea147c84aba6c45346b842cdce186cbc344773f79b5aeab841f6e52c7` |
+
+Hashes de objetos supply-chain clave:
 
 | Path/objeto | SHA-256 |
 | --- | --- |
-| `infra/virtual-nodes/compose.yaml` | `314b2dc5413c8d083f9a426b4ab1763a6bef323786a7ab5f5fd101efad5181c6` |
-| `infra/virtual-nodes/node-runtime.sh` | `5918447709f69cf79545d5be1e8e111d78122577fff6106d8e7f8720a057ff7e` |
-| `infra/virtual-nodes/provider-adapter.sh` | `e484d90602e5633514a776f6b88d4ebe225abc35fcfd47fb22aec06c01b4c637` |
-| `infra/virtual-nodes/topology/default.tsv` | `e218a77292f8fef7645f522739af546406aec6f131ba44bb4be29c08415fc28e` |
-| `infra/virtual-nodes/versions.env` | `0c13fb3e7becf9b81c2cd62ef7a4f230312d0455e220bcf4b178daeb1b11ebe5` |
+| `infra/virtual-nodes/compose.yaml` | `54297506f61e04463bba4621c23c79e7da059a78b2b80f8473383fa5951c3609` |
+| `infra/virtual-nodes/node-runtime.sh` | `b91762fb91e3cde47fdcb320b8bc30cb2ba4aab15743dc143b849b78cef0da29` |
+| `infra/virtual-nodes/provider-adapter.sh` | `0b990cec57ce4dd49aac355352caff5db72addcdcc8d24e7b038bf9b22efa3c7` |
+| `infra/virtual-nodes/topology/default.tsv` | `31e86aff182fe29ceae8016689f4d426ae22891e34a9dea0f2e0533bb4fd9499` |
+| `infra/virtual-nodes/versions.env` | `8e93495b3a411e880cd0e00549dc8eb68e0bb80746d2510b85dfe18ceb1c7787` |
+| `chaos/autoscaling/evidence/task10-local-validation-2026-08.md` | `09c59e0fffd8bb098e566cd667dd3b952ad4f6d181da8d0890332ba38f16c108` |
 | imagen local inspeccionada | `ba076cf0a26aa41efdd2f0f80687ef97009d1526680751456c19cc944dff1d0b` |
 | Dockerfile asociado por history | `9a4419f66806e6b0b3af1d4c62591460bf73cc9b457d1faf8c0afce15ead0bc6` |
+| `control-plane/pyproject.toml` | `82b1bd0e1ce5648d2c0db719d0ddf58a71e1c1345b34b34377942c5dda3b9575` |
+| `control-plane/config/milestone-100.json` | `a42d1c109560a9424955e2824c5d913f6ce1274b160aac31f461590d2376c6c1` |
+| `control-plane/reports/task-09/SHA256SUMS` | `9c140e05aa4b4fcc746e8285c1699cec6484ee17cce3f81d667921ed419f49ff` |
 
-El adapter cambió una vez durante la revisión; el hash de la tabla corresponde
-al segundo snapshot y sustituye al hash preliminar. Si cualquiera de estos
-cinco ficheros cambia antes de integrar sus Tasks propietarias, el dictamen de
-línea/supply-chain debe repetirse.
+El adapter y el control-plane cambiaron durante la revisión; los hashes de esta
+sección sustituyen los preliminares. La congelación final fue 2026-08-28
+16:06:09 CEST y se revalidó sin divergencia. Cualquier cambio posterior requiere
+nueva revisión y nunca debe normalizarse silenciosamente.
 
 La ausencia de consultas autenticadas impide demostrar que una cuenta cloud
 externa no contenga recursos preexistentes. La evidencia “cero recursos
@@ -351,9 +421,10 @@ Variables que sólo cierra el hito 100:
 
 ## Checklist supply-chain previo a revisar artefactos
 
-Estado aplicado al snapshot recibido: hardening Compose, sintaxis, SPDX/REUSE y
-secret scan pasan; versionado del pin, SBOM/provenance, licencia completa de la
-imagen y límite máximo fallan o quedan incompletos.
+Estado aplicado al snapshot recibido: hardening Compose, sintaxis, tests
+locales, SPDX/REUSE, manifiesto de evidencia Task 09 y secret scan pasan;
+SBOM/provenance, licencia completa de imagen, alineación de schemas y envelope
+autorizado del run fallan o quedan incompletos. El pin/runtime ya fue corregido.
 
 ### Imágenes
 
@@ -397,7 +468,8 @@ imagen y límite máximo fallan o quedan incompletos.
 - inventario completo de imágenes/herramientas/formats y licencias;
 - todos los digests inmutables y SBOMs disponibles;
 - escaneo redactado de secretos sin hallazgo productivo;
-- configuración local fail-closed con máximo global `<= 100`;
+- configuración local fail-closed con capacity/budget envelope del hito
+  `<= 100`;
 - red sin credenciales ni endpoints cloud y ledger remoto inicial vacío;
 - comando de cleanup idempotente probado en dry-run; y
 - presupuesto parametrizado con las variables aún desconocidas marcadas.
@@ -428,8 +500,8 @@ imagen y límite máximo fallan o quedan incompletos.
 
 ### Prueba 100 — gate de entrega local
 
-- 100 espectadores más la reserva aprobada, sin superar límite global 100 de
-  sesiones reales ni crear recursos remotos;
+- 100 espectadores más la reserva aprobada, sin superar el envelope autorizado
+  del run actual ni crear recursos remotos;
 - `K`, `b`, `o`, warm-up y cooldown medidos; no extrapolados;
 - comportamiento ante saturación y rechazo fail-closed del espectador 101;
 - ausencia de crecimiento sostenido, tasks/procesos/contenedores huérfanos y
@@ -442,8 +514,10 @@ imagen y límite máximo fallan o quedan incompletos.
 
 ### Bloqueo explícito de 1.000
 
-No existe un gate automático de 100 a 1.000. Debe fallar cerrado cualquier
-configuración `>100`. Para abrir un futuro diseño de 1.000 se requieren:
+No existe un gate automático de 100 a 1.000. El run y el capacity/budget
+envelope del hito actual deben fallar cerrados ante `>100`; esto no impone un
+techo arquitectónico permanente. Para abrir un futuro diseño de 1.000 se
+requieren:
 
 1. autorización de alto impacto del usuario para coste e infraestructura;
 2. presupuesto máximo por hora/evento y kill switch independiente;
@@ -457,16 +531,26 @@ configuración `>100`. Para abrir un futuro diseño de 1.000 se requieren:
 
 | Severidad | Referencia | Defecto | Gate |
 | --- | --- | --- | --- |
-| Alta | `infra/virtual-nodes/versions.env:4-5`; `.gitignore:13` | El digest requerido está ignorado y no forma parte del inventario versionable | Bloquea reproducibilidad 10/25/50/100 |
-| Alta | `infra/virtual-nodes/provider-adapter.sh:27-29,103,136,153-154` | Capacity acepta 1.000 o cualquier entero sin máximo | Bloquea 100 y 1.000 |
+| Alta, resuelta | commit `51fc10b...`, `infra/virtual-nodes/versions.env:6` frente a `node-runtime.sh` | Esperaba `591844...` frente a runtime `b91762...`; `8529907...` sincroniza el pin y revalida | No bloquea el snapshot final; no aceptar el commit inicial aislado |
+| Alta | `infra/virtual-nodes/provider-adapter.sh:27-29,110,150,167-175` y contrato v1 | Capacity no consume ni valida un capacity/budget envelope autorizado por run/acción | Bloquea integrar el gate 100; no exige techo arquitectónico global |
 | Media | imagen fijada en `versions.env:4` | Digest local coincide, pero no hay SBOM/provenance/licencias cerradas | Bloquea supply-chain 100 |
-| Alta | `control-plane/`, ausente | No hay formatos, límites, coste, lifecycle ni evidencia de secretos que auditar | Bloquea 10/25/50/100 |
+| Media | `control-plane/config/milestone-100.json:4`; report `:137` | El image digest es un identificador sintético no presente localmente; no prueba procedencia OCI | Bloquea usarlo como evidencia de artefacto |
+| Media | `control-plane/contracts/metrics-sample.schema.json:12-28`; `desired-state.schema.json:11,19-22` | Los schemas no expresan máximos/cardinalidad que el código espera aplicar | Bloquea contrato de integración cerrado |
+| Media | `control-plane/config/milestone-100.json:91,101-102`; report `:73-92` | 0,8 Mbit/s y 8 % son fixtures bajo un `rate_source` que puede confundirse con medición | Bloquea cerrar bitrate/egress/coste cloud |
+| Baja | `control-plane/pyproject.toml:3-11` | Cero deps runtime externas, pero no hay build backend fijado | Sólo bloquea distribución Python, no ejecución install-free |
 | Alta | evidencia de capacidad, ausente | `K`, `b`, `o`, reserva y cooldown no medidos | Bloquea coste por espectador y 100 |
 | Media | ledger remoto, ausente | No puede probarse ausencia global de recursos fuera de esta Task | Bloquea cualquier claim de cuenta limpia |
 
-No se asignan defectos de línea ficticios a archivos inexistentes. Cuando las
-otras Tasks entreguen, el Master debe solicitar una revisión diferencial con
-archivo, línea, hash y severidad reales.
+`git ls-tree` demuestra que `versions.env` y los cuatro perfiles `.env` están
+tracked en `51fc10b...`/`a541644...`; el patrón genérico `.gitignore` no los
+elimina del checkout y no se reporta como blocker.
+
+Task 09 cerró primero `547d379fbc3fc28ef1029e77bdf3cbb45dc5140c` y
+después el hardening `77c1c9fadc60235f2dd3e39dbf81c49f3b141a51`.
+Los commits de Plataforma/Chaos `51fc10b...`, `a541644...`, `8529907...` y ambos
+commits Task 09 tienen autor/committer autorizado y el `Signed-off-by` exacto.
+Esto satisface DCO local, sin autorizar push/publicación. Los findings pendientes
+se remiten a sus owners y no se corrigen desde `docs/capacity-reviews/`.
 
 ## Validación documental y limitaciones
 
@@ -485,18 +569,19 @@ buscador secundario como fuente de precio. No hay un validador Markdown/link
 local aprobado inventariado todavía; si no está instalado, no se instalará para
 esta Task y el gate se declarará limitado.
 
-Herramientas locales: Bash 5.3.9, Python 3.14.4, PyYAML 6.0.3, Docker 28.3.3,
+Herramientas locales: Bash 5.3.9, Python 3.14.4, Docker 28.3.3,
 Compose 2.39.2, `docker-sbom 0.6.0`/Syft 0.43.0, REUSE 5.1.1 por digest
 `sha256:11eb8a423ea82776bc2890bb255b61736bec277ef6e2141f8c91d6d88864f9da`
 y Gitleaks 8.30.1 por digest
 `sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f`.
 REUSE y Gitleaks se ejecutaron sin red y con el source montado read-only.
 
-No se ejecutó carga. Se auditó el snapshot local nuevo de virtual-nodes, pero
-no existe `control-plane/`, SBOM final ni evidencia de ejecución 10/25/50/100.
-No se afirma compatibilidad Apache-2.0 de la imagen completa. No se consultaron
-facturas, cuotas ni cuentas de proveedor. Los precios pueden cambiar y deben
-reconfirmarse antes de una decisión económica.
+No se ejecutó carga real ni Compose smoke en esta revisión. Sí se ejecutaron la
+simulación pura 10/25/50/100, los tests de adapter/policy y 36 tests del
+control-plane. Es evidencia de estado/control, no de viewer transport. No hay
+SBOM final ni se afirma compatibilidad Apache-2.0 de la imagen completa. No se
+consultaron facturas, cuotas ni cuentas de proveedor. Los precios pueden
+cambiar y deben reconfirmarse antes de una decisión económica.
 
 ## Decisión
 
@@ -504,7 +589,8 @@ reconfirmarse antes de una decisión económica.
   coste local total: no medidos.
 - **Estimación cloud:** sólo fórmula parametrizada con tarifas públicas
   fechadas; no factura ni benchmark.
-- **Supply chain:** virtual-nodes revisado con blockers; control-plane ausente.
+- **Supply chain:** virtual-nodes, Chaos y control-plane revisados con blockers
+  de frontera publicable, SBOM/provenance, schema y claims.
 - **Hito 100:** bloqueado hasta que pasen inventario, digests, SBOM, pruebas
   10/25/50/100, cleanup y reconciliación a cero.
 - **Hito 1.000:** bloqueado explícitamente y requiere nueva autorización.
