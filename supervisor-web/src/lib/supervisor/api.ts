@@ -25,6 +25,13 @@ export type GatewayTrackSnapshot = {
   objects: number;
 };
 
+export class PlaybackConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PlaybackConfigurationError";
+  }
+}
+
 const TRACK_LABELS = ["VIDEO HQ", "VIDEO LQ", "AUDIO CRÍTICO", "TELEMETRÍA"] as const;
 
 export async function loadPlaybackConfiguration(signal?: AbortSignal) {
@@ -33,7 +40,7 @@ export async function loadPlaybackConfiguration(signal?: AbortSignal) {
     signal,
   });
   if (!response.ok) {
-    throw new Error(`configuración del Gateway no disponible (${response.status})`);
+    throw new PlaybackConfigurationError("configuración del Gateway no disponible");
   }
   return parsePlaybackConfiguration(await response.json());
 }
@@ -55,6 +62,8 @@ export function parsePlaybackConfiguration(value: unknown): PlaybackConfiguratio
     value.schema_version !== 1 ||
     typeof value.output_relay_url !== "string" ||
     !Array.isArray(value.namespaces) ||
+    value.namespaces.length < 1 ||
+    value.namespaces.length > 32 ||
     !value.namespaces.every(
       (part: unknown) => typeof part === "string" && part.length > 0 && part.length <= 255,
     ) ||
@@ -63,8 +72,11 @@ export function parsePlaybackConfiguration(value: unknown): PlaybackConfiguratio
       typeof value.input_preview_url === "string"
     )
   ) {
-    throw new Error("respuesta /playback inválida");
+    throw new PlaybackConfigurationError("respuesta /playback inválida");
   }
+
+
+  const relayUrl = validateLoopbackRelayUrl(value.output_relay_url);
 
   const inputPreviewUrl =
     typeof value.input_preview_url === "string"
@@ -72,7 +84,7 @@ export function parsePlaybackConfiguration(value: unknown): PlaybackConfiguratio
       : null;
 
   return {
-    relayUrl: value.output_relay_url,
+    relayUrl,
     namespace: value.namespaces as string[],
     inputPreviewUrl: inputPreviewUrl === null ? null : localPreviewPath(inputPreviewUrl),
   };
@@ -154,13 +166,31 @@ function validateLoopbackPreviewUrl(value: string) {
   try {
     url = new URL(value);
   } catch {
-    throw new Error("URL del observador de entrada inválida");
+    throw new PlaybackConfigurationError("URL del observador de entrada inválida");
   }
   if (
     !["http:", "https:"].includes(url.protocol) ||
     !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
   ) {
-    throw new Error("el observador de entrada debe permanecer en loopback");
+    throw new PlaybackConfigurationError("el observador de entrada debe permanecer en loopback");
+  }
+  return url.toString();
+}
+
+function validateLoopbackRelayUrl(value: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new PlaybackConfigurationError("URL del relay inválida");
+  }
+  if (
+    url.protocol !== "https:" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+    url.username !== "" ||
+    url.password !== ""
+  ) {
+    throw new PlaybackConfigurationError("el relay WebTransport debe permanecer en loopback");
   }
   return url.toString();
 }

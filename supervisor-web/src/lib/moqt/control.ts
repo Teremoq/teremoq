@@ -34,8 +34,8 @@ export type ControlMessage = ServerSetup | SubscribeOk | RequestError;
 export class ControlReader {
   readonly #reader: AsyncByteReader;
 
-  constructor(stream: ReadableStream<Uint8Array>) {
-    this.#reader = new AsyncByteReader(stream, CONTROL_LIMIT * 2);
+  constructor(stream: ReadableStream<Uint8Array>, signal?: AbortSignal) {
+    this.#reader = new AsyncByteReader(stream, CONTROL_LIMIT * 2, signal);
   }
 
   async next(): Promise<ControlMessage> {

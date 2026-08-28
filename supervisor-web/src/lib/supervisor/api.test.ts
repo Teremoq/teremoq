@@ -28,6 +28,34 @@ describe("API del supervisor", () => {
     ).toThrow(/loopback/);
   });
 
+  it("rechaza relay remoto, credenciales y transporte sin HTTPS", () => {
+    for (const output_relay_url of [
+      "https://relay.example.com/watch",
+      "https://user:dummy@127.0.0.1:14434/watch",
+      "http://127.0.0.1:14434/watch",
+    ]) {
+      expect(() =>
+        parsePlaybackConfiguration({
+          schema_version: 1,
+          input_preview_url: null,
+          output_relay_url,
+          namespaces: ["teremoq"],
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("acota el namespace antes de codificar SUBSCRIBE", () => {
+    expect(() =>
+      parsePlaybackConfiguration({
+        schema_version: 1,
+        input_preview_url: null,
+        output_relay_url: "https://127.0.0.1:14434/watch",
+        namespaces: Array.from({ length: 33 }, (_, index) => `n${index}`),
+      }),
+    ).toThrow(/playback/);
+  });
+
   it("proyecta solo las métricas reales necesarias", () => {
     expect(
       parseGatewaySnapshot({

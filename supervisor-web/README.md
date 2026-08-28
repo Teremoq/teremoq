@@ -66,10 +66,39 @@ de orden. Si detecta un hueco o presión en la cola del
 decoder, descarta vídeo delta y espera el siguiente keyframe; el contenido
 antiguo nunca se acumula.
 
+Cada conexión pertenece a una única generación. Al cambiar HQ/LQ, reconectar
+o desmontar React se abortan la configuración HTTP, el handshake, control,
+aceptación de streams y todos los readers de Subgroup; después se cierran de
+forma idempotente sesión, streams, MP4Box, decoder, compositor y `VideoFrame`
+pendientes. Los callbacks de generaciones anteriores sólo pueden cerrar su
+recurso y nunca actualizar estado o presentar un frame.
+
+La reconexión usa un único presupuesto de seis intentos y 30 segundos, backoff
+exponencial entre 250 ms y 2 s y jitter determinista. Se cancela de inmediato
+al cerrar o cambiar de Track y sólo se reinicia después de presentar un frame
+actual. Configuración local inválida, fingerprint fuera de contrato, fallo de
+autenticación WebTransport y protocolo/codec incompatible terminan en
+`unavailable`; no entran en un bucle de reconexión.
+
 La misma sesión se suscribe a `3-telemetry` y muestra vehículo, velocidad,
 coordenadas y secuencia tras validar UTF-8, JSON, tamaño y rangos. El Gateway
 rota audio y telemetría cada 32 Objects a un Subgroup nuevo para mantener cada
 stream acotado sin descartar ni agregar datos críticos.
+
+Vídeo, catálogo y telemetría tienen colas seriales independientes por alias,
+acotadas a 32 Objects y 4 MiB. La saturación de vídeo descarta sólo deltas y
+conserva el siguiente keyframe. La cola crítica nunca convierte telemetría en
+"último valor" ni la descarta silenciosamente: si no puede progresar dentro de
+su límite, se cierra únicamente la sesión prescindible del player.
+
+## Estados operativos
+
+La salida publica únicamente estados y razones de cardinalidad acotada:
+`waiting`, `connecting`, `active`, `degraded`, `stale`, `unavailable` y
+`closed`. La UI no muestra la URL completa del relay, fingerprint, namespace,
+certificado, payload ni texto de error del peer. Tras tres segundos sin vídeo
+marca `stale`; la telemetría puede seguir progresando de forma independiente.
+Ocho segundos sin actividad de sesión activan reconexión dentro del presupuesto.
 
 ## Métricas
 

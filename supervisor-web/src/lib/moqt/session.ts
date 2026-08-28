@@ -1,6 +1,7 @@
 import { ControlReader, encodeClientSetup, encodeSubscribe } from "./control";
 import { MoqProtocolError } from "./binary";
 import { MoqObject, readSubgroupStream } from "./subgroup";
+import { TrackDeliveryQueue, type DeliveryClass } from "./delivery-queue";
 
 // One ordered Subgroup remains open per active Track/Group. Eight readers cover
 // the four logical Tracks plus bounded Group transitions without allowing a
@@ -13,15 +14,26 @@ const DROP_EVENT_INTERVAL_MS = 500;
 
 export type ObjectHandler = (object: MoqObject) => void | Promise<void>;
 
+export class WebTransportTrustError extends Error {
+  constructor() {
+    super("no se pudo autenticar el transporte WebTransport");
+    this.name = "WebTransportTrustError";
+  }
+}
+
 export type SessionEvent =
   | { type: "connected" }
   | { type: "subscribed"; track: string; alias: number }
-  | { type: "stream-dropped"; reason: string }
-  | { type: "error"; message: string };
+  | {
+      type: "stream-dropped";
+      reason: "invalid-stream" | "unconfirmed-alias" | "video-pressure";
+    }
+  | { type: "error"; error: Error };
 
 type PendingSubscription = {
   track: string;
   handler: ObjectHandler;
+  deliveryClass: DeliveryClass;
   resolve: (alias: number) => void;
   reject: (error: Error) => void;
 };
@@ -33,16 +45,20 @@ export class MoqSession {
   readonly #controlWriter: WritableStreamDefaultWriter<Uint8Array>;
   readonly #incomingReader: ReadableStreamDefaultReader<ReadableStream<Uint8Array>>;
   readonly #onEvent: (event: SessionEvent) => void;
+  readonly #abortController = new AbortController();
   readonly #pending = new Map<number, PendingSubscription>();
-  readonly #handlers = new Map<number, ObjectHandler>();
+  readonly #handlers = new Map<number, TrackDeliveryQueue>();
   readonly #earlyObjects = new Map<number, MoqObject[]>();
-  readonly #deliveryTails = new Map<number, Promise<void>>();
   readonly #activeStreams = new Set<Promise<void>>();
   #nextRequestId = 0;
   #earlyObjectCount = 0;
   #earlyByteCount = 0;
   #lastDropEventAt = Number.NEGATIVE_INFINITY;
   #closed = false;
+  #closePromise: Promise<void> | null = null;
+  #removeExternalAbort: (() => void) | null = null;
+  #controlLoop: Promise<void> | null = null;
+  #incomingLoop: Promise<void> | null = null;
 
   private constructor(
     transport: WebTransport,
@@ -53,6 +69,7 @@ export class MoqSession {
     this.#control = control;
     this.#controlReader = new ControlReader(
       control.readable as ReadableStream<Uint8Array>,
+      this.#abortController.signal,
     );
     this.#controlWriter = (
       control.writable as WritableStream<Uint8Array>
@@ -61,58 +78,84 @@ export class MoqSession {
       transport.incomingUnidirectionalStreams as ReadableStream<ReadableStream<Uint8Array>>
     ).getReader();
     this.#onEvent = onEvent;
+    this.#abortController.signal.addEventListener(
+      "abort",
+      () => void this.#incomingReader.cancel("sesión cancelada").catch(() => undefined),
+      { once: true },
+    );
   }
 
   static async connect(
     url: string,
     certificateSha256: Uint8Array,
     onEvent: (event: SessionEvent) => void,
+    signal?: AbortSignal,
   ) {
     if (certificateSha256.byteLength !== 32) {
       throw new MoqProtocolError("el fingerprint SHA-256 debe contener 32 bytes");
     }
     const certificateBuffer = new ArrayBuffer(32);
     new Uint8Array(certificateBuffer).set(certificateSha256);
+    if (signal?.aborted) throw abortError();
     const transport = new WebTransport(url, {
       congestionControl: "low-latency",
       serverCertificateHashes: [
         { algorithm: "sha-256", value: certificateBuffer },
       ],
     });
-    await transport.ready;
-    const control = await transport.createBidirectionalStream();
-    const session = new MoqSession(transport, control, onEvent);
-    await session.#controlWriter.write(encodeClientSetup());
-    const setup = await session.#controlReader.next();
-    if (setup.type !== "server-setup") {
-      session.close(0x03, "SERVER_SETUP esperado");
-      throw new MoqProtocolError("el relay no respondió con SERVER_SETUP");
+    const abortPendingTransport = () => transport.close({ closeCode: 0, reason: "cancelado" });
+    signal?.addEventListener("abort", abortPendingTransport, { once: true });
+    let session: MoqSession | null = null;
+    let transportReady = false;
+    try {
+      await transport.ready;
+      transportReady = true;
+      if (signal?.aborted) throw abortError();
+      const control = await transport.createBidirectionalStream();
+      session = new MoqSession(transport, control, onEvent);
+      const connectedSession = session;
+      signal?.removeEventListener("abort", abortPendingTransport);
+      connectedSession.#linkExternalAbort(signal);
+      await connectedSession.#controlWriter.write(encodeClientSetup());
+      const setup = await connectedSession.#controlReader.next();
+      if (setup.type !== "server-setup") {
+        void connectedSession.close(0x03, "protocolo incompatible");
+        throw new MoqProtocolError("el relay no respondió con SERVER_SETUP");
+      }
+      connectedSession.#onEvent({ type: "connected" });
+      connectedSession.#controlLoop = connectedSession.#runControlLoop();
+      connectedSession.#incomingLoop = connectedSession.#runIncomingLoop();
+      void transport.closed.then(
+        () => {
+          if (!connectedSession.#closed) connectedSession.#fail(new Error("transporte cerrado"));
+        },
+        (cause: unknown) => {
+          if (!connectedSession.#closed) connectedSession.#fail(cause);
+        },
+      );
+      return connectedSession;
+    } catch (cause: unknown) {
+      signal?.removeEventListener("abort", abortPendingTransport);
+      if (session) await session.close(0x03, "conexión fallida");
+      else transport.close({ closeCode: 0x03, reason: "conexión fallida" });
+      if (!transportReady && !isAbortError(cause)) throw new WebTransportTrustError();
+      throw cause;
     }
-    session.#onEvent({ type: "connected" });
-    void session.#runControlLoop();
-    void session.#runIncomingLoop();
-    void transport.closed.then(
-      (info) => {
-        if (!session.#closed) {
-          const detail = info.reason || `código ${info.closeCode}`;
-          session.#fail(new MoqProtocolError(`WebTransport cerrado: ${detail}`));
-        }
-      },
-      (cause: unknown) => {
-        if (!session.#closed) session.#fail(cause);
-      },
-    );
-    return session;
   }
 
-  subscribe(namespace: readonly string[], track: string, handler: ObjectHandler) {
+  subscribe(
+    namespace: readonly string[],
+    track: string,
+    handler: ObjectHandler,
+    deliveryClass: DeliveryClass = "control",
+  ) {
     if (this.#closed) {
       return Promise.reject(new MoqProtocolError("la sesión MoQT está cerrada"));
     }
     const requestId = this.#nextRequestId;
     this.#nextRequestId += 2;
     return new Promise<number>((resolve, reject) => {
-      this.#pending.set(requestId, { track, handler, resolve, reject });
+      this.#pending.set(requestId, { track, handler, deliveryClass, resolve, reject });
       this.#controlWriter.write(encodeSubscribe(requestId, namespace, track)).catch((cause: unknown) => {
         this.#pending.delete(requestId);
         reject(toError(cause));
@@ -120,9 +163,12 @@ export class MoqSession {
     });
   }
 
-  close(code = 0, reason = "player detenido") {
-    if (this.#closed) return;
+  close(code = 0, reason = "player detenido"): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
+    this.#abortController.abort(reason);
+    this.#removeExternalAbort?.();
+    this.#removeExternalAbort = null;
     for (const pending of this.#pending.values()) {
       pending.reject(new MoqProtocolError(reason));
     }
@@ -130,21 +176,35 @@ export class MoqSession {
     this.#earlyObjects.clear();
     this.#earlyObjectCount = 0;
     this.#earlyByteCount = 0;
-    void this.#controlReader.cancel(reason).catch(() => undefined);
-    void this.#incomingReader.cancel(reason).catch(() => undefined);
-    void this.#controlWriter.close().catch(() => undefined);
+    for (const queue of this.#handlers.values()) queue.close();
+    this.#handlers.clear();
     this.#transport.close({ closeCode: code, reason });
+    this.#closePromise = Promise.allSettled([
+      this.#controlReader.cancel(reason),
+      this.#incomingReader.cancel(reason),
+      this.#controlWriter.close(),
+      ...this.#activeStreams,
+      ...(this.#controlLoop ? [this.#controlLoop] : []),
+      ...(this.#incomingLoop ? [this.#incomingLoop] : []),
+    ]).then(() => undefined);
+    return this.#closePromise;
   }
 
   async #runControlLoop() {
     try {
       while (!this.#closed) {
         const message = await this.#controlReader.next();
+        if (this.#closed) break;
         if (message.type === "subscribe-ok") {
           const pending = this.#pending.get(message.requestId);
           if (!pending) continue;
           this.#pending.delete(message.requestId);
-          this.#handlers.set(message.trackAlias, pending.handler);
+          const queue = new TrackDeliveryQueue(
+            pending.handler,
+            pending.deliveryClass,
+            (cause) => this.#handleDeliveryError(pending.deliveryClass, cause),
+          );
+          this.#handlers.set(message.trackAlias, queue);
           pending.resolve(message.trackAlias);
           this.#onEvent({ type: "subscribed", track: pending.track, alias: message.trackAlias });
           const early = this.#earlyObjects.get(message.trackAlias) ?? [];
@@ -152,7 +212,7 @@ export class MoqSession {
           // Do not await media handlers from the control loop: a catalog parse or
           // a decoder callback must never delay the next SUBSCRIBE_OK.
           for (const object of early) {
-            this.#enqueueDelivery(message.trackAlias, pending.handler, object);
+            this.#enqueueDelivery(message.trackAlias, queue, object);
           }
         } else if (message.type === "request-error") {
           const pending = this.#pending.get(message.requestId);
@@ -175,7 +235,10 @@ export class MoqSession {
           await Promise.race(this.#activeStreams);
         }
         const { value: stream, done } = await this.#incomingReader.read();
-        if (done) break;
+        if (done || this.#closed) {
+          if (!done) void stream.cancel("sesión cerrada").catch(() => undefined);
+          break;
+        }
         const task = this.#processStream(stream).finally(() => this.#activeStreams.delete(task));
         this.#activeStreams.add(task);
       }
@@ -186,19 +249,24 @@ export class MoqSession {
 
   async #processStream(stream: ReadableStream<Uint8Array>) {
     try {
-      for await (const object of readSubgroupStream(stream)) {
-        const handler = this.#handlers.get(object.trackAlias);
-        if (handler) {
-          this.#enqueueDelivery(object.trackAlias, handler, object);
+      for await (const object of readSubgroupStream(stream, this.#abortController.signal)) {
+        if (this.#closed) return;
+        const queue = this.#handlers.get(object.trackAlias);
+        if (queue) {
+          this.#enqueueDelivery(object.trackAlias, queue, object);
+          continue;
+        }
+        if (this.#pending.size === 0) {
+          this.#reportStreamDrop("unconfirmed-alias");
           continue;
         }
         if (!this.#queueEarlyObject(object)) {
-          this.#reportStreamDrop("alias aún no confirmado");
-          continue;
+          this.#fail(new MoqProtocolError("la cola temprana acotada se agotó"));
+          return;
         }
       }
-    } catch (cause: unknown) {
-      this.#reportStreamDrop(toError(cause).message);
+    } catch {
+      if (!this.#closed) this.#reportStreamDrop("invalid-stream");
     }
   }
 
@@ -229,18 +297,16 @@ export class MoqSession {
     );
   }
 
-  #enqueueDelivery(alias: number, handler: ObjectHandler, object: MoqObject) {
-    const previous = this.#deliveryTails.get(alias) ?? Promise.resolve();
-    const current = previous
-      .then(() => handler(object))
-      .catch((cause: unknown) => this.#reportStreamDrop(toError(cause).message));
-    this.#deliveryTails.set(alias, current);
-    void current.finally(() => {
-      if (this.#deliveryTails.get(alias) === current) this.#deliveryTails.delete(alias);
-    });
+  #enqueueDelivery(_alias: number, queue: TrackDeliveryQueue, object: MoqObject) {
+    const result = queue.enqueue(object);
+    if (result === "video-dropped" || result === "video-resynced") {
+      this.#reportStreamDrop("video-pressure");
+    } else if (result === "overflow") {
+      this.#fail(new MoqProtocolError("una cola de Track acotada se agotó"));
+    }
   }
 
-  #reportStreamDrop(reason: string) {
+  #reportStreamDrop(reason: "invalid-stream" | "unconfirmed-alias" | "video-pressure") {
     const now = performance.now();
     if (now - this.#lastDropEventAt < DROP_EVENT_INTERVAL_MS) return;
     this.#lastDropEventAt = now;
@@ -249,8 +315,22 @@ export class MoqSession {
 
   #fail(cause: unknown) {
     const error = toError(cause);
-    this.#onEvent({ type: "error", message: error.message });
-    this.close(0x03, error.message.slice(0, 128));
+    this.#onEvent({ type: "error", error });
+    void this.close(0x03, "sesión fallida");
+  }
+
+  #handleDeliveryError(deliveryClass: DeliveryClass, cause: unknown) {
+    if (this.#closed) return;
+    if (deliveryClass === "video") this.#reportStreamDrop("invalid-stream");
+    else this.#fail(cause);
+  }
+
+  #linkExternalAbort(signal?: AbortSignal) {
+    if (!signal) return;
+    const abort = () => void this.close(0, "cancelado");
+    signal.addEventListener("abort", abort, { once: true });
+    this.#removeExternalAbort = () => signal.removeEventListener("abort", abort);
+    if (signal.aborted) abort();
   }
 }
 
@@ -268,4 +348,14 @@ export function decodeSha256Hex(value: string) {
 
 function toError(cause: unknown) {
   return cause instanceof Error ? cause : new Error(String(cause));
+}
+
+function abortError() {
+  const error = new Error("conexión cancelada");
+  error.name = "AbortError";
+  return error;
+}
+
+function isAbortError(cause: unknown) {
+  return cause instanceof Error && cause.name === "AbortError";
 }

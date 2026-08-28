@@ -40,6 +40,23 @@ describe("QUIC varint draft-16", () => {
     expect(await reader.readVarInt()).toBe(1);
     expect([...await reader.readExact(3)]).toEqual([2, 3, 4]);
   });
+
+  it("aborta inmediatamente un reader bloqueado", async () => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const reader = new AsyncByteReader(stream, 16, controller.signal);
+    const pending = reader.readExact(1);
+
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(cancelled).toBe(true);
+  });
 });
 
 describe("control MoQT draft-16", () => {
@@ -206,6 +223,30 @@ describe("catálogo MSF", () => {
       height: 360,
       initialization: Uint8Array.of(4, 5, 6, 7),
     });
+  });
+
+  it("mantiene HQ y LQ como representaciones explícitas distintas", () => {
+    const payload = new TextEncoder().encode(
+      JSON.stringify({
+        version: 1,
+        tracks: [
+          {
+            name: "0-video-hq", packaging: "cmaf", role: "video",
+            codec: "avc1.42c01f", width: 1280, height: 720, initData: "AA==",
+          },
+          {
+            name: "1-video-lq", packaging: "cmaf", role: "video",
+            codec: "avc1.42c00d", width: 320, height: 180, initData: "AQ==",
+          },
+        ],
+      }),
+    );
+
+    expect(parseVideoCatalog(payload, "0-video-hq")?.name).toBe("0-video-hq");
+    expect(parseVideoCatalog(payload, "1-video-lq")?.name).toBe("1-video-lq");
+    expect(parseVideoCatalog(payload, "0-video-hq")?.initialization).not.toEqual(
+      parseVideoCatalog(payload, "1-video-lq")?.initialization,
+    );
   });
 
   it("rechaza catálogos que no sean AVC/CMAF", () => {

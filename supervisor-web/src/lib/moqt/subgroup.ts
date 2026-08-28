@@ -15,9 +15,12 @@ export type MoqObject = {
   payload: Uint8Array;
 };
 
-export async function* readSubgroupStream(stream: ReadableStream<Uint8Array>) {
+export async function* readSubgroupStream(
+  stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+) {
   const limit = MAX_OBJECT_BYTES + MAX_STREAM_OVERHEAD;
-  const reader = new AsyncByteReader(stream, limit);
+  const reader = new AsyncByteReader(stream, limit, signal);
   const headerType = await reader.readVarInt();
   assertSupportedHeaderType(headerType);
   const trackAlias = await reader.readVarInt();

@@ -116,10 +116,32 @@ export class AsyncByteReader {
   #chunkOffset = 0;
   #buffered = 0;
   #done = false;
+  #aborted = false;
+  readonly #signal: AbortSignal | null;
+  readonly #abortHandler: (() => void) | null;
 
-  constructor(stream: ReadableStream<Uint8Array>, maximumBuffered = 128 * 1024) {
+  constructor(
+    stream: ReadableStream<Uint8Array>,
+    maximumBuffered = 128 * 1024,
+    signal?: AbortSignal,
+  ) {
     this.#reader = stream.getReader();
     this.#maximumBuffered = maximumBuffered;
+    this.#signal = signal ?? null;
+    this.#abortHandler = signal
+      ? () => {
+          this.#aborted = true;
+          this.#done = true;
+          this.#chunks = [];
+          this.#chunkOffset = 0;
+          this.#buffered = 0;
+          void this.#reader.cancel("lectura cancelada").catch(() => undefined);
+        }
+      : null;
+    if (signal?.aborted) this.#abortHandler?.();
+    else if (signal && this.#abortHandler) {
+      signal.addEventListener("abort", this.#abortHandler, { once: true });
+    }
   }
 
   async readVarInt() {
@@ -130,6 +152,7 @@ export class AsyncByteReader {
 
   async readVarIntOrEof() {
     await this.#fill(1);
+    this.#throwIfAborted();
     if (this.#buffered === 0 && this.#done) return null;
     const first = (await this.readExact(1))[0];
     const length = 1 << (first >> 6);
@@ -151,10 +174,12 @@ export class AsyncByteReader {
   }
 
   async readExact(length: number) {
+    this.#throwIfAborted();
     if (!Number.isSafeInteger(length) || length < 0) {
       throw new MoqProtocolError(`lectura inválida: ${length}`);
     }
     await this.#fill(length);
+    this.#throwIfAborted();
     if (this.#buffered < length) {
       throw new MoqProtocolError("stream MoQT truncado");
     }
@@ -178,12 +203,14 @@ export class AsyncByteReader {
   }
 
   async readAll(limit: number) {
+    this.#throwIfAborted();
     if (limit > this.#maximumBuffered) {
       throw new MoqProtocolError("el límite solicitado supera el máximo del lector");
     }
     while (!this.#done) {
       await this.#readChunk(limit);
     }
+    this.#throwIfAborted();
     if (this.#buffered > limit) {
       throw new MoqProtocolError(`stream supera el límite de ${limit} bytes`);
     }
@@ -191,19 +218,30 @@ export class AsyncByteReader {
   }
 
   async cancel(reason: string) {
+    if (this.#aborted) return;
+    this.#aborted = true;
+    this.#done = true;
+    this.#detachAbortHandler();
+    this.#chunks = [];
+    this.#chunkOffset = 0;
+    this.#buffered = 0;
     await this.#reader.cancel(reason);
   }
 
   async #fill(length: number) {
     while (this.#buffered < length && !this.#done) {
+      this.#throwIfAborted();
       await this.#readChunk(this.#maximumBuffered);
     }
   }
 
   async #readChunk(limit: number) {
+    this.#throwIfAborted();
     const { value, done } = await this.#reader.read();
+    this.#throwIfAborted();
     if (done) {
       this.#done = true;
+      this.#detachAbortHandler();
       return;
     }
     if (!(value instanceof Uint8Array) || value.byteLength === 0) {
@@ -211,10 +249,25 @@ export class AsyncByteReader {
     }
     if (this.#buffered + value.byteLength > limit) {
       await this.#reader.cancel("límite MoQT excedido");
+      this.#done = true;
+      this.#detachAbortHandler();
       throw new MoqProtocolError(`stream supera el límite de ${limit} bytes`);
     }
     this.#chunks.push(value);
     this.#buffered += value.byteLength;
+  }
+
+  #throwIfAborted() {
+    if (!this.#aborted) return;
+    const error = new Error("lectura cancelada");
+    error.name = "AbortError";
+    throw error;
+  }
+
+  #detachAbortHandler() {
+    if (this.#signal && this.#abortHandler) {
+      this.#signal.removeEventListener("abort", this.#abortHandler);
+    }
   }
 }
 

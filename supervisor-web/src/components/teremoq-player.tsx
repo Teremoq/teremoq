@@ -5,6 +5,7 @@ import {
   TeremoqPlayerEngine,
   initialPlayerSnapshot,
   type PlayerPhase,
+  type PlayerReason,
   type VideoTrackId,
 } from "@/lib/player/engine";
 import {
@@ -37,6 +38,7 @@ export function TeremoqPlayer() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputFrameRef = useRef<HTMLIFrameElement>(null);
   const engineRef = useRef<TeremoqPlayerEngine | null>(null);
+  const uiGenerationRef = useRef(0);
   const [snapshot, setSnapshot] = useState(initialPlayerSnapshot);
   const [selectedVideoTrack, setSelectedVideoTrack] = useState<VideoTrackId>(0);
   const [inputPreviewUrl, setInputPreviewUrl] = useState<string | null>(null);
@@ -60,8 +62,14 @@ export function TeremoqPlayer() {
     : [];
   const compatible =
     capabilities.length > 0 && capabilities.every(({ supported }) => supported);
-  const active = !["idle", "stopped", "error"].includes(snapshot.phase);
-  const playing = snapshot.phase === "playing";
+  const active = snapshot.running;
+  const playing = snapshot.running && snapshot.frames > 0;
+  const effectivePhase: PlayerPhase = browserMounted && !compatible
+    ? "unavailable"
+    : snapshot.phase;
+  const effectiveReason: PlayerReason = browserMounted && !compatible
+    ? "browser-unsupported"
+    : snapshot.reason;
   const activeTracks =
     gatewaySnapshot?.tracks.filter((track) => track.status === "active").length ?? 0;
 
@@ -101,6 +109,7 @@ export function TeremoqPlayer() {
 
     return () => {
       stopped = true;
+      uiGenerationRef.current += 1;
       controller.abort();
       if (timer !== null) window.clearTimeout(timer);
       engineRef.current?.stop();
@@ -178,18 +187,28 @@ export function TeremoqPlayer() {
   const startSession = async (trackId: VideoTrackId) => {
     const canvas = canvasRef.current;
     if (!canvas || !compatible) return;
-    const engine = new TeremoqPlayerEngine(canvas, setSnapshot, trackId);
+    const generation = ++uiGenerationRef.current;
+    engineRef.current?.stop();
+    const engine = new TeremoqPlayerEngine(
+      canvas,
+      (nextSnapshot) => {
+        if (uiGenerationRef.current === generation) setSnapshot(nextSnapshot);
+      },
+      trackId,
+    );
     engineRef.current = engine;
     try {
       await engine.start();
+      if (uiGenerationRef.current !== generation) engine.stop();
     } catch {
       // El engine ya publica el error específico en su snapshot.
     }
   };
 
   const toggleSession = async () => {
-    if (active) {
-      engineRef.current?.stop();
+    if (engineRef.current && snapshot.running) {
+      engineRef.current.stop();
+      uiGenerationRef.current += 1;
       engineRef.current = null;
       return;
     }
@@ -198,7 +217,8 @@ export function TeremoqPlayer() {
 
   const selectVideoTrack = (trackId: VideoTrackId) => {
     if (trackId === selectedVideoTrack) return;
-    const reconnect = active;
+    const reconnect = snapshot.running;
+    uiGenerationRef.current += 1;
     engineRef.current?.stop();
     engineRef.current = null;
     setSnapshot(initialPlayerSnapshot());
@@ -343,14 +363,14 @@ export function TeremoqPlayer() {
           {!playing && <div className={styles.reticle} aria-hidden="true" />}
           {!playing && (
             <div className={styles.emptyState}>
-              <strong>{phaseLabel(snapshot.phase)}</strong>
+              <strong>{phaseLabel(effectivePhase)}</strong>
               <span>{snapshot.message}</span>
             </div>
           )}
           {playing && <span className={styles.onAir}>LIVE · TRACK {selectedVideoTrack}</span>}
         </div>
         <div className={`${styles.metrics} ${styles.outputMetrics}`}>
-          <Metric label="Estado" value={phaseLabel(snapshot.phase)} accent={playing} />
+          <Metric label="Estado" value={phaseLabel(effectivePhase)} accent={playing} />
           <Metric label="Frames canvas" value={snapshot.frames.toLocaleString("es-ES")} />
           <Metric label="G2G salida p50" value={formatLatency(snapshot.sourceToCanvasP50Ms)} />
           <Metric label="G2G salida p95" value={formatLatency(snapshot.sourceToCanvasP95Ms)} />
@@ -368,10 +388,10 @@ export function TeremoqPlayer() {
           <h2>Salida MoQT</h2>
         </div>
 
-        <label className={styles.field}>
+        <div className={styles.field}>
           <span>Relay WebTransport</span>
-          <input readOnly value={snapshot.relayUrl} />
-        </label>
+          <output>{snapshot.relayLabel}</output>
+        </div>
 
         <div className={styles.trackSelector} aria-label="Selección de pista de vídeo">
           <span>PISTA DEL PLAYER</span>
@@ -380,6 +400,7 @@ export function TeremoqPlayer() {
               type="button"
               data-track="0"
               data-selected={selectedVideoTrack === 0}
+              aria-pressed={selectedVideoTrack === 0}
               onClick={() => selectVideoTrack(0)}
             >
               TRACK 0 · HQ
@@ -388,6 +409,7 @@ export function TeremoqPlayer() {
               type="button"
               data-track="1"
               data-selected={selectedVideoTrack === 1}
+              aria-pressed={selectedVideoTrack === 1}
               onClick={() => selectVideoTrack(1)}
             >
               TRACK 1 · LQ
@@ -415,6 +437,8 @@ export function TeremoqPlayer() {
           <Detail label="Codec" value={snapshot.codec} />
           <Detail label="Decoder queue" value={String(snapshot.decoderQueue)} />
           <Detail label="Descartes cliente" value={String(snapshot.dropped)} />
+          <Detail label="Motivo" value={reasonLabel(effectiveReason)} />
+          <Detail label="Reintento" value={snapshot.reconnectAttempt === 0 ? "—" : String(snapshot.reconnectAttempt)} />
           <Detail
             label="Cola Gateway"
             value={gatewaySnapshot?.schedulerQueuedObjects.toLocaleString("es-ES") ?? "—"}
@@ -448,10 +472,17 @@ export function TeremoqPlayer() {
           />
         </div>
 
-        <div className={styles.browserState} data-ready={compatible}>
+        <div
+          className={styles.browserState}
+          data-ready={compatible}
+          data-state={effectivePhase}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
           <span className={styles.stateDot} />
           <div>
-            <strong>{compatible ? "Navegador compatible" : "Compatibilidad pendiente"}</strong>
+            <strong>{compatible ? phaseLabel(snapshot.phase) : "No disponible"}</strong>
             <p>{compatible ? snapshot.message : "El player requiere WebTransport y WebCodecs."}</p>
           </div>
         </div>
@@ -501,16 +532,37 @@ function TelemetryValue({ label, value }: { label: string; value: string }) {
 
 function phaseLabel(phase: PlayerPhase) {
   const labels: Record<PlayerPhase, string> = {
-    idle: "Preparado",
+    waiting: "Esperando",
     connecting: "Conectando",
-    catalog: "Catálogo",
-    subscribing: "Inicializando",
-    receiving: "Esperando I-frame",
-    playing: "Reproduciendo",
-    error: "Error",
-    stopped: "Detenido",
+    active: "Reproduciendo",
+    degraded: "Degradado",
+    stale: "Sin actividad",
+    unavailable: "No disponible",
+    closed: "Cerrado",
   };
   return labels[phase];
+}
+
+function reasonLabel(reason: PlayerReason) {
+  const labels: Record<PlayerReason, string> = {
+    "operator-waiting": "INICIO PENDIENTE",
+    connecting: "NEGOCIACIÓN LOCAL",
+    "media-waiting": "ESPERANDO KEYFRAME",
+    healthy: "SEÑAL ACTUAL",
+    "video-pressure": "PRESIÓN DE VÍDEO",
+    "video-stale": "VÍDEO SIN ACTIVIDAD",
+    "peer-silent": "PEER SILENCIOSO",
+    "network-unreachable": "RED NO DISPONIBLE",
+    "retry-exhausted": "REINTENTOS AGOTADOS",
+    "configuration-invalid": "CONFIGURACIÓN INVÁLIDA",
+    "trust-invalid": "TRUST NO VÁLIDO",
+    "protocol-incompatible": "PROTOCOLO INCOMPATIBLE",
+    "decoder-unavailable": "DECODER NO DISPONIBLE",
+    "media-invalid": "MEDIA INVÁLIDA",
+    "browser-unsupported": "BROWSER NO COMPATIBLE",
+    "operator-closed": "CIERRE DEL OPERADOR",
+  };
+  return labels[reason];
 }
 
 function trackStatusLabel(status: GatewaySignalSnapshot["tracks"][number]["status"]) {
@@ -568,6 +620,7 @@ function formatLatencyDelta(outputMs: number | null, inputMs: number | null) {
   return `${delta >= 0 ? "+" : ""}${delta.toFixed(1)} ms`;
 }
 
-function toMessage(cause: unknown) {
-  return cause instanceof Error ? cause.message : String(cause);
+function toMessage(_cause: unknown) {
+  void _cause;
+  return "Datos locales no disponibles";
 }

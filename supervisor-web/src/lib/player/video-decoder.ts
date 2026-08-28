@@ -42,6 +42,9 @@ export class CanvasVideoDecoder {
   #lastRenderedTimestamp = -1;
   #receivedTimes = new Map<number, number>();
   #renderedFrames = 0;
+  #decoderGeneration = 0;
+  #configurationRequest = 0;
+  #closed = false;
 
   constructor(canvas: HTMLCanvasElement, onEvent: (event: DecoderEvent) => void) {
     this.#canvas = canvas;
@@ -67,6 +70,8 @@ export class CanvasVideoDecoder {
   }
 
   async configure(configuration: VideoConfiguration) {
+    if (this.#closed) return;
+    const request = ++this.#configurationRequest;
     const config: VideoDecoderConfig = {
       codec: configuration.codec,
       codedWidth: configuration.codedWidth,
@@ -80,6 +85,7 @@ export class CanvasVideoDecoder {
       const fallback = { ...config, hardwareAcceleration: "no-preference" as const };
       support = await VideoDecoder.isConfigSupported(fallback);
     }
+    if (this.#closed || request !== this.#configurationRequest) return;
     if (!support.supported) throw new Error(`WebCodecs no soporta ${configuration.codec}`);
     this.#configuration = support.config ?? config;
     this.#recreateDecoder();
@@ -87,19 +93,17 @@ export class CanvasVideoDecoder {
   }
 
   signalGap() {
+    if (this.#closed) return;
     this.#pacer.clear();
     this.#waitingForKey = true;
     this.#lastRenderedTimestamp = -1;
     this.#receivedTimes.clear();
     this.#renderedFrames = 0;
-    if (this.#decoder?.state === "configured" && this.#configuration) {
-      this.#decoder.reset();
-      this.#decoder.configure(this.#configuration);
-    }
+    if (this.#configuration) this.#recreateDecoder();
   }
 
   decode(sample: DemuxedVideoSample) {
-    const decoder = this.#decoder;
+    let decoder = this.#decoder;
     if (!decoder || decoder.state !== "configured") return;
     if (this.#waitingForKey && !sample.key) {
       this.#onEvent({ type: "dropped", reason: "waiting-key" });
@@ -110,7 +114,11 @@ export class CanvasVideoDecoder {
       return;
     }
     if (sample.key) {
-      if (decoder.decodeQueueSize >= MAX_DECODE_QUEUE) this.signalGap();
+      if (decoder.decodeQueueSize >= MAX_DECODE_QUEUE) {
+        this.signalGap();
+        decoder = this.#decoder;
+        if (!decoder || decoder.state !== "configured") return;
+      }
       this.#waitingForKey = false;
     }
     this.#receivedTimes.set(sample.timestampUs, sample.receivedAtMs);
@@ -129,7 +137,23 @@ export class CanvasVideoDecoder {
     }
   }
 
+  suspend() {
+    if (this.#closed) return;
+    this.#configurationRequest += 1;
+    this.#decoderGeneration += 1;
+    this.#pacer.clear();
+    if (this.#decoder?.state !== "closed") this.#decoder?.close();
+    this.#decoder = null;
+    this.#receivedTimes.clear();
+    this.#waitingForKey = true;
+    this.#lastRenderedTimestamp = -1;
+  }
+
   close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#configurationRequest += 1;
+    this.#decoderGeneration += 1;
     this.#pacer.clear();
     if (this.#decoder?.state !== "closed") this.#decoder?.close();
     this.#decoder = null;
@@ -137,11 +161,20 @@ export class CanvasVideoDecoder {
   }
 
   #recreateDecoder() {
-    if (!this.#configuration) return;
+    if (this.#closed || !this.#configuration) return;
+    const generation = ++this.#decoderGeneration;
     if (this.#decoder?.state !== "closed") this.#decoder?.close();
     this.#decoder = new VideoDecoder({
-      output: (frame) => this.#pacer.push(frame),
-      error: (error) => this.#recover(error),
+      output: (frame) => {
+        if (this.#closed || generation !== this.#decoderGeneration) {
+          frame.close();
+          return;
+        }
+        this.#pacer.push(frame);
+      },
+      error: (error) => {
+        if (!this.#closed && generation === this.#decoderGeneration) this.#recover(error);
+      },
     });
     this.#decoder.configure(this.#configuration);
     this.#waitingForKey = true;
@@ -194,6 +227,7 @@ export class CanvasVideoDecoder {
   }
 
   #recover(cause: unknown) {
+    if (this.#closed) return;
     const message = cause instanceof Error ? cause.message : String(cause);
     this.#onEvent({ type: "error", message });
     this.#receivedTimes.clear();
@@ -203,7 +237,9 @@ export class CanvasVideoDecoder {
 
   #discardDecodedFrame(frame: VideoFrame) {
     this.#receivedTimes.delete(frame.timestamp);
-    this.#onEvent({ type: "dropped", reason: "presentation-backpressure" });
+    if (!this.#closed) {
+      this.#onEvent({ type: "dropped", reason: "presentation-backpressure" });
+    }
   }
 
   #readTimecode(frame: VideoFrame) {

@@ -36,6 +36,7 @@ export class CmafDemuxer {
   #trackHeight = 0;
   #configured = false;
   #receivedAtMs = 0;
+  #closed = false;
 
   constructor(callbacks: {
     onConfiguration: (configuration: VideoConfiguration) => void;
@@ -46,8 +47,9 @@ export class CmafDemuxer {
     this.#onSample = callbacks.onSample;
     this.#onError = callbacks.onError;
     this.#file.onError = (module, message) =>
-      this.#onError(new Error(`MP4Box ${module}: ${message}`));
+      !this.#closed && this.#onError(new Error(`MP4Box ${module}: ${message}`));
     this.#file.onReady = (info) => {
+      if (this.#closed) return;
       const track = info.videoTracks[0];
       if (!track?.video || (!track.codec.startsWith("avc1.") && !track.codec.startsWith("avc3."))) {
         this.#onError(new Error("la inicialización CMAF no contiene vídeo AVC"));
@@ -66,6 +68,7 @@ export class CmafDemuxer {
   }
 
   initialize(initialization: Uint8Array) {
+    if (this.#closed) throw new Error("CmafDemuxer cerrado");
     if (this.#offset !== 0) throw new Error("CmafDemuxer ya inicializado");
     this.#append(initialization);
     if (this.#trackId === null) {
@@ -74,13 +77,19 @@ export class CmafDemuxer {
   }
 
   appendFragment(fragment: Uint8Array, receivedAtMs: number) {
+    if (this.#closed) return;
     if (this.#trackId === null) throw new Error("CmafDemuxer no inicializado");
     this.#receivedAtMs = receivedAtMs;
     this.#append(fragment);
   }
 
-  flush() {
-    this.#file.flush();
+  close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#file.stop();
+    this.#file.onReady = undefined;
+    this.#file.onSamples = undefined;
+    this.#file.onError = undefined;
   }
 
   #append(bytes: Uint8Array) {
@@ -92,7 +101,7 @@ export class CmafDemuxer {
   }
 
   #handleSamples(trackId: number, samples: Sample[]) {
-    if (trackId !== this.#trackId) return;
+    if (this.#closed || trackId !== this.#trackId) return;
     for (const sample of samples) {
       if (!sample.data) {
         this.#onError(new Error("muestra CMAF sin payload"));
