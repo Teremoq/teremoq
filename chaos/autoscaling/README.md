@@ -54,6 +54,26 @@ image, with no pull and no host ports:
 chaos/autoscaling/run.sh --profile 10 --compose --control-replicas 1
 ```
 
+The integrated milestone flow consumes the four real Task 09 CLI artifacts.
+It starts only one local control container, creates origin and the first core
+from `bootstrap`, and creates the second core only after consuming
+`scenario-100-2`. Replacement creates the new core and waits for local health
+before transferring the simulated assignment counts; the old core is removed
+only after stop-admit, zero assignments and drain acknowledgement.
+
+```bash
+chaos/autoscaling/run-integrated.sh --mode dry-run --viewers 100
+chaos/autoscaling/run-integrated.sh --mode simulate --docker --viewers 100
+```
+
+The default binds to `control-plane` in the same repository and verifies its
+immutable subtree rather than requiring a particular global `HEAD`. The
+`TEREMOQ_CONTROL_REPO` override exists only for the owner laboratory. The
+milestone configuration accepts exactly 100 simulated viewers and rejects 101
+and 1,000; this is a run configuration gate, not a global architectural
+ceiling. A future authorized configuration may raise it without changing the
+consumer.
+
 The milestone Compose accepts exactly one control replica because its single
 service has one fixed unique identity. Pure `simulate`/`dry-run` can exercise
 unique IDs `control`, `control-r2`, and so on. The run-local safety ceiling is
@@ -92,6 +112,8 @@ infra/virtual-nodes/tests/compose-policy-test.sh
 chaos/autoscaling/tests/harness-test.sh
 chaos/autoscaling/tests/compose-smoke.sh
 chaos/autoscaling/tests/cleanup-failure-test.sh
+chaos/autoscaling/tests/integrated-compose-test.sh
+chaos/autoscaling/tests/integrated-cleanup-failure-test.sh
 ```
 
 Run `shellcheck` when locally available. This Task adds no Rust, manifest,
@@ -109,6 +131,8 @@ lockfile, dependency or new image; Rust gates are therefore not applicable.
   load or video capacity.
 - Provider/region labels prove placement neutrality of the harness only. No
   provider API or interoperability is exercised.
-- Task 09 must supply the contract documented in
-  `infra/virtual-nodes/contract/v1/provider-adapter.md` before this harness can
-  test real autoscaling decisions.
+- The integrated flow consumes local serialized Task 09 decisions, but does
+  not provide a live transport, consensus or remote provider execution.
+- The Task 09 image digest is currently a fixture identifier. The lab maps it
+  explicitly to a distinct local simulator OCI; production requires a real
+  inventoried OCI digest in desired state.
