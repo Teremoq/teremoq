@@ -29,7 +29,11 @@ debe registrar y comprobar:
 El esquema admite un solo modelo para evitar selección implícita o mezcla entre
 nombre, digest y licencia. No existe `latest`, fallback ni modelo por default.
 El hash SHA-256 del propio manifiesto debe pasarse al modo `probe`, de modo que
-una modificación no revisada falle antes de contactar al runtime local.
+una modificación no revisada falle antes de contactar al runtime local. El
+manifiesto se parsea como JSON rechazando claves duplicadas; no se inspecciona
+mediante substrings. La respuesta local también se parsea con límites de
+estructura y tipos, y sólo pasa cuando una única entrada con el nombre aprobado
+contiene simultáneamente el digest aprobado.
 
 ## Procedimiento futuro de revisión
 

@@ -35,7 +35,7 @@ ADR-0006.
 | Acción no autorizada | recomendación fija `dry_run`, `executable=false`, `authority=none`; ejecución rechaza todo | exige ADR, política y autorización separadas |
 | Replay o duplicado | IDs acotados y vínculo causal obligatorio | consumidor futuro debe deduplicar e imponer ventana temporal |
 | LLM malformado o oversized | parseo JSON Schema, máximo de fichero y longitudes | detener análisis; nunca fallback permisivo |
-| Modelo o pesos sustituidos | manifiesto exacto, digest y hash; ningún modelo aprobado | verificar artefacto local y licencia antes de habilitar |
+| Modelo o pesos sustituidos | manifiesto exacto, digest y hash; parser JSON rechaza duplicados y liga nombre-digest en un mismo objeto; ningún modelo aprobado | verificar artefacto local y licencia antes de habilitar |
 | Servicio AIOps expuesto | bootstrap sólo admite HTTP loopback y opt-in explícito | red interna, autenticación y firewall requieren diseño futuro |
 | Dependencia de AIOps en el camino crítico | no hay llamadas desde/al Gateway | conservar colas prescindibles y pérdida preferente de observabilidad |
 | Flood o fallo upstream de federación | se conserva `capacity_enforced=false` cuando aplique | ADR-0006 continúa bloqueado; AIOps no puede compensarlo |

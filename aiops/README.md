@@ -60,6 +60,13 @@ potencialmente secreto después de ingerirlo.
   `AIOPS_NETWORK_OPT_IN=true`, nombre y digest exactos, hash del manifiesto y un
   modelo aprobado. Sólo consulta `/api/tags` en loopback con timeouts acotados.
 
+El bootstrap usa el parser JSON de la biblioteca estándar de Python 3, ya
+presente en el toolchain, antes de confiar en el manifiesto o la respuesta. Se
+rechazan JSON malformados, claves duplicadas a cualquier nivel, estructuras y
+tipos fuera de límite, nombres ambiguos y respuestas donde nombre y digest no
+coincidan dentro del mismo objeto de modelo. No se usan búsquedas textuales
+independientes para establecer esa vinculación.
+
 El manifiesto actual contiene `"model": null`, por lo que `probe` falla antes
 de invocar `curl`. El script no tiene modo pull, no selecciona un modelo por
 default, no genera texto y no imprime variables sensibles.
@@ -72,8 +79,8 @@ aiops/init_agents.sh
 
 ## Validación reproducible
 
-La suite usa Bash, `jsonschema` y `rg` ya disponibles; no instala nada y no usa
-red externa:
+La suite usa Bash, Python 3 estándar, `jsonschema` y `rg` ya disponibles; no
+instala nada y no usa red externa:
 
 ```sh
 aiops/tests/run.sh

@@ -2,25 +2,32 @@
 
 ## Hallazgos primero
 
-1. **Crítico, corregido:** `agents_schema.json` admitía un `payload` arbitrario
+1. **Alto, corregido tras revisión funcional Master:** el probe comparaba
+   nombre y digest mediante substrings independientes, por lo que podían
+   proceder de entradas distintas; el manifiesto tampoco rechazaba claves JSON
+   duplicadas de forma explícita. Ahora ambos documentos se parsean con la
+   biblioteca estándar, se rechazan duplicados recursivamente y una única
+   entrada debe ligar simultáneamente nombre y digest aprobados.
+2. **Crítico, corregido:** `agents_schema.json` admitía un `payload` arbitrario
    y acciones como cambios de bitrate u Object Dropping. Ahora es un alias
    inequívoco del contrato de recomendación no ejecutable; el formato legacy se
    prueba como inválido.
-2. **Alto, corregido:** `init_agents.sh` seleccionaba un modelo por default,
+3. **Alto, corregido:** `init_agents.sh` seleccionaba un modelo por default,
    esperaba sin deadline y hacía pull implícito. Ahora el default no usa red ni
    modelo; sólo se admite un probe loopback explícito, acotado y aprobado.
-3. **Alto, contenido:** los logs documentados contienen IDs, peers, errores y
+4. **Alto, contenido:** los logs documentados contienen IDs, peers, errores y
    otros valores no aptos para un prompt o métrica de baja cardinalidad. El
    contrato AIOps sólo acepta agregados allowlisted y rechaza identidad,
    localizadores, material sensible y payload. No se implementó un agregador en
    esta Task.
-4. **Alto, abierto por diseño:** ADR-0005 no dispone de identidad autenticada en
+5. **Alto, abierto por diseño:** ADR-0005 no dispone de identidad autenticada en
    el punto de autorización y ADR-0006 no dispone de admisión/concurrencia
    acotada del relay. Ninguna recomendación AIOps se presenta como mitigación de
    esos gaps.
-5. **Gate cerrado:** no existe modelo seleccionado, licencia de pesos aceptada
+6. **Gate cerrado:** no existe modelo seleccionado, licencia de pesos aceptada
    ni artefacto descargado. El manifiesto válido contiene `model: null`.
-6. **Tooling:** se reutiliza `jsonschema` 4.19.2 con Draft 2020-12. Su CLI está
+7. **Tooling:** se reutilizan Python 3 estándar y `jsonschema` 4.19.2 con Draft
+   2020-12. Su CLI está
    deprecada por upstream; una migración futura a `check-jsonschema` debe pasar
    por el toolchain común y fijar versión. No se añadió dependencia.
 
@@ -95,17 +102,20 @@ de este informe, evitando una referencia circular.
   legacy, prompt injection, campos extra, cardinalidad, datos sensibles, acción
   no autorizada, límites, JSON malformado, ejecución y modelo incompleto.
 - `aiops/tests/test_bootstrap.sh`: PASS; modo offline, host, opt-in, timeouts,
-  no modelo implícito, no pull, mensaje redactado y fake `curl` no invocado.
+  no modelo implícito, no pull, mensaje redactado y fake `curl`. Cubre pareja
+  única válida, nombre/digest repartidos, claves duplicadas en respuesta y
+  manifiesto, JSON malformado y manifiesto ambiguo, sin red real.
 - `aiops/tests/run.sh`: PASS.
 - Parseo/validación con `jsonschema -V Draft202012Validator`: PASS.
 - Búsqueda de material PEM/secreto en JSON no negativo: PASS.
 - `git diff --check -- aiops`: PASS.
 - Búsqueda de caches/artefactos/dependencias vendorizadas: PASS.
 
-Todos los tests son locales, deterministas y acotados. No se ejecutó un probe
-positivo contra Ollama: hacerlo requeriría aprobar un modelo real, lo que está
-fuera de la Task. La prueba confirma que el manifiesto vacío falla antes de
-invocar `curl`.
+Todos los tests son locales, deterministas y acotados. El probe positivo usa
+exclusivamente manifiesto y respuesta sintéticos dentro de un directorio
+temporal con `curl` falso; no se ejecutó Ollama ni se aprobó un modelo real. La
+prueba también confirma que el manifiesto real vacío falla antes de invocar
+`curl`.
 
 ## Límites y decisiones aún necesarias
 
