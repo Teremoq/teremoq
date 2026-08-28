@@ -201,11 +201,13 @@ for node in distributor-a distributor-b; do
         emit_event capacity_configuration_requested warning utilization_above_80_percent ",\"node_id\":\"${node}\",\"assigned\":${assigned},\"previous_capacity\":${capacity},\"requested_capacity\":${requested_capacity},\"creates_node\":false"
     fi
 done
+adapter_call sessions distributor-a --assignments "${initial_a}"
+adapter_call sessions distributor-b --assignments "${initial_b}"
 
 failure_started="$(monotonic_ms)"
 alerts_emitted=$(( alerts_emitted + 1 ))
 emit_event node_unhealthy critical injected_distributor_failure ',"node_id":"distributor-a"'
-adapter_call destroy distributor-a
+adapter_call fail distributor-a
 if [[ "${with_compose}" == true ]]; then
     compose_command stop --timeout 2 distributor-a >/dev/null
     compose_command up -d --force-recreate distributor-a >/dev/null
@@ -216,6 +218,11 @@ adapter_call create distributor-a-r1 --template-node distributor-a --capacity "$
 injected_replacement_creates=$(( injected_replacement_creates + 1 ))
 adapter_call configure distributor-a-r1 --capacity "${initial_a}"
 adapter_call health distributor-a-r1
+adapter_call sessions distributor-a-r1 --assignments "${initial_a}"
+adapter_call sessions distributor-a --assignments 0
+adapter_call stop-admit distributor-a
+adapter_call drain distributor-a
+adapter_call destroy distributor-a
 replacement_finished="$(monotonic_ms)"
 replacement_ms=$(( replacement_finished - failure_started ))
 
@@ -230,6 +237,9 @@ emit_event sessions_reassigned info replacement_complete ",\"from\":\"distributo
 drain_started="$(monotonic_ms)"
 adapter_call configure distributor-a-r1 --capacity "${PROFILE_VIEWERS}"
 adapter_call health distributor-a-r1
+adapter_call sessions distributor-a-r1 --assignments "${PROFILE_VIEWERS}"
+adapter_call sessions distributor-b --assignments 0
+adapter_call stop-admit distributor-b
 adapter_call drain distributor-b
 replacement_sessions="${PROFILE_VIEWERS}"
 remaining_b=0
@@ -258,8 +268,25 @@ rollback_ms=$(( $(monotonic_ms) - rollback_started ))
 emit_event rollback_complete warning target_node_drained ",\"restored_total\":$((replacement_sessions + remaining_b))"
 alerts_emitted=$(( alerts_emitted + 1 ))
 
+request_sequence=$(( request_sequence + 1 ))
+if premature_drain="$(${PROVIDER_ADAPTER} \
+    --contract-version 1 --mode "${mode}" --operation drain \
+    --request-id "r${request_sequence}-drain-distributor-a-r1" --run-id "${run_id}" \
+    --node distributor-a-r1 --state-dir "${state_dir}" --topology "${TOPOLOGY}" \
+    2>&1)"; then
+    autoscaling_die 'final drain unexpectedly succeeded before stop-admit'
+fi
+[[ "${premature_drain}" == *'drain requires stop-admit acknowledgement'* ]] || \
+    autoscaling_die 'premature drain failed for an unexpected reason'
+adapter_call sessions distributor-a-r1 --assignments 0
+adapter_call stop-admit distributor-a-r1
 adapter_call drain distributor-a-r1
 adapter_call drain distributor-a-r1
+for node in "${control_nodes[@]}" origin-1; do
+    adapter_call sessions "${node}" --assignments 0
+    adapter_call stop-admit "${node}"
+    adapter_call drain "${node}"
+done
 for node in distributor-a-r1 distributor-b distributor-a "${control_nodes[@]}" origin-1; do
     adapter_call destroy "${node}"
     adapter_call destroy "${node}"
