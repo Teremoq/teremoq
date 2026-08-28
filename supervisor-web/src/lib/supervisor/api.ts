@@ -174,7 +174,14 @@ function validateLoopbackPreviewUrl(value: string) {
   ) {
     throw new PlaybackConfigurationError("el observador de entrada debe permanecer en loopback");
   }
-  return url.toString();
+  if (
+    url.username !== "" ||
+    url.password !== "" ||
+    !isSameOriginPreviewPath(url.pathname)
+  ) {
+    throw new PlaybackConfigurationError("URL del observador de entrada inválida");
+  }
+  return url;
 }
 
 function validateLoopbackRelayUrl(value: string) {
@@ -195,10 +202,16 @@ function validateLoopbackRelayUrl(value: string) {
   return url.toString();
 }
 
-function localPreviewPath(value: string) {
-  const url = new URL(value);
+function localPreviewPath(url: URL) {
+  if (!isSameOriginPreviewPath(url.pathname)) {
+    throw new PlaybackConfigurationError("URL del observador de entrada inválida");
+  }
   const pathname = url.pathname === "/input" ? "/input/" : url.pathname;
   return `${pathname}${url.search}${url.hash}`;
+}
+
+function isSameOriginPreviewPath(pathname: string) {
+  return pathname.startsWith("/") && pathname[1] !== "/" && pathname[1] !== "\\";
 }
 
 function safeNonNegativeNumber(value: unknown) {

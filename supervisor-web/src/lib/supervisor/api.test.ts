@@ -2,19 +2,62 @@ import { describe, expect, it } from "vitest";
 import { parseGatewaySnapshot, parsePlaybackConfiguration } from "./api";
 
 describe("API del supervisor", () => {
-  it("acepta configuración local de entrada y salida", () => {
-    expect(
+  it.each([
+    ["IPv4", "http://127.0.0.1:8889/input?muted=true", "/input/?muted=true"],
+    ["localhost", "http://localhost:8889/input", "/input/"],
+    [
+      "IPv6",
+      "https://[::1]:8889/preview/live?muted=true#camera",
+      "/preview/live?muted=true#camera",
+    ],
+  ])(
+    "acepta configuración local de entrada y salida mediante %s",
+    (_host, input_preview_url, expectedPreviewPath) => {
+      expect(
+        parsePlaybackConfiguration({
+          schema_version: 1,
+          input_preview_url,
+          output_relay_url: "https://127.0.0.1:14434/watch",
+          namespaces: ["teremoq", "live"],
+        }),
+      ).toEqual({
+        inputPreviewUrl: expectedPreviewPath,
+        relayUrl: "https://127.0.0.1:14434/watch",
+        namespace: ["teremoq", "live"],
+      });
+    },
+  );
+
+  it.each([
+    "http://127.0.0.1:8889//evil.example/preview",
+    String.raw`http://127.0.0.1:8889/\evil.example/preview`,
+  ])(
+    "rechaza un path de preview que puede convertirse en network-path: %s",
+    (input_preview_url) => {
+      expect(() =>
+        parsePlaybackConfiguration({
+          schema_version: 1,
+          input_preview_url,
+          output_relay_url: "https://127.0.0.1:14434/watch",
+          namespaces: ["teremoq"],
+        }),
+      ).toThrow(/observador/);
+    },
+  );
+
+  it.each([
+    "http://operator@127.0.0.1:8889/input",
+    "http://operator:dummy@localhost:8889/input",
+    "https://operator:dummy@[::1]:8889/input",
+  ])("rechaza credenciales en el preview loopback: %s", (input_preview_url) => {
+    expect(() =>
       parsePlaybackConfiguration({
         schema_version: 1,
-        input_preview_url: "http://127.0.0.1:8889/input?muted=true",
+        input_preview_url,
         output_relay_url: "https://127.0.0.1:14434/watch",
-        namespaces: ["teremoq", "live"],
+        namespaces: ["teremoq"],
       }),
-    ).toEqual({
-      inputPreviewUrl: "/input/?muted=true",
-      relayUrl: "https://127.0.0.1:14434/watch",
-      namespace: ["teremoq", "live"],
-    });
+    ).toThrow(/observador/);
   });
 
   it("rechaza un iframe remoto aunque lo entregue el Gateway", () => {
