@@ -16,6 +16,7 @@ expected_cli='smallstep/step-cli:0.30.6@sha256:474768dd54700088e9480210eaf2c25e3
 [[ "${STEP_CA_IMAGE}" == "${expected_ca}" ]]
 [[ "${STEP_CLI_IMAGE}" == "${expected_cli}" ]]
 bash -n "${PKI_ROOT}/scripts/"*.sh "${PKI_ROOT}/tests/"*.sh
+"${PKI_ROOT}/tests/identity-policy.sh"
 if rg -n 'image:[[:space:]]*[^#[:space:]]*:latest|smallstep/[^@[:space:]]+$' "${PKI_ROOT}" -g '*.yaml' -g '*.env'; then echo "floating image found" >&2; exit 1; fi
 
 test_root="$(mktemp -d /tmp/teremoq-pki-smoke.XXXXXX)"

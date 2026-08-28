@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "environment": "development-integration-ci",
+  "defaultDecision": "deny",
+  "identity": {
+    "trustDomain": "teremoq.local",
+    "nodeIdPattern": "^[A-Za-z0-9._-]{1,64}$",
+    "requiredUriSanCount": 1,
+    "gatewayUriPattern": "spiffe://teremoq.local/gateway/<node-id>",
+    "relayUriPattern": "spiffe://teremoq.local/relay/<node-id>",
+    "allowedSanTypes": {
+      "gateway": ["uri"],
+      "relay": ["uri", "dns", "ip"]
+    }
+  },
+  "certificateLimits": {
+    "maxChainCertificates": 8,
+    "maxLeafDerBytes": 16384,
+    "maxChainDerBytes": 65536
+  },
+  "connection": {
+    "requiredPath": "/publish"
+  },
+  "principals": {
+    "gateway-dev-1": {
+      "uri": "spiffe://teremoq.local/gateway/gateway-dev-1",
+      "role": "gateway",
+      "allow": [
+        {
+          "operation": "Publish",
+          "namespace": "teremoq/live"
+        },
+        {
+          "operation": "PublishNamespace",
+          "namespace": "teremoq/live"
+        }
+      ]
+    }
+  },
+  "roles": {
+    "relay": {
+      "defaultDecision": "deny",
+      "allow": []
+    }
+  }
+}
