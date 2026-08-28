@@ -34,6 +34,14 @@ expect_failure() {
     fi
 }
 
+retire_node() {
+    local node="$1"
+    invoke simulate sessions "${node}" --assignments 0 >/dev/null
+    invoke simulate stop-admit "${node}" >/dev/null
+    invoke simulate drain "${node}" >/dev/null
+    invoke simulate destroy "${node}" >/dev/null
+}
+
 expect_failure "${ADAPTER}" --contract-version 2 --mode dry-run \
     --operation plan --request-id invalid-version --run-id t10-adapter-test \
     --node distributor-a --state-dir "${state_dir}" --topology "${TOPOLOGY}"
@@ -64,6 +72,26 @@ expect_failure "${ADAPTER}" --contract-version 1 --mode dry-run \
     --state-dir "${state_dir}" --topology "${TOPOLOGY}"
 [[ ! -e "${state_dir}" ]] || fail 'rejected dry-run mutated state'
 
+direct_action=(
+    "${ADAPTER}" --contract-version 1 --mode dry-run --request-id direct-action
+    --run-id t10-adapter-test --node direct-core --state-dir "${scratch}/direct-state"
+    --topology "${TOPOLOGY}" --capacity 60 --capacity-egress 100
+    --node-generation 1 --partition-generation 1 --partition eu-south
+    --config-digest "sha256:$(printf '0%.0s' {1..64})"
+    --image-digest "sha256:$(printf '1%.0s' {1..64})"
+    --idempotency-key "sha256:$(printf '2%.0s' {1..64})" --registry-limit 8
+    --tier core --provider local-sim-a --region eu-south --zone zone-a
+)
+expect_failure "${direct_action[@]}" --operation create --reason raw_provider_error \
+    --requires-drained false
+expect_failure "${direct_action[@]}" --operation create --reason autoscale_out \
+    --requires-drained true
+expect_failure "${direct_action[@]}" --operation destroy --reason safe_shutdown \
+    --requires-drained false
+expect_failure "${direct_action[@]}" --operation destroy --reason safe_shutdown \
+    --requires-drained true --replaces-node previous-core
+[[ ! -e "${scratch}/direct-state" ]] || fail 'direct semantic rejection mutated state'
+
 output="$(invoke dry-run create distributor-a)"
 [[ "${output}" == *'"result":"planned"'* ]] || fail 'dry-run was not planned'
 [[ ! -e "${state_dir}" ]] || fail 'dry-run mutated state'
@@ -83,15 +111,21 @@ output="$(invoke simulate configure distributor-a --capacity 40)"
 invoke simulate health distributor-a >/dev/null
 output="$(invoke simulate health distributor-a)"
 [[ "${output}" == *'"state":"healthy"'* ]] || fail 'health did not converge'
+expect_failure invoke simulate destroy distributor-a
+expect_failure invoke simulate drain distributor-a
+invoke simulate stop-admit distributor-a >/dev/null
 invoke simulate drain distributor-a >/dev/null
 output="$(invoke simulate drain distributor-a)"
 [[ "${output}" == *'"result":"unchanged"'* ]] || fail 'drain was not idempotent'
+expect_failure invoke simulate configure distributor-a --capacity 41
 
 invoke simulate create distributor-a-r1 --template-node distributor-a >/dev/null
 [[ "$(<"${state_dir}/nodes/distributor-a-r1/provider")" == local-a ]] || \
     fail 'replacement did not inherit provider template'
 
-invoke simulate destroy distributor-a-r1 >/dev/null
+invoke simulate configure distributor-a-r1 >/dev/null
+invoke simulate health distributor-a-r1 >/dev/null
+retire_node distributor-a-r1
 output="$(invoke simulate destroy distributor-a-r1)"
 [[ "${output}" == *'"reason":"already_absent"'* ]] || fail 'destroy was not idempotent'
 invoke simulate destroy distributor-a >/dev/null
@@ -104,7 +138,9 @@ invoke simulate create control-r3 --template-node control >/dev/null
 [[ "$(<"${state_dir}/nodes/control-r2/role")" == control ]] || \
     fail 'control replica did not inherit its template'
 for control_node in control control-r2 control-r3; do
-    invoke simulate destroy "${control_node}" >/dev/null
+    invoke simulate configure "${control_node}" >/dev/null
+    invoke simulate health "${control_node}" >/dev/null
+    retire_node "${control_node}"
 done
 
 invoke simulate create viewer-edge-r1 --template-node viewer-edge-template >/dev/null
@@ -112,13 +148,17 @@ invoke simulate create viewer-edge-r1 --template-node viewer-edge-template >/dev
     fail 'viewer-edge template tier was not preserved'
 [[ "$(<"${state_dir}/nodes/viewer-edge-r1/region")" == eu-local-3 ]] || \
     fail 'viewer-edge template region was not preserved'
-invoke simulate destroy viewer-edge-r1 >/dev/null
+invoke simulate configure viewer-edge-r1 >/dev/null
+invoke simulate health viewer-edge-r1 >/dev/null
+retire_node viewer-edge-r1
 
 invoke simulate create distributor-b >/dev/null
 if invoke simulate health distributor-b >/dev/null 2>&1; then
     fail 'health accepted an unconfigured node'
 fi
-invoke simulate destroy distributor-b >/dev/null
+invoke simulate configure distributor-b >/dev/null
+invoke simulate health distributor-b >/dev/null
+retire_node distributor-b
 
 remaining="$(find "${state_dir}/nodes" -mindepth 1 -maxdepth 1 -type d | wc -l)"
 (( remaining == 0 )) || fail 'test left provider nodes behind'

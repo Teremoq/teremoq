@@ -14,7 +14,7 @@ The executable contract is:
 provider-adapter.sh \
   --contract-version 1 \
   --mode simulate|dry-run \
-  --operation plan|create|configure|health|drain|destroy \
+  --operation plan|create|configure|health|sessions|stop-admit|fail|drain|destroy \
   --request-id <bounded-token> \
   --run-id <bounded-token> \
   --node <bounded-node-id> \
@@ -24,6 +24,18 @@ provider-adapter.sh \
   [--capacity <unsigned-integer>]
 ```
 
+Calls originating from an action envelope additionally carry the validated
+partition and node generation, config and image digests, idempotency key,
+registry limit, tier and placement, capacity pair, reason, drain requirement
+and optional replacement identity. The adapter deliberately validates a
+minimal v1 semantic boundary again, so bypassing the consumer cannot submit an
+unknown reason or an invalid create/destroy combination. The accepted reasons
+are `configured_minimum`, `autoscale_out`, `autoscale_in`,
+`failed_node_replacement`, `failed_node_cleanup` and `safe_shutdown`.
+`create` requires `requires_drained=false`; `destroy` requires
+`requires_drained=true` and cannot carry `replaces_node_id`. Replacement
+linkage is valid only on `create`.
+
 Every successful call prints exactly one JSON object. The stable envelope is:
 
 ```json
@@ -31,7 +43,8 @@ Every successful call prints exactly one JSON object. The stable envelope is:
 ```
 
 `result` is one of `changed`, `unchanged`, `planned`; `state` is one of
-`planned`, `created`, `configured`, `healthy`, `drained`, `absent`. Reasons are
+`planned`, `created`, `configured`, `healthy`, `failed`, `drained`, `absent`.
+Reasons are
 bounded enums from the adapter. Provider errors return nonzero and never emit
 credentials, raw external errors or unbounded labels.
 
@@ -41,21 +54,35 @@ credentials, raw external errors or unbounded labels.
   directory or invokes Docker.
 - `plan` validates that the desired node or template exists and performs no
   state mutation.
-- `create`, `configure`, `health`, `drain` and `destroy` converge on desired
-  state. Repeating an already-completed operation returns `unchanged`.
+- `create`, `configure`, `health`, `sessions`, `stop-admit`, `fail`, `drain`
+  and `destroy` converge on desired state. Repeating an already-completed
+  operation returns `unchanged`.
 - A replacement uses a new node identity plus `--template-node`; the original
   identity is never silently reused in the provider state.
 - `configure --capacity` changes a simulated capacity value on an existing
   node. It never creates a node and is not evidence of automatic scaling.
-- `drain` is only a provider lifecycle transition. Task 09 must move sessions
-  and prove zero assignments before invoking it.
+- `sessions` changes only the bounded simulated assignment count. A nonzero
+  count requires a healthy node with open admissions and cannot exceed its
+  configured viewer capacity.
+- `drain` requires stopped admissions and zero assignments, then persists its
+  acknowledgement. `destroy` additionally requires that acknowledgement; it
+  cannot remove a node merely because a caller claims it was drained.
 - `destroy` is allowed only inside the explicit ephemeral state root. It does
   not delete Docker or cloud resources.
 
+The action context persists an idempotency ledger bounded by the configured
+registry limit and a monotonic generation per partition. An exact replay is
+`unchanged`; an unseen stale generation or changed config/image digest fails
+closed. The consumer validates the complete selected envelope without a
+subprocess before the first mutation. Operational failure during the later
+apply phase is not called atomic: it returns `partial_apply`, identifies the
+already-applied bounded results and requires harness cleanup.
+
 ## Contract required from Task 09
 
-Task 10 will later consume a versioned control-plane decision stream. Task 09
-must define, without depending on this implementation:
+Task 10 consumes the versioned local CLI action artifacts from Task 09 for the
+milestone demonstration. A future runtime transport remains outside this
+contract. Task 09 defines, without depending on this implementation:
 
 1. an immutable decision/operation ID and monotonic deadline;
 2. desired node role, tier (`origin`, `core`, `regional`, `viewer-edge`),
@@ -76,8 +103,9 @@ must define, without depending on this implementation:
 To request actual replacement or scale-out, Task 09 must issue an explicit
 versioned `create` action carrying at least operation ID, unique node ID,
 template/role, generation, provider, region, capacity and absolute deadline.
-Task 10 currently injects its replacement `create` locally; it reports that
-separately and consumes zero Task 09 create actions.
+The integrated harness consumes the Task 09 `bootstrap`, `scenario-100-2`,
+`replacement` and `cleanup` artifacts in order. A standalone Task 10 harness
+continues to model its own replacement and reports that separately.
 
 Task 10 assumes session assignments are counts and generations, not media
 payloads. It does not assume a database, queue, cloud vendor, consensus

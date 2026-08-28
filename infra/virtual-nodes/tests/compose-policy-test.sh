@@ -35,4 +35,20 @@ grep -Fq 'pull_policy: never' "${ROOT}/compose.yaml"
 grep -Fq 'no-new-privileges:true' "${ROOT}/compose.yaml"
 grep -Fq 'pids_limit: 32' "${ROOT}/compose.yaml"
 grep -Fq 'teremoq.run-id:' "${ROOT}/compose.yaml"
+mapfile -t image_mappings < <(awk -F '\t' '$0 !~ /^#/ && NF == 3 {print}' \
+    "${ROOT}/contract/v1/image-map.tsv")
+(( ${#image_mappings[@]} == 1 )) || {
+    printf 'compose-policy-test: simulator image map must have exactly one reviewed entry\n' >&2
+    exit 1
+}
+IFS=$'\t' read -r desired_identifier mapped_oci mapped_id <<<"${image_mappings[0]}"
+[[ "${desired_identifier}" =~ ^sha256:[0-9a-f]{64}$ && \
+   "${mapped_oci}" == "${VIRTUAL_NODE_IMAGE}" && "${mapped_id}" == "${VIRTUAL_NODE_IMAGE_ID}" ]] || {
+    printf 'compose-policy-test: simulator image map is inconsistent\n' >&2
+    exit 1
+}
+[[ "${desired_identifier}" != "${mapped_id}" ]] || {
+    printf 'compose-policy-test: fixture identifier was conflated with simulator image ID\n' >&2
+    exit 1
+}
 printf 'compose-policy-test: pass\n'

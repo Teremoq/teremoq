@@ -48,10 +48,27 @@ contains no certificate, credential, payload, transport or cloud endpoint.
 ## Provider adapter
 
 `provider-adapter.sh` implements idempotent local
-`plan/create/configure/health/drain/destroy` in `simulate` and `dry-run` modes.
+`plan/create/configure/health/sessions/stop-admit/fail/drain/destroy` in
+`simulate` and `dry-run` modes.
 Its state root must be an explicit absolute ephemeral path. See
 `contract/v1/provider-adapter.md` for the executable response and the boundary
 required from Task 09.
+
+`action-envelope-consumer.py` binds the laboratory to the immutable
+`control-plane` subtree `1ffd80a0b2135c86b5d11751aeca49ae791de53d` through
+the calling harness. It imports the real Task 09 loader, action guard, enums
+and serializer-compatible model from `control-plane/src`; it does not copy the
+action-envelope schema. It preflights every selected action before invoking
+the adapter, then records an explicit partial-apply result if an operational
+provider call fails after an earlier call succeeded. Its `--label` is a
+1--32-character lowercase token, so derived provider request IDs are always at
+most 51 characters and remain below the adapter's 63-character bound.
+
+The control-plane desired image value is currently a fixture identifier, not
+the OCI image used by this lab. `contract/v1/image-map.tsv` is the explicit
+versioned allow-list from that fixture to the separately pinned simulator OCI
+and local image ID. An unmapped value is rejected before Docker is touched.
+Production desired state still requires a real, inventoried OCI digest.
 
 Example without Docker:
 
@@ -73,6 +90,7 @@ provider state. The autoscaling harness creates and removes its own root.
 ```bash
 bash -n infra/virtual-nodes/*.sh infra/virtual-nodes/tests/*.sh
 infra/virtual-nodes/tests/provider-adapter-test.sh
+infra/virtual-nodes/tests/action-envelope-consumer-test.sh
 infra/virtual-nodes/tests/compose-policy-test.sh
 ```
 

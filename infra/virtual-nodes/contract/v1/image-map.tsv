@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Teremoq contributors
+# SPDX-License-Identifier: Apache-2.0
+# desired_image_identifier	simulator_runtime_oci	simulator_runtime_image_id
+sha256:07265afea47294d8bac3e450fb16c8c06403e9e4b86575d5816210f76ed8dd0b	teremoq-step7-lab:rust-1.93-full@sha256:ba076cf0a26aa41efdd2f0f80687ef97009d1526680751456c19cc944dff1d0b	sha256:ba076cf0a26aa41efdd2f0f80687ef97009d1526680751456c19cc944dff1d0b
