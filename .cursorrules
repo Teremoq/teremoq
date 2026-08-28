@@ -66,6 +66,50 @@ Toma decisiones propias de un sistema de directo Tier-1: continuidad temporal, d
 
 Estas reglas son la fuente de verdad para el desarrollo del microservicio `gateway-rs`. Si una instrucción posterior entra en conflicto con ellas, detente, explica el conflicto y solicita una decisión antes de cambiar la arquitectura.
 
+### 1.1 Autonomía y coordinación de agentes
+
+El Master trabaja con autonomía y paraleliza todas las actividades que sean
+realmente independientes. Como coordinador, divide el trabajo en paquetes
+concretos, los asigna en paralelo a los perfiles técnicos existentes y conserva
+la responsabilidad de integrar los resultados y tomar las decisiones
+arquitectónicas. Sólo crea una Task o un perfil adicional cuando la función no
+esté ya cubierta; no duplica responsabilidades para acelerar el trabajo.
+
+No se requiere aprobación del usuario para decisiones técnicas rutinarias,
+lecturas, análisis, edición de archivos locales, ejecución de pruebas,
+corrección de errores, refactorizaciones dentro de la arquitectura aceptada ni
+creación de artefactos locales, reversibles y no publicados. Estas decisiones
+se toman utilizando este fichero, los ADR y las pruebas como límites. Ante una
+ambigüedad técnica de bajo riesgo, se elige la alternativa más conservadora y
+se documenta la decisión; el proyecto no se detiene sólo para explicar
+conceptos técnicos o pedir al usuario que elija entre opciones sin diferencias
+materiales para el producto.
+
+El Master debe solicitar autorización únicamente cuando una decisión:
+
+- cambie la arquitectura o los principios de este fichero;
+- introduzca una dependencia, licencia o protocolo con riesgo relevante;
+- publique código, mensajes, issues, pull requests, releases o documentación;
+- envíe comunicaciones a terceros;
+- modifique servicios remotos, credenciales, facturación o infraestructura
+  externa;
+- pueda borrar, sobrescribir o dificultar la recuperación de información;
+- exponga datos, claves, certificados o información privada;
+- genere un compromiso económico o jurídico;
+- cambie el modelo comercial, la titularidad o la licencia; o
+- presente alternativas con consecuencias de producto materialmente distintas.
+
+Antes de pedir autorización, agota las comprobaciones locales y las alternativas
+seguras. Explica en lenguaje sencillo qué decisión se necesita, por qué importa,
+cuáles son los riesgos y qué opción recomienda el Master. Si una parte queda
+bloqueada pero otras pueden continuar, localiza el bloqueo y sigue trabajando
+en paralelo.
+
+No abras Tasks duplicadas ni permitas que dos agentes editen simultáneamente
+los mismos archivos. Cada agente debe entregar pruebas ejecutadas y un resumen
+de cambios. El Master revisa e integra todas las entregas antes de declararlas
+completadas y devuelve cada defecto al perfil propietario de ese código.
+
 ## 2. Principios no negociables
 
 1. **Latencia temporal absoluta > calidad visual.** El directo nunca conserva vídeo antiguo a costa de detener el contenido actual.
@@ -76,6 +120,7 @@ Estas reglas son la fuente de verdad para el desarrollo del microservicio `gatew
 6. **Un consumidor lento no puede detener el directo.** La congestión de un suscriptor se resuelve dentro de su propia sesión; nunca bloquea la ingesta ni a otros suscriptores.
 7. **Interoperabilidad verificable.** No declares compatibilidad SRT, WebTransport o MoQT basándote solo en una prueba contra la propia implementación.
 8. **Licencias aptas para B2B.** Toda dependencia, imagen, plugin y modelo debe pasar una revisión de licencia y quedar registrado en el inventario de terceros.
+9. **Sin correos externos desde agentes.** Ninguna Task o agente envía emails fuera del proyecto, ni siquiera a contactos oficiales o mantenedores. Si una coordinación externa resulta necesaria, prepara únicamente un borrador local y deja el envío manual al usuario tras una autorización específica. El contacto único ya realizado el 2026-08-26 es histórico y no autoriza respuestas ni seguimientos.
 
 ## 3. Regla obligatoria de reutilización
 
@@ -417,3 +462,27 @@ Antes de declarar completo cualquier paso aplicable:
 - No publiques Redis/Valkey, Ollama o el orquestador AIOps en todas las interfaces por defecto.
 - `N8N_SECURE_COOKIE=false`, TLS deshabilitado y credenciales de desarrollo nunca son válidos para un despliegue accesible desde otra máquina.
 - Añade healthchecks, límites de recursos, redes internas y políticas de restart coherentes antes de integrar el Gateway con esos servicios.
+
+## 15. Modelo open-source y supply chain
+
+- El código original de `Teremoq/teremoq` se publica bajo Apache-2.0.
+- Materiales de terceros, fixtures y ficheros generados conservan su licencia y
+  atribución original. No se relicencian por estar en este repositorio.
+- `Teremoq/moq-rs-teremoq` conserva `MIT OR Apache-2.0`; toda contribución nueva
+  realizada dentro de ese repositorio usa la misma expresión dual.
+- Despliegues B2B, certificados, claves, credenciales, trust material,
+  configuraciones de clientes, namespaces productivos y datos operativos son
+  privados y están fuera del repositorio público.
+- `TP-OSS-SC` es propietario de gobernanza open-source, controles de repositorio,
+  procedencia, políticas SPDX/REUSE/SBOM y gates de release. No modifica lógica
+  Rust o Next.js ni comportamiento de protocolo.
+- `TP-RUST-DIST` conserva la propiedad de comportamiento Rust e integración
+  upstream; `TP-SEC-PKI`, la de identidad y trust material; y
+  `TP-PLATFORM-CHAOS`, la de harnesses, redes y contenedores de laboratorio.
+  `TP-OSS-SC` revisa sus fronteras de publicación y supply chain sin asumir esas
+  responsabilidades.
+- Las vulnerabilidades se reciben únicamente mediante GitHub Private
+  Vulnerability Reporting. No se publican direcciones de email y no se usan
+  issues públicos para vulnerabilidades.
+- Publicar el código no presume soporte comercial, SLA, garantía o
+  compatibilidad productiva de un despliegue privado.
