@@ -43,6 +43,8 @@ use support::pki::TestPki;
 const TEST_TIMEOUT: Duration = Duration::from_secs(15);
 const NAMESPACE: &str = INITIAL_PUBLISH_NAMESPACE;
 const CACHE_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+const CAPACITY_CLOSE_CODE: u32 = 0x3;
+const CAPACITY_CLOSE_REASON: &str = "relay session capacity reached";
 
 #[derive(Clone, Copy)]
 enum Route {
@@ -220,7 +222,7 @@ async fn exercise_route(route: Route) -> anyhow::Result<()> {
     )
     .await??;
     anyhow::ensure!(transport == route.transport(), "transport route changed");
-    let (session, mut publisher, _subscriber) = tokio::time::timeout_at(
+    let (session, mut publisher, subscriber) = tokio::time::timeout_at(
         deadline,
         Session::connect_with_config(native, None, transport, SessionConfig::default()),
     )
@@ -236,23 +238,24 @@ async fn exercise_route(route: Route) -> anyhow::Result<()> {
 
     assert_required_effect_order(&state, &inbound)?;
 
-    let (extra, _connection_id, extra_transport) = tokio::time::timeout_at(
+    let capacity_test = CapacityTestContext {
+        route,
         deadline,
-        client_endpoint.client.connect(&url, Some(address)),
-    )
-    .await??;
-    anyhow::ensure!(
-        extra_transport == route.transport(),
-        "N+1 transport route changed"
-    );
-    let _capacity_close = tokio::time::timeout_at(deadline, extra.closed()).await?;
-    anyhow::ensure!(state.authenticate_calls.load(Ordering::Acquire) == 1);
-    let capacity = inbound.snapshot();
-    anyhow::ensure!(capacity.admitted_total == 1);
-    anyhow::ensure!(capacity.rejected_capacity_total == 1);
-    anyhow::ensure!(capacity.active_inbound_sessions == 1);
+        address,
+        client_endpoint: &client_endpoint,
+        url: &url,
+        state: &state,
+        inbound: &inbound,
+    };
+    assert_capacity_rejection(&capacity_test).await?;
 
     drop(tracks_writer);
+    drop(subscriber);
+    finish_task(publish_task).await;
+    finish_task(session_task).await;
+    wait_for_active_sessions(&inbound, 0, deadline).await?;
+
+    let recovered_session_task = recover_session_capacity(&capacity_test).await?;
     shutdown.cancel();
     let report = tokio::time::timeout_at(deadline, relay_task).await???;
     anyhow::ensure!(report.inbound.active_inbound_sessions == 0);
@@ -261,8 +264,153 @@ async fn exercise_route(route: Route) -> anyhow::Result<()> {
     anyhow::ensure!(report.outbound.inflight_outbound_futures == 0);
     anyhow::ensure!(handshake.snapshot().pending_handshakes == 0);
 
-    finish_task(publish_task).await;
-    finish_task(session_task).await;
+    finish_task(recovered_session_task).await;
+    Ok(())
+}
+
+struct CapacityTestContext<'a> {
+    route: Route,
+    deadline: tokio::time::Instant,
+    address: SocketAddr,
+    client_endpoint: &'a quic::Endpoint,
+    url: &'a Url,
+    state: &'a PolicyState,
+    inbound: &'a RelayInboundSessionMonitor,
+}
+
+async fn assert_capacity_rejection(context: &CapacityTestContext<'_>) -> anyhow::Result<()> {
+    let (extra, _connection_id, extra_transport) = tokio::time::timeout_at(
+        context.deadline,
+        context
+            .client_endpoint
+            .client
+            .connect(context.url, Some(context.address)),
+    )
+    .await??;
+    anyhow::ensure!(
+        extra_transport == context.route.transport(),
+        "N+1 transport route changed"
+    );
+    let capacity_close = tokio::time::timeout_at(context.deadline, extra.closed()).await?;
+    assert_capacity_close(context.route, capacity_close)?;
+    anyhow::ensure!(
+        context
+            .state
+            .authentication_attempts
+            .load(Ordering::Acquire)
+            == 1
+    );
+    anyhow::ensure!(context.state.authenticate_calls.load(Ordering::Acquire) == 1);
+    anyhow::ensure!(context.state.resolve_calls.load(Ordering::Acquire) == 1);
+    anyhow::ensure!(context.state.authorize_calls.load(Ordering::Acquire) == 1);
+    anyhow::ensure!(context.state.register_calls.load(Ordering::Acquire) == 1);
+    let capacity = context.inbound.snapshot();
+    anyhow::ensure!(capacity.admitted_total == 1);
+    anyhow::ensure!(capacity.rejected_capacity_total == 1);
+    anyhow::ensure!(capacity.active_inbound_sessions == 1);
+    Ok(())
+}
+
+async fn recover_session_capacity(
+    context: &CapacityTestContext<'_>,
+) -> anyhow::Result<tokio::task::JoinHandle<Result<(), moq_transport::session::SessionError>>> {
+    let (recovered, _connection_id, recovered_transport) = tokio::time::timeout_at(
+        context.deadline,
+        context
+            .client_endpoint
+            .client
+            .connect(context.url, Some(context.address)),
+    )
+    .await??;
+    anyhow::ensure!(
+        recovered_transport == context.route.transport(),
+        "recovered transport route changed"
+    );
+    let (recovered_session, recovered_publisher, recovered_subscriber) = tokio::time::timeout_at(
+        context.deadline,
+        Session::connect_with_config(
+            recovered,
+            None,
+            recovered_transport,
+            SessionConfig::default(),
+        ),
+    )
+    .await??;
+    let recovered_session_task = tokio::spawn(recovered_session.run());
+    anyhow::ensure!(
+        context
+            .state
+            .authentication_attempts
+            .load(Ordering::Acquire)
+            == 2
+    );
+    anyhow::ensure!(context.state.authenticate_calls.load(Ordering::Acquire) == 2);
+    anyhow::ensure!(context.state.resolve_calls.load(Ordering::Acquire) == 2);
+    anyhow::ensure!(context.state.authorize_calls.load(Ordering::Acquire) == 1);
+    anyhow::ensure!(context.state.register_calls.load(Ordering::Acquire) == 1);
+    let recovered_capacity = context.inbound.snapshot();
+    anyhow::ensure!(recovered_capacity.admitted_total == 2);
+    anyhow::ensure!(recovered_capacity.rejected_capacity_total == 1);
+    anyhow::ensure!(recovered_capacity.active_inbound_sessions == 1);
+
+    drop(recovered_publisher);
+    drop(recovered_subscriber);
+    Ok(recovered_session_task)
+}
+
+fn assert_capacity_close(route: Route, error: web_transport::Error) -> anyhow::Result<()> {
+    match route {
+        Route::RawQuic => match error {
+            web_transport::Error::Session(web_transport::quinn::SessionError::ConnectionError(
+                web_transport::quinn::quinn::ConnectionError::ApplicationClosed(close),
+            )) => {
+                anyhow::ensure!(
+                    close.error_code.into_inner() == u64::from(CAPACITY_CLOSE_CODE),
+                    "raw QUIC capacity close code changed"
+                );
+                anyhow::ensure!(
+                    close.reason.as_ref() == CAPACITY_CLOSE_REASON.as_bytes(),
+                    "raw QUIC capacity close reason changed"
+                );
+            }
+            _ => anyhow::bail!("raw QUIC capacity rejection used an unexpected public close"),
+        },
+        Route::WebTransport => match error {
+            web_transport::Error::Session(
+                web_transport::quinn::SessionError::WebTransportError(
+                    web_transport::quinn::WebTransportError::Closed(code, reason),
+                ),
+            ) => {
+                anyhow::ensure!(
+                    code == CAPACITY_CLOSE_CODE,
+                    "WebTransport capacity close code changed"
+                );
+                anyhow::ensure!(
+                    reason == CAPACITY_CLOSE_REASON,
+                    "WebTransport capacity close reason changed"
+                );
+            }
+            _ => anyhow::bail!("WebTransport capacity rejection used an unexpected public close"),
+        },
+    }
+    Ok(())
+}
+
+async fn wait_for_active_sessions(
+    inbound: &RelayInboundSessionMonitor,
+    expected: usize,
+    deadline: tokio::time::Instant,
+) -> anyhow::Result<()> {
+    tokio::time::timeout_at(deadline, async {
+        loop {
+            if inbound.snapshot().active_inbound_sessions == expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("session capacity recovery watchdog elapsed"))?;
     Ok(())
 }
 
@@ -360,7 +508,7 @@ impl Default for PolicyState {
 impl PolicyState {
     fn step(&self, expected: usize) {
         let observed = self.sequence.fetch_add(1, Ordering::AcqRel);
-        if observed != expected {
+        if observed % 4 != expected {
             self.order_violation.store(true, Ordering::Release);
         }
     }

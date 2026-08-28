@@ -869,6 +869,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "web-transport",
  "x509-parser",
 ]
 
