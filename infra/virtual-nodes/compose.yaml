@@ -1,0 +1,130 @@
+# SPDX-FileCopyrightText: 2026 Teremoq contributors
+# SPDX-License-Identifier: Apache-2.0
+
+x-node: &node
+  image: ${VIRTUAL_NODE_IMAGE:?load infra/virtual-nodes/versions.env}
+  pull_policy: never
+  user: "65532:65532"
+  read_only: true
+  tmpfs:
+    - /tmp:size=8m,mode=0700,uid=65532,gid=65532
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 32
+  mem_limit: 64m
+  cpus: 0.25
+  restart: "no"
+  stop_grace_period: 5s
+  volumes:
+    - type: bind
+      source: ./node-runtime.sh
+      target: /opt/teremoq/node-runtime.sh
+      read_only: true
+  command:
+    - /bin/bash
+    - /opt/teremoq/node-runtime.sh
+  healthcheck:
+    test:
+      - CMD-SHELL
+      - test -s /tmp/teremoq-virtual-node.ready
+    interval: 1s
+    timeout: 1s
+    retries: 10
+    start_period: 1s
+
+x-common-environment: &common-environment
+  TEREMOQ_RUN_ID: ${TEREMOQ_RUN_ID:?run id is required}
+
+x-common-labels: &common-labels
+  teremoq.owner: TP-PLATFORM-CHAOS
+  teremoq.task: "10"
+  teremoq.run-id: ${TEREMOQ_RUN_ID:?run id is required}
+  teremoq.simulation: "true"
+
+services:
+  origin:
+    <<: *node
+    environment:
+      <<: *common-environment
+      NODE_ID: origin-1
+      NODE_ROLE: origin
+      NODE_TIER: origin
+      NODE_PROVIDER: ${TEREMOQ_ORIGIN_PROVIDER:-local-a}
+      NODE_REGION: ${TEREMOQ_ORIGIN_REGION:-eu-local-1}
+    labels:
+      <<: *common-labels
+      teremoq.node-id: origin-1
+      teremoq.node-role: origin
+      teremoq.node-tier: origin
+    networks:
+      - control-plane
+      - data-plane
+
+  distributor-a:
+    <<: *node
+    environment:
+      <<: *common-environment
+      NODE_ID: distributor-a
+      NODE_ROLE: distributor
+      NODE_TIER: core
+      NODE_PROVIDER: ${TEREMOQ_DISTRIBUTOR_A_PROVIDER:-local-a}
+      NODE_REGION: ${TEREMOQ_DISTRIBUTOR_A_REGION:-eu-local-1}
+    labels:
+      <<: *common-labels
+      teremoq.node-id: distributor-a
+      teremoq.node-role: distributor
+      teremoq.node-tier: core
+    networks:
+      - control-plane
+      - data-plane
+
+  distributor-b:
+    <<: *node
+    environment:
+      <<: *common-environment
+      NODE_ID: distributor-b
+      NODE_ROLE: distributor
+      NODE_TIER: regional
+      NODE_PROVIDER: ${TEREMOQ_DISTRIBUTOR_B_PROVIDER:-local-b}
+      NODE_REGION: ${TEREMOQ_DISTRIBUTOR_B_REGION:-eu-local-2}
+    labels:
+      <<: *common-labels
+      teremoq.node-id: distributor-b
+      teremoq.node-role: distributor
+      teremoq.node-tier: regional
+    networks:
+      - control-plane
+      - data-plane
+
+  control:
+    <<: *node
+    environment:
+      <<: *common-environment
+      NODE_ID: control
+      NODE_ROLE: control
+      NODE_TIER: control
+      NODE_PROVIDER: ${TEREMOQ_CONTROL_PROVIDER:-local-control}
+      NODE_REGION: ${TEREMOQ_CONTROL_REGION:-eu-local-control}
+    labels:
+      <<: *common-labels
+      teremoq.node-id: control
+      teremoq.node-role: control
+      teremoq.node-tier: control
+    networks:
+      - control-plane
+
+networks:
+  control-plane:
+    driver: bridge
+    internal: true
+    labels:
+      <<: *common-labels
+      teremoq.network-role: control-plane
+  data-plane:
+    driver: bridge
+    internal: true
+    labels:
+      <<: *common-labels
+      teremoq.network-role: data-plane

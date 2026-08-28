@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Teremoq contributors
+# SPDX-License-Identifier: Apache-2.0
+# node_id	role	tier	provider	region	base_capacity
+origin-1	origin	origin	local-a	eu-local-1	0
+distributor-a	distributor	core	local-a	eu-local-1	25
+distributor-b	distributor	regional	local-b	eu-local-2	25
+viewer-edge-template	distributor	viewer-edge	local-b	eu-local-3	25
+control	control	control	local-control	eu-local-control	0
