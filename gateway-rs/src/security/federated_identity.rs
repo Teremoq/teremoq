@@ -10,6 +10,7 @@ use std::{error::Error, fmt};
 use moq_native_ietf::quic::VerifiedPeerEvidence;
 use moq_transport::coding::TrackNamespace;
 use rustls_pki_types::CertificateDer;
+use url::Url;
 use x509_parser::{
     extensions::GeneralName,
     prelude::{FromDer, X509Certificate},
@@ -235,22 +236,32 @@ fn parse_leaf_identity(der: &[u8]) -> Result<FederatedPrincipal, FederatedIdenti
 }
 
 fn parse_identity_uri(uri: &str) -> Result<FederatedPrincipal, FederatedIdentityError> {
-    if !uri.is_ascii()
-        || uri.bytes().any(|byte| byte.is_ascii_control())
-        || uri
-            .bytes()
-            .any(|byte| matches!(byte, b'%' | b'?' | b'#' | b'@'))
+    if !uri.is_ascii() || uri.as_bytes().contains(&b'%') {
+        return Err(FederatedIdentityError::InvalidIdentityUri);
+    }
+    let parsed = Url::parse(uri).map_err(|_| FederatedIdentityError::InvalidIdentityUri)?;
+    if parsed.scheme() != "spiffe"
+        || parsed.host_str() != Some("teremoq.local")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
     {
         return Err(FederatedIdentityError::InvalidIdentityUri);
     }
-    let path = uri
-        .strip_prefix(SPIFFE_PREFIX)
+    let mut segments = parsed
+        .path_segments()
         .ok_or(FederatedIdentityError::InvalidIdentityUri)?;
-    let (role, node_id) = path
-        .split_once('/')
+    let role_name = segments
+        .next()
+        .filter(|segment| !segment.is_empty())
         .ok_or(FederatedIdentityError::InvalidIdentityUri)?;
-    if node_id.contains('/')
-        || node_id.is_empty()
+    let node_id = segments
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .ok_or(FederatedIdentityError::InvalidIdentityUri)?;
+    if segments.next().is_some()
         || node_id.len() > 64
         || matches!(node_id, "." | "..")
         || !node_id
@@ -259,7 +270,7 @@ fn parse_identity_uri(uri: &str) -> Result<FederatedPrincipal, FederatedIdentity
     {
         return Err(FederatedIdentityError::InvalidIdentityUri);
     }
-    let role = match role {
+    let role = match role_name {
         "gateway" => FederatedRole::Gateway,
         "relay" => FederatedRole::Relay,
         _ => return Err(FederatedIdentityError::InvalidIdentityUri),
@@ -272,7 +283,7 @@ fn parse_identity_uri(uri: &str) -> Result<FederatedPrincipal, FederatedIdentity
         },
         node_id
     );
-    if reconstructed != uri {
+    if reconstructed.as_bytes() != uri.as_bytes() {
         return Err(FederatedIdentityError::InvalidIdentityUri);
     }
     Ok(FederatedPrincipal {
@@ -283,7 +294,9 @@ fn parse_identity_uri(uri: &str) -> Result<FederatedPrincipal, FederatedIdentity
 
 #[cfg(test)]
 mod tests {
-    use rcgen::{CertificateParams, KeyPair, SanType, string::Ia5String};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use rcgen::{CertificateParams, CustomExtension, KeyPair, SanType, string::Ia5String};
 
     use super::*;
 
@@ -293,6 +306,22 @@ mod tests {
         let key = KeyPair::generate()?;
         let mut params = CertificateParams::default();
         params.subject_alt_names = sans;
+        Ok(params.self_signed(&key)?.der().clone())
+    }
+
+    fn certificate_with_custom_san(
+        sans: Vec<SanType>,
+        extension_value: Vec<u8>,
+    ) -> anyhow::Result<CertificateDer<'static>> {
+        let key = KeyPair::generate()?;
+        let mut params = CertificateParams::default();
+        params.subject_alt_names = sans;
+        params
+            .custom_extensions
+            .push(CustomExtension::from_oid_content(
+                &[2, 5, 29, 17],
+                extension_value,
+            ));
         Ok(params.self_signed(&key)?.der().clone())
     }
 
@@ -360,6 +389,47 @@ mod tests {
     }
 
     #[test]
+    fn chain_limits_accept_exact_boundaries_and_reject_n_plus_one() -> anyhow::Result<()> {
+        let exact_count = vec![CertificateDer::from(vec![0_u8; 1]); MAX_VERIFIED_CERTIFICATES];
+        validate_chain_limits(&exact_count)?;
+        let excessive_count =
+            vec![CertificateDer::from(vec![0_u8; 1]); MAX_VERIFIED_CERTIFICATES + 1];
+        assert_eq!(
+            validate_chain_limits(&excessive_count),
+            Err(FederatedIdentityError::CertificateChainTooLong)
+        );
+
+        let exact_leaf = CertificateDer::from(vec![0_u8; MAX_VERIFIED_LEAF_BYTES]);
+        validate_chain_limits(std::slice::from_ref(&exact_leaf))?;
+        let excessive_leaf = CertificateDer::from(vec![0_u8; MAX_VERIFIED_LEAF_BYTES + 1]);
+        assert_eq!(
+            validate_chain_limits(std::slice::from_ref(&excessive_leaf)),
+            Err(FederatedIdentityError::LeafCertificateTooLarge)
+        );
+
+        let exact_total = [
+            CertificateDer::from(vec![0_u8; MAX_VERIFIED_LEAF_BYTES]),
+            CertificateDer::from(vec![
+                0_u8;
+                MAX_VERIFIED_CHAIN_BYTES - MAX_VERIFIED_LEAF_BYTES
+            ]),
+        ];
+        validate_chain_limits(&exact_total)?;
+        let excessive_total = [
+            CertificateDer::from(vec![0_u8; MAX_VERIFIED_LEAF_BYTES]),
+            CertificateDer::from(vec![
+                0_u8;
+                MAX_VERIFIED_CHAIN_BYTES - MAX_VERIFIED_LEAF_BYTES + 1
+            ]),
+        ];
+        assert_eq!(
+            validate_chain_limits(&excessive_total),
+            Err(FederatedIdentityError::CertificateChainTooLarge)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn invalid_or_ambiguous_san_is_denied() -> anyhow::Result<()> {
         assert_eq!(
             rejection(authenticate_verified_chain(&[]))?,
@@ -378,7 +448,7 @@ mod tests {
         assert_eq!(
             rejection(authenticate_verified_chain(&[certificate(vec![
                 uri(GATEWAY_URI)?,
-                uri(GATEWAY_URI)?
+                uri("spiffe://teremoq.local/gateway/gateway-dev-2")?
             ])?]))?,
             FederatedIdentityError::AmbiguousUriIdentity
         );
@@ -389,6 +459,88 @@ mod tests {
                 dns
             ])?]))?,
             FederatedIdentityError::InvalidSubjectAlternativeName
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_der_and_ambiguous_san_forms_are_denied() -> anyhow::Result<()> {
+        let mut trailing = certificate(vec![uri(GATEWAY_URI)?])?.as_ref().to_vec();
+        trailing.push(0);
+        assert_eq!(
+            rejection(authenticate_verified_chain(&[CertificateDer::from(
+                trailing
+            )]))?,
+            FederatedIdentityError::InvalidCertificate
+        );
+
+        let uri_bytes = GATEWAY_URI.as_bytes();
+        let mut general_names = vec![0x30, u8::try_from(uri_bytes.len() + 2)?];
+        general_names.extend([0x86, u8::try_from(uri_bytes.len())?]);
+        general_names.extend_from_slice(uri_bytes);
+        assert_eq!(
+            rejection(authenticate_verified_chain(&[certificate_with_custom_san(
+                vec![uri(GATEWAY_URI)?],
+                general_names,
+            )?]))?,
+            FederatedIdentityError::InvalidSubjectAlternativeName
+        );
+
+        let invalid_general_name = vec![0x30, 0x03, 0x89, 0x01, 0x00];
+        assert_eq!(
+            rejection(authenticate_verified_chain(&[certificate_with_custom_san(
+                Vec::new(),
+                invalid_general_name,
+            )?]))?,
+            FederatedIdentityError::InvalidSubjectAlternativeName
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn san_policy_is_role_specific_and_leaf_only() -> anyhow::Result<()> {
+        let dns = || Ok::<_, anyhow::Error>(SanType::DnsName(Ia5String::try_from("peer.test")?));
+        let ip = || SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+        assert_eq!(
+            rejection(authenticate_verified_chain(&[certificate(vec![dns()?])?]))?,
+            FederatedIdentityError::AmbiguousUriIdentity
+        );
+        assert_eq!(
+            rejection(authenticate_verified_chain(&[certificate(vec![
+                uri(GATEWAY_URI)?,
+                dns()?,
+            ])?]))?,
+            FederatedIdentityError::InvalidSubjectAlternativeName
+        );
+
+        let relay_uri = "spiffe://teremoq.local/relay/relay-dev-1";
+        for sans in [
+            vec![uri(relay_uri)?],
+            vec![uri(relay_uri)?, dns()?],
+            vec![uri(relay_uri)?, ip()],
+        ] {
+            assert_eq!(
+                rejection(authenticate_verified_chain(&[certificate(sans)?]))?,
+                FederatedIdentityError::IdentityNotAuthorized
+            );
+        }
+        assert_eq!(
+            rejection(authenticate_verified_chain(&[certificate(vec![
+                uri(relay_uri)?,
+                SanType::Rfc822Name(Ia5String::try_from("relay@example.test")?),
+            ])?]))?,
+            FederatedIdentityError::InvalidSubjectAlternativeName
+        );
+
+        let intermediate_with_uri = certificate(vec![uri(GATEWAY_URI)?])?;
+        let leaf_without_uri = certificate(vec![dns()?])?;
+        assert_eq!(
+            rejection(authenticate_verified_chain(&[
+                leaf_without_uri,
+                intermediate_with_uri,
+            ]))?,
+            FederatedIdentityError::AmbiguousUriIdentity
         );
         Ok(())
     }
@@ -413,7 +565,9 @@ mod tests {
         let invalid = [
             "SPIFFE://teremoq.local/gateway/gateway-dev-1",
             "spiffe://TEREMOQ.local/gateway/gateway-dev-1",
+            "spiffe://teremoq.local./gateway/gateway-dev-1",
             "spiffe://teremoq.local:443/gateway/gateway-dev-1",
+            "spiffe://user:password@teremoq.local/gateway/gateway-dev-1",
             "spiffe://teremoq.local/gateway/gateway-dev-1?role=publisher",
             "spiffe://teremoq.local/gateway/gateway-dev-1#fragment",
             "spiffe://teremoq.local/gateway/gateway%2Ddev%2D1",
@@ -421,8 +575,15 @@ mod tests {
             "spiffe://teremoq.local/gateway/.",
             "spiffe://teremoq.local/gateway/..",
             "spiffe://teremoq.local/gateway/trailing/segment",
+            "spiffe://teremoq.local//gateway/gateway-dev-1",
+            "spiffe://teremoq.local/gateway/gateway-dev-1/",
             "spiffe://teremoq.local/gateway/gateway dev 1",
             "spiffe://teremoq.local/gateway/gatéway",
+            "spiffe://xn--teremq-7za.local/gateway/gateway-dev-1",
+            "spiffe://teremoq.local/gateway\\gateway-dev-1",
+            "spiffe://teremoq.local/gateway/gateway-dev-1\r",
+            "spiffe://teremoq.local/gateway/gateway-dev-1\n",
+            "spiffe://teremoq.local/gateway/gateway-dev-1\0",
             "spiffe://teremoq.local/admin/gateway-dev-1",
             "spiffe://other.local/gateway/gateway-dev-1",
         ];
@@ -444,7 +605,12 @@ mod tests {
 
     #[test]
     fn errors_never_include_parser_or_identity_material() {
-        let canary = "gateway-dev-1";
+        let canaries = [
+            "gateway-dev-1",
+            GATEWAY_URI,
+            "Teremoq Certificate Subject Canary",
+            "dynamic_context_type_canary",
+        ];
         for error in [
             FederatedIdentityError::MissingCertificate,
             FederatedIdentityError::CertificateChainTooLong,
@@ -457,8 +623,41 @@ mod tests {
             FederatedIdentityError::InvalidIdentityUri,
             FederatedIdentityError::IdentityNotAuthorized,
         ] {
-            assert!(!format!("{error:?}").contains(canary));
-            assert!(!error.to_string().contains(canary));
+            let debug = format!("{error:?}");
+            let display = error.to_string();
+            let anyhow = anyhow::Error::new(error).to_string();
+            for canary in canaries {
+                assert!(!debug.contains(canary), "Debug exposed identity material");
+                assert!(
+                    !display.contains(canary),
+                    "Display exposed identity material"
+                );
+                assert!(!anyhow.contains(canary), "anyhow exposed identity material");
+            }
         }
+    }
+
+    #[test]
+    fn derived_principals_do_not_retain_certificate_or_cross_connections() -> anyhow::Result<()> {
+        let gateway_leaf = certificate(vec![uri(GATEWAY_URI)?])?;
+        let relay_leaf = certificate(vec![uri("spiffe://teremoq.local/relay/relay-dev-1")?])?;
+
+        let (gateway, relay) = std::thread::scope(|scope| {
+            let gateway = scope.spawn(|| parse_leaf_identity(gateway_leaf.as_ref()));
+            let relay = scope.spawn(|| parse_leaf_identity(relay_leaf.as_ref()));
+            (gateway.join(), relay.join())
+        });
+        let gateway = gateway.map_err(|_| anyhow::anyhow!("gateway worker failed"))??;
+        let relay = relay.map_err(|_| anyhow::anyhow!("relay worker failed"))??;
+        drop(gateway_leaf);
+        drop(relay_leaf);
+
+        assert_eq!(gateway.role(), FederatedRole::Gateway);
+        assert_eq!(gateway.node_id(), "gateway-dev-1");
+        assert_eq!(relay.role(), FederatedRole::Relay);
+        assert_eq!(relay.node_id(), "relay-dev-1");
+        assert!(!format!("{gateway:?}").contains(GATEWAY_URI));
+        assert!(!format!("{relay:?}").contains("relay-dev-1"));
+        Ok(())
     }
 }
