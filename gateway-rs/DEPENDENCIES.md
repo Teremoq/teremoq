@@ -20,32 +20,30 @@ Este inventario registra las decisiones del Paso 1. `Cargo.lock` conserva la res
 | `base64` | crates.io exacta `0.22.1` | MIT OR Apache-2.0 | `initData` CMAF del catálogo MSF | Distribución | Versión exacta y test de catálogo |
 | `tracing` | crates.io `0.1` | MIT | Eventos estructurados | Observabilidad | SemVer y validación del esquema de eventos |
 | `tracing-subscriber` | crates.io `0.3` | MIT | Logs JSON y filtros | Observabilidad | SemVer y validación de salida JSON |
-| `moq-transport` | Cloudflare `moq-rs` rev `bf87128affd316463e5dcc7599a45001f222b6de`, crate `0.16.1` | MIT OR Apache-2.0 | Protocolo MoQT draft-16 | Distribución | Solo revisión exacta probada con interop; nunca rama flotante |
-| `moq-native-ietf` | Misma revisión Cloudflare, crate `0.10.0` | MIT OR Apache-2.0 | QUIC, TLS y WebTransport nativo para MoQT | Distribución | Se actualiza atómicamente con `moq-transport` |
+| `moq-transport` | Derivado público independiente `Teremoq/moq-rs-teremoq`, commit local completo `4b50958c121edfa2d6778c0586b30a78ee3e6f83`, crate `0.16.1`; base Cloudflare `bf87128affd316463e5dcc7599a45001f222b6de` | MIT OR Apache-2.0 | Protocolo MoQT draft-16, sin cambios de wire | Distribución | Pin atómico por commit completo con `moq-native-ietf` y `moq-relay-ietf`; el commit debe publicarse antes de integrar el pin |
+| `moq-native-ietf` | Mismo commit completo del derivado, crate `0.10.0` | MIT OR Apache-2.0 | QUIC/TLS/WebTransport nativo, evidencia verificada y admisión acotada de handshakes | Distribución | Actualización atómica y gates raw QUIC/WebTransport, ALPN y draft-16 |
 | `url` | crates.io exacta `2.5.8` | MIT OR Apache-2.0 | Parseo y validación de la URL del relay sin manipulación manual | Distribución | Parches tras CI e interop |
+| `x509-parser` | crates.io exacta `0.18.1`, `default-features = false`; checksum `d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202`; upstream `rusticata/x509-parser` VCS `33b15d2db5a19b15c17bb15fa57b08691316ee95` | MIT OR Apache-2.0 | Extraer exclusivamente la URI SAN del leaf ya verificado, con límites previos y sin revalidar la cadena | Seguridad/Distribución | Versión exacta; revisar parser, MSRV, features y pruebas adversariales antes de cualquier cambio |
 | `shiguredo_srt` | crates.io, versión exacta `2026.1.0-canary.1` | Apache-2.0 | Backend SRT Rust experimental de la PoC | Ingesta | Requiere bake-off e interoperabilidad con Haivision antes de cada cambio |
 
-Las dependencias de desarrollo `moq-relay-ietf 0.7.25` (misma revisión Cloudflare), `rcgen 0.14.9`, `pem 3.0.6`, `sha2 0.10.9`, `time 0.3.55`, `async-trait 0.1.89` y `anyhow 1.0.104` existen para los relays locales, la PKI efímera de tests, el certificado WebTransport de vigencia acotada, su fingerprint DER y la prueba de interoperabilidad. Todas son MIT o MIT/Apache-2.0. `hyper 1.4.1` y `hyper-util 0.1.3` reproducen el lockfile de la revisión upstream: versiones posteriores rompen la compilación de `hyper-serve 0.6.2`. No entran en el binario `gateway-rs`. La feature `test-util` de Tokio controla el reloj monotónico en tests.
+Las dependencias de desarrollo `moq-relay-ietf 0.7.25` (mismo commit completo del derivado), `rcgen 0.14.9`, `pem 3.0.6`, `sha2 0.10.9`, `time 0.3.55`, `async-trait 0.1.89` y `anyhow 1.0.104` existen para los relays locales, la PKI efímera de tests, el certificado WebTransport de vigencia acotada, su fingerprint DER y la prueba de interoperabilidad. Todas son MIT o MIT/Apache-2.0. `hyper 1.4.1` y `hyper-util 0.1.3` reproducen el lockfile de la revisión upstream: versiones posteriores rompen la compilación de `hyper-serve 0.6.2`. No entran en el binario `gateway-rs`. La feature `test-util` de Tokio controla el reloj monotónico en tests.
 
-## Evaluación de dependencias para autorización federada
+## Autorización federada y parser X.509
 
-No se añadió ninguna dependencia en esta Task y no se modificaron `Cargo.toml` ni
-`Cargo.lock`.
-
-- `quinn 0.11.11` (MIT OR Apache-2.0, publicado 2026-06-22, upstream
-  `quinn-rs/quinn`) ya es transitivo de `moq-native-ietf` y ofrece
-  `Connection::peer_identity()`. Se rechazó declararlo directo porque obligaría
-  a reconstruir el accept loop que `moq-native-ietf` no expone.
-- Las releases compatibles más recientes de Cloudflare siguen siendo
-  `moq-native-ietf 0.10.0` (2026-07-20), `moq-relay-ietf 0.7.25` y
-  `moq-transport 0.16.1` (ambas 2026-07-31), MIT OR Apache-2.0. Ninguna expone
-  identidad cliente al punto de autorización. El commit fijado de 2026-08-18
-  tampoco lo hace.
-- No se evaluó ni añadió parser X.509: parsear SPIFFE antes de disponer de una
-  ruta de enforcement produciría código muerto o una garantía falsa.
-- No se añadió `wtransport`, un segundo stack QUIC/TLS, un fork, patch o
-  dependencia Git adicional. La salida requerida es una API upstream, descrita
-  en `upstream/moq-rs-peer-identity-proposal.md`.
+- `x509-parser 0.18.1` se declara directamente con features por defecto
+  deshabilitadas. El paquete declara `MIT OR Apache-2.0`, MSRV 1.67.1 y no cambia
+  el proveedor TLS. Se usa después del handshake exclusivamente para extraer la
+  URI SAN del leaf que rustls ya verificó; no verifica firmas, confianza, EKU o
+  vigencia y no conserva DER en el principal.
+- La frontera aplica antes de parsear: cadena máxima de 8 certificados, leaf de
+  16 KiB y total de 64 KiB. Exige un certificado DER completo, una extensión SAN
+  única y exactamente una URI canónica. Los errores son tipados y redactados.
+- La política inicial sólo autentica `gateway-dev-1` y sólo autoriza `Publish` y
+  `PublishNamespace` sobre `teremoq/live`. Relay peers y todas las demás
+  operaciones permanecen default-deny.
+- El commit del derivado añade evidencia I1, autorización I2, límites C1/C2 y la
+  sobrecarga aditiva de caché con TTL explícito. No añade un segundo stack ni
+  cambia MoQT draft-16, ALPN, Objects o Zero-Transcoding.
 
 ## Herramientas externas del Paso 7
 

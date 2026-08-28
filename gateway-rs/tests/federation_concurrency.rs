@@ -1,6 +1,7 @@
 use std::{
     fs,
     net::{SocketAddr, UdpSocket},
+    num::NonZeroUsize,
     path::Path,
     sync::Arc,
     time::Duration,
@@ -28,9 +29,8 @@ use support::pki::TestPki;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// This is a progress/isolation test, not a capacity proof. The pinned
-/// `moq-native-ietf::quic::Server` does not expose its pending-handshake count
-/// or a limit, so a finite passing sample must not be interpreted as bounded.
+/// Exercises the explicit C1 bound and the I1 evidence-aware acceptor with real
+/// QUINN/rustls clients. Session admission remains a separate C2 concern.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(clippy::too_many_lines)]
 async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moqt_setup()
@@ -38,10 +38,25 @@ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moq
     tokio::time::timeout(TEST_TIMEOUT, async {
         let pki = TestPki::generate()?;
         let relay_addr = available_udp_addr()?;
-        let endpoint = quic::Endpoint::new(quic::Config::new(relay_addr, None, pki.relay_tls()?)?)?;
-        let mut server = endpoint
+        let limits = quic::ServerAdmissionConfig::new(
+            NonZeroUsize::new(16)
+                .ok_or_else(|| anyhow::anyhow!("buffered incoming limit must be non-zero"))?,
+            NonZeroUsize::new(8)
+                .ok_or_else(|| anyhow::anyhow!("pending handshake limit must be non-zero"))?,
+            Duration::from_secs(5),
+            quic::HandshakeCapacityPolicy::Refuse,
+        )?;
+        let endpoint = quic::Endpoint::new_bounded(
+            quic::Config::new(relay_addr, None, pki.relay_tls()?)?,
+            limits,
+        )?;
+        let server = endpoint
             .server
             .ok_or_else(|| anyhow::anyhow!("test mTLS server is unavailable"))?;
+        let handshake_admission = server
+            .handshake_admission()
+            .ok_or_else(|| anyhow::anyhow!("bounded handshake controller is unavailable"))?;
+        let mut server = server.with_peer_evidence()?;
         let rss_initial_kib = process_rss_kib()?;
         let tasks_initial = process_task_count()?;
         let sockets_initial = process_socket_count()?;
@@ -49,10 +64,21 @@ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moq
         let server_task = tokio::spawn(async move {
             let mut sessions = JoinSet::new();
             for _accepted in 0..2 {
-                let (connection, info) = server
+                let accepted = server
                     .accept()
                     .await
-                    .ok_or_else(|| anyhow::anyhow!("mTLS server stopped accepting"))?;
+                    .ok_or_else(|| anyhow::anyhow!("mTLS server stopped accepting"))??;
+                let (connection, info, evidence) = accepted.into_parts();
+                match evidence {
+                    quic::PeerEvidence::Rustls(peer) => anyhow::ensure!(
+                        !peer.certificates().is_empty(),
+                        "verified peer evidence unexpectedly has no certificate"
+                    ),
+                    quic::PeerEvidence::Absent => {
+                        anyhow::bail!("mutually authenticated connection has no peer evidence")
+                    }
+                    _ => anyhow::bail!("unsupported verified peer evidence variant"),
+                }
                 sessions.spawn(async move {
                     let (session, _publisher, _subscriber) =
                         Session::accept(connection, None, info.transport).await?;
@@ -169,6 +195,23 @@ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moq
         }
         rejected.sort_unstable_by_key(|sample| sample.reason);
         server_task.await??;
+        let handshake = handshake_admission.snapshot();
+        anyhow::ensure!(
+            handshake.pending_handshakes == 0,
+            "handshake capacity was not fully recovered"
+        );
+        anyhow::ensure!(
+            handshake.completed_total == 2,
+            "accepted handshake terminal count is not exact"
+        );
+        anyhow::ensure!(
+            handshake.admitted_total
+                == handshake.completed_total
+                    + handshake.transport_error_total
+                    + handshake.timeout_total
+                    + handshake.cancelled_total,
+            "every admitted handshake must have exactly one terminal"
+        );
 
         let rss_final_kib = process_rss_kib()?;
         let tasks_final = process_task_count()?;
@@ -189,7 +232,7 @@ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moq
             serde_json::json!({
                 "schema_version": 1,
                 "event": "federation_concurrency_hermetic_result",
-                "scope": "finite_progress_characterization_not_capacity_proof",
+                "scope": "bounded_handshake_and_verified_peer_evidence",
                 "clients_requested": {
                     "anonymous": 1,
                     "wrong_ca": 1,
@@ -223,10 +266,15 @@ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moq
                 "sockets_initial": sockets_initial,
                 "sockets_final": sockets_final,
                 "task_and_socket_cleanup_scope": "test_process_exit_and_harness_container_removal",
-                "pending_transport_handshake": "untestable_with_pinned_public_api",
-                "handshake_capacity_limit": "unenforced",
-                "session_capacity_limit": "unenforced",
-                "unauthorized_spiffe_peer": "untestable_until_ADR-0005_is_resolved"
+                "pending_transport_handshake": handshake.pending_handshakes,
+                "handshake_capacity_limit": handshake.limit,
+                "handshake_admitted_total": handshake.admitted_total,
+                "handshake_completed_total": handshake.completed_total,
+                "handshake_transport_error_total": handshake.transport_error_total,
+                "handshake_timeout_total": handshake.timeout_total,
+                "handshake_cancelled_total": handshake.cancelled_total,
+                "session_capacity_limit": "covered_by_required_bounded_relay_tests",
+                "authenticated_authorization": "covered_by_required_bounded_relay_tests"
             })
         );
 

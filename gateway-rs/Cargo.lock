@@ -869,6 +869,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "x509-parser",
 ]
 
 [[package]]
@@ -1661,7 +1662,7 @@ dependencies = [
 [[package]]
 name = "moq-api"
 version = "0.2.13"
-source = "git+https://github.com/cloudflare/moq-rs?rev=bf87128affd316463e5dcc7599a45001f222b6de#bf87128affd316463e5dcc7599a45001f222b6de"
+source = "git+https://github.com/Teremoq/moq-rs-teremoq?rev=4b50958c121edfa2d6778c0586b30a78ee3e6f83#4b50958c121edfa2d6778c0586b30a78ee3e6f83"
 dependencies = [
  "axum 0.7.9",
  "clap",
@@ -1680,7 +1681,7 @@ dependencies = [
 [[package]]
 name = "moq-native-ietf"
 version = "0.10.0"
-source = "git+https://github.com/cloudflare/moq-rs?rev=bf87128affd316463e5dcc7599a45001f222b6de#bf87128affd316463e5dcc7599a45001f222b6de"
+source = "git+https://github.com/Teremoq/moq-rs-teremoq?rev=4b50958c121edfa2d6778c0586b30a78ee3e6f83#4b50958c121edfa2d6778c0586b30a78ee3e6f83"
 dependencies = [
  "anyhow",
  "clap",
@@ -1705,7 +1706,7 @@ dependencies = [
 [[package]]
 name = "moq-relay-ietf"
 version = "0.7.25"
-source = "git+https://github.com/cloudflare/moq-rs?rev=bf87128affd316463e5dcc7599a45001f222b6de#bf87128affd316463e5dcc7599a45001f222b6de"
+source = "git+https://github.com/Teremoq/moq-rs-teremoq?rev=4b50958c121edfa2d6778c0586b30a78ee3e6f83#4b50958c121edfa2d6778c0586b30a78ee3e6f83"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1734,7 +1735,7 @@ dependencies = [
 [[package]]
 name = "moq-transport"
 version = "0.16.1"
-source = "git+https://github.com/cloudflare/moq-rs?rev=bf87128affd316463e5dcc7599a45001f222b6de#bf87128affd316463e5dcc7599a45001f222b6de"
+source = "git+https://github.com/Teremoq/moq-rs-teremoq?rev=4b50958c121edfa2d6778c0586b30a78ee3e6f83#4b50958c121edfa2d6778c0586b30a78ee3e6f83"
 dependencies = [
  "bytes",
  "futures",

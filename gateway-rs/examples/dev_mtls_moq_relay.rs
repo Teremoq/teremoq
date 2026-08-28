@@ -1,19 +1,32 @@
 //! Laboratorio loopback de federación mTLS basado en el relay oficial.
 
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::SocketAddr, num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use gateway_rs::security::federated_identity::{
+    FederatedPrincipal, InitialPublishOperation, authenticate_verified_peer,
+};
+use moq_native_ietf::quic::{self, HandshakeCapacityPolicy, ServerAdmissionConfig};
 use moq_relay_ietf::{
-    Coordinator, CoordinatorContext, CoordinatorError, CoordinatorResult, NamespaceOrigin,
-    NamespaceRegistration, RelayConfig, ScopeInfo, ScopePermissions, SessionConfig,
+    AuthenticatedSession, AuthorizationError, Coordinator, CoordinatorContext, CoordinatorError,
+    CoordinatorResult, NamespaceOrigin, NamespaceRegistration, Operation, RelayConfig,
+    RequestedConnectionPath, ScopeInfo, ScopePermissions, SessionAuthorizer, SessionConfig,
 };
 use moq_transport::coding::TrackNamespace;
 use rustls::{ClientConfig, RootCertStore, ServerConfig, server::WebPkiClientVerifier};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+use tokio_util::sync::CancellationToken;
 
 const DEFAULT_BIND: &str = "127.0.0.1:4443";
 const FEDERATED_SCOPE: &str = "teremoq-federated-mtls-lab";
 const UPSTREAM_QUIC_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+const CACHE_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_BUFFERED_INCOMING: usize = 32;
+const MAX_PENDING_HANDSHAKES: usize = 8;
+const MAX_INBOUND_SESSIONS: usize = 16;
+const MAX_OUTBOUND_SESSIONS: usize = 4;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -31,10 +44,19 @@ async fn main() -> anyhow::Result<()> {
     let client_ca = required_env_path("TEREMOQ_DEV_MTLS_RELAY_CLIENT_CA")?;
     let tls = load_mtls_server(cert, key, client_ca).await?;
 
+    let admission = ServerAdmissionConfig::new(
+        non_zero(MAX_BUFFERED_INCOMING, "max buffered incoming")?,
+        non_zero(MAX_PENDING_HANDSHAKES, "max pending handshakes")?,
+        HANDSHAKE_TIMEOUT,
+        HandshakeCapacityPolicy::Refuse,
+    )?;
+    let endpoint =
+        quic::Endpoint::new_bounded(quic::Config::new(bind, None, tls.clone())?, admission)?;
     let coordinator: Arc<dyn Coordinator> = Arc::new(PublishOnlyCoordinator);
+    let authorizer: Arc<dyn SessionAuthorizer> = Arc::new(PublishOnlyAuthorizer);
     let relay = RelayConfig {
-        bind: Some(bind),
-        endpoints: Vec::new(),
+        bind: None,
+        endpoints: vec![endpoint],
         tls,
         qlog_dir: None,
         mlog_dir: None,
@@ -46,7 +68,13 @@ async fn main() -> anyhow::Result<()> {
         },
         connection_tagger: None,
     }
-    .build_with_cache_idle_timeout(Duration::from_secs(5))?;
+    .build_required_bounded_with_cache_idle_timeout(
+        authorizer,
+        MAX_INBOUND_SESSIONS,
+        MAX_OUTBOUND_SESSIONS,
+        SHUTDOWN_TIMEOUT,
+        CACHE_IDLE_TIMEOUT,
+    )?;
 
     tracing::info!(
         schema_version = 1_u8,
@@ -56,24 +84,33 @@ async fn main() -> anyhow::Result<()> {
         client_certificate_required = true,
         tls_protocol = "1.3",
         quic_idle_timeout_ms = duration_millis(UPSTREAM_QUIC_IDLE_TIMEOUT),
-        handshake_deadline_enforced = false,
-        handshake_capacity_enforced = false,
-        session_capacity_enforced = false,
+        handshake_deadline_enforced = true,
+        handshake_capacity_enforced = true,
+        session_capacity_enforced = true,
+        authenticated_authorization_required = true,
+        cache_idle_timeout_ms = duration_millis(CACHE_IDLE_TIMEOUT),
         "integration laboratory; not the final production federated service"
     );
-    tracing::warn!(
-        schema_version = 1_u8,
-        event = "federation_capacity_unenforced",
-        reason = "upstream_api_missing",
-        "moq-rs does not expose handshake or authenticated-session admission at the pinned revision"
-    );
+
+    let shutdown = CancellationToken::new();
+    let relay_run = relay.run_until(shutdown.clone());
+    tokio::pin!(relay_run);
     tokio::select! {
-        result = relay.run() => result,
+        result = &mut relay_run => {
+            let _report = result?;
+            Ok(())
+        },
         result = gateway_rs::lifecycle::shutdown_signal() => {
             result.map_err(|source| anyhow::anyhow!(source.to_string()))?;
+            shutdown.cancel();
+            let _report = relay_run.await?;
             Ok(())
         }
     }
+}
+
+fn non_zero(value: usize, name: &str) -> anyhow::Result<NonZeroUsize> {
+    NonZeroUsize::new(value).ok_or_else(|| anyhow::anyhow!("{name} must be non-zero"))
 }
 
 async fn load_mtls_server(
@@ -164,6 +201,65 @@ impl Coordinator for PublishOnlyCoordinator {
     ) -> CoordinatorResult<(NamespaceOrigin, Option<moq_native_ietf::quic::Client>)> {
         Err(CoordinatorError::NamespaceNotFound)
     }
+}
+
+struct PublishOnlyAuthorizer;
+
+#[async_trait]
+impl SessionAuthorizer for PublishOnlyAuthorizer {
+    async fn authenticate(
+        &self,
+        peer: &moq_native_ietf::quic::VerifiedPeerEvidence,
+    ) -> Result<AuthenticatedSession, AuthorizationError> {
+        let principal = authenticate_verified_peer(peer)
+            .map_err(|_| AuthorizationError::AuthenticationRejected)?;
+        Ok(AuthenticatedSession::new(principal))
+    }
+
+    async fn resolve_scope(
+        &self,
+        session: &AuthenticatedSession,
+        path: &RequestedConnectionPath,
+    ) -> Result<Option<ScopeInfo>, AuthorizationError> {
+        authenticated_publisher(session)?;
+        if path.as_str() != "/publish" {
+            return Err(AuthorizationError::AuthorizationDenied);
+        }
+        Ok(Some(ScopeInfo {
+            scope_id: FEDERATED_SCOPE.to_owned(),
+            permissions: ScopePermissions::ReadWrite,
+        }))
+    }
+
+    async fn authorize(
+        &self,
+        session: &AuthenticatedSession,
+        operation: &Operation,
+    ) -> Result<(), AuthorizationError> {
+        let principal = authenticated_publisher(session)?;
+        let permitted = match operation {
+            Operation::Publish { namespace } => {
+                principal.authorizes_initial_publish(InitialPublishOperation::Publish, namespace)
+            }
+            Operation::PublishNamespace { namespace } => principal
+                .authorizes_initial_publish(InitialPublishOperation::PublishNamespace, namespace),
+            // Subscribe, discovery, track status, relay-peer and future operations are denied.
+            _ => false,
+        };
+        if permitted {
+            Ok(())
+        } else {
+            Err(AuthorizationError::AuthorizationDenied)
+        }
+    }
+}
+
+fn authenticated_publisher(
+    session: &AuthenticatedSession,
+) -> Result<&FederatedPrincipal, AuthorizationError> {
+    session
+        .downcast_ref::<FederatedPrincipal>()
+        .ok_or(AuthorizationError::ContextTypeMismatch)
 }
 
 fn required_env_path(name: &str) -> anyhow::Result<PathBuf> {

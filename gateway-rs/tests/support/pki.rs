@@ -8,7 +8,8 @@ use std::{
 
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, CertifiedIssuer, DnType,
-    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, date_time_ymd,
+    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType, date_time_ymd,
+    string::Ia5String,
 };
 use rustls::{ClientConfig, RootCertStore, ServerConfig, server::WebPkiClientVerifier};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
@@ -21,6 +22,8 @@ pub struct TestPki {
     pub relay_key_a: PathBuf,
     pub gateway_cert_a: PathBuf,
     pub gateway_key_a: PathBuf,
+    pub gateway_denied_cert_a: PathBuf,
+    pub gateway_denied_key_a: PathBuf,
     pub gateway_wrong_eku_cert: PathBuf,
     pub gateway_wrong_eku_key: PathBuf,
     pub root_b: PathBuf,
@@ -47,6 +50,7 @@ impl TestPki {
         let relay_cert = end_entity(
             "Teremoq Relay A",
             &["127.0.0.1", "relay.test"],
+            None,
             ExtendedKeyUsagePurpose::ServerAuth,
             None,
             &relay_key,
@@ -56,6 +60,7 @@ impl TestPki {
         let gateway_cert = end_entity(
             "Teremoq Gateway A",
             &[],
+            Some("spiffe://teremoq.local/gateway/gateway-dev-1"),
             ExtendedKeyUsagePurpose::ClientAuth,
             None,
             &gateway_key,
@@ -65,6 +70,7 @@ impl TestPki {
         let wrong_eku_cert = end_entity(
             "Teremoq Gateway Wrong EKU",
             &[],
+            Some("spiffe://teremoq.local/gateway/gateway-dev-1"),
             ExtendedKeyUsagePurpose::ServerAuth,
             None,
             &wrong_eku_key,
@@ -74,9 +80,20 @@ impl TestPki {
         let expired_cert = end_entity(
             "Teremoq Gateway Expired",
             &[],
+            Some("spiffe://teremoq.local/gateway/gateway-dev-1"),
             ExtendedKeyUsagePurpose::ClientAuth,
             Some((date_time_ymd(2020, 1, 1), date_time_ymd(2021, 1, 1))),
             &expired_key,
+            &intermediate_a,
+        )?;
+        let denied_key = KeyPair::generate()?;
+        let denied_cert = end_entity(
+            "Teremoq Gateway Denied",
+            &[],
+            Some("spiffe://teremoq.local/gateway/gateway-dev-2"),
+            ExtendedKeyUsagePurpose::ClientAuth,
+            None,
+            &denied_key,
             &intermediate_a,
         )?;
 
@@ -86,6 +103,7 @@ impl TestPki {
         let gateway_b_cert = end_entity(
             "Teremoq Gateway B",
             &[],
+            Some("spiffe://teremoq.local/gateway/gateway-dev-2"),
             ExtendedKeyUsagePurpose::ClientAuth,
             None,
             &gateway_b_key,
@@ -108,6 +126,13 @@ impl TestPki {
         )?;
         let gateway_key_a =
             directory.write("gateway-a-key.pem", &gateway_key.serialize_pem(), true)?;
+        let gateway_denied_cert_a = directory.write(
+            "gateway-denied-chain.pem",
+            &format!("{}{}", denied_cert.pem(), intermediate_a.pem()),
+            false,
+        )?;
+        let gateway_denied_key_a =
+            directory.write("gateway-denied-key.pem", &denied_key.serialize_pem(), true)?;
         let gateway_wrong_eku_cert = directory.write(
             "gateway-wrong-eku-chain.pem",
             &format!("{}{}", wrong_eku_cert.pem(), intermediate_a.pem()),
@@ -141,6 +166,8 @@ impl TestPki {
             relay_key_a,
             gateway_cert_a,
             gateway_key_a,
+            gateway_denied_cert_a,
+            gateway_denied_key_a,
             gateway_wrong_eku_cert,
             gateway_wrong_eku_key,
             root_b: root_b_path,
@@ -203,6 +230,7 @@ fn ca_params(common_name: &str, path_length: u8) -> CertificateParams {
 fn end_entity(
     common_name: &str,
     sans: &[&str],
+    uri_san: Option<&str>,
     eku: ExtendedKeyUsagePurpose,
     validity: Option<(time::OffsetDateTime, time::OffsetDateTime)>,
     key: &KeyPair,
@@ -213,6 +241,11 @@ fn end_entity(
             .map(|name| (*name).to_owned())
             .collect::<Vec<_>>(),
     )?;
+    if let Some(uri) = uri_san {
+        params
+            .subject_alt_names
+            .push(SanType::URI(Ia5String::try_from(uri)?));
+    }
     params
         .distinguished_name
         .push(DnType::CommonName, common_name);
