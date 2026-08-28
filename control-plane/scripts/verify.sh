@@ -21,7 +21,7 @@ PYTHONPATH="${CONTROL_ROOT}/src" python3 -m unittest discover -s "${CONTROL_ROOT
     find config contracts docs src tests -type f ! -name '*.pyc' -print0 \
         | sort -z \
         | xargs -0 sha256sum
-    sha256sum reports/latest/milestone-100.json reports/latest/milestone-100.md
+    sha256sum reports/latest/actions-*.json reports/latest/milestone-100.json reports/latest/milestone-100.md
 ) >"${REPORT_DIR}/SHA256SUMS"
 
 printf 'evidence=%s\n' "${REPORT_DIR}"

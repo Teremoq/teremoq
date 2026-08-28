@@ -11,10 +11,17 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
 from .config import Config
-from .contracts import validate_audit_event, validate_desired_state
+from .contracts import (
+    ContractError,
+    serialize_action_envelope,
+    validate_audit_event,
+    validate_desired_state,
+    validate_metrics_sample,
+)
 from .model import (
     FORWARD_TRANSITIONS,
     Action,
+    ActionReason,
     Alert,
     CapacitySignal,
     Event,
@@ -100,7 +107,9 @@ class ControlPlane:
     def bootstrap(self, now: int = 0) -> tuple[Action, ...]:
         actions: list[Action] = []
         for tier in Tier:
-            actions.extend(self._plan_delta(tier, self.desired[tier], now, "configured_minimum"))
+            actions.extend(
+                self._plan_delta(tier, self.desired[tier], now, ActionReason.CONFIGURED_MINIMUM)
+            )
         self._execute(tuple(actions), now)
         return tuple(actions)
 
@@ -111,6 +120,10 @@ class ControlPlane:
     def _placement_for(self, tier: Tier, ordinal: int) -> Placement:
         placements = self.config.tiers[tier].placements
         return placements[ordinal % len(placements)]
+
+    def _create_deadline_at(self, now: int) -> int:
+        stages = ("provisioning", "bootstrapping", "authenticated", "registered")
+        return now + sum(self.config.lifecycle.timeouts[stage] for stage in stages)
 
     def _live_nodes(self, tier: Tier | None = None) -> list[Node]:
         terminal = {Lifecycle.TERMINATED, Lifecycle.FAILED, Lifecycle.REPLACING}
@@ -129,7 +142,7 @@ class ControlPlane:
             key=lambda node: node.node_id,
         )
 
-    def _plan_delta(self, tier: Tier, target: int, now: int, reason: str) -> list[Action]:
+    def _plan_delta(self, tier: Tier, target: int, now: int, reason: ActionReason) -> list[Action]:
         current = self._live_nodes(tier)
         actions: list[Action] = []
         if len(current) < target:
@@ -143,6 +156,10 @@ class ControlPlane:
                         tier=tier,
                         placement=self._placement_for(tier, len(current) + offset),
                         reason=reason,
+                        capacity_viewers=self.config.tiers[tier].capacity_viewers_per_node,
+                        capacity_egress_mbps=self.config.tiers[tier].capacity_egress_mbps_per_node,
+                        deadline_at=self._create_deadline_at(now),
+                        requires_drained=False,
                     )
                 )
         elif len(current) > target:
@@ -156,6 +173,10 @@ class ControlPlane:
                         tier=node.tier,
                         placement=node.placement,
                         reason=reason,
+                        capacity_viewers=node.capacity_viewers,
+                        capacity_egress_mbps=node.capacity_egress_mbps,
+                        deadline_at=now + self.config.scaling.drain_timeout_seconds,
+                        requires_drained=True,
                     )
                 )
         return actions
@@ -273,6 +294,13 @@ class ControlPlane:
             return "replayed_sample", 0
         if len(sample.reservations) > self.config.scaling.maximum_reservations_per_sample:
             return "reservation_limit_exceeded", 0
+        try:
+            validate_metrics_sample(
+                sample.to_dict(),
+                maximum_reservations=self.config.scaling.maximum_reservations_per_sample,
+            )
+        except (ContractError, ValueError):
+            return "invalid_metrics_contract", 0
         self._purge_expired_reservations(now)
         reservation_nonces: set[str] = set()
         reservation_ids: set[str] = set()
@@ -416,7 +444,8 @@ class ControlPlane:
             self._alert("reconcile_batch_limited", "warning", sample.partition, "additional_reconcile_required", now)
         self.generation += 1
         self.desired[target_tier] = applied_desired
-        actions = tuple(self._plan_delta(target_tier, applied_desired, now, f"autoscale_{direction}"))
+        reason = ActionReason.AUTOSCALE_OUT if direction == "out" else ActionReason.AUTOSCALE_IN
+        actions = tuple(self._plan_delta(target_tier, applied_desired, now, reason))
         self._execute(actions, now)
         if direction == "out":
             self._last_scale_out_at = now
@@ -535,6 +564,20 @@ class ControlPlane:
         )
         return True
 
+    def _replacement_destroy_action(self, node: Node, now: int) -> Action:
+        return Action(
+            operation="destroy",
+            node_id=node.node_id,
+            generation=node.generation,
+            tier=node.tier,
+            placement=node.placement,
+            reason=ActionReason.FAILED_NODE_CLEANUP,
+            capacity_viewers=node.capacity_viewers,
+            capacity_egress_mbps=node.capacity_egress_mbps,
+            deadline_at=now + self.config.scaling.drain_timeout_seconds,
+            requires_drained=True,
+        )
+
     def fail_and_replace(self, node_id: str, now: int) -> tuple[Action, ...]:
         node = self.nodes.get(node_id)
         if node is None or node.state != Lifecycle.READY:
@@ -550,13 +593,51 @@ class ControlPlane:
         self.generation += 1
         replacement_id = self._next_node_id(node.tier)
         node.replace_node_id = replacement_id
-        action = Action("create", replacement_id, self.generation, node.tier, node.placement, "failed_node_replacement")
+        action = Action(
+            "create",
+            replacement_id,
+            self.generation,
+            node.tier,
+            node.placement,
+            ActionReason.FAILED_NODE_REPLACEMENT,
+            node.capacity_viewers,
+            node.capacity_egress_mbps,
+            self._create_deadline_at(now),
+            False,
+            node.node_id,
+        )
         self._execute((action,), now)
-        if not self._drain_node(node.node_id, now):
-            return (action,)
-        self.apply_lifecycle_event(node.node_id, node.generation, Lifecycle.TERMINATED, now)
+        cleanup = self.retry_replacement_cleanup(node.node_id, now)
+        return (action, *cleanup)
+
+    def retry_replacement_cleanup(self, node_id: str, now: int) -> tuple[Action, ...]:
+        """Emit deferred destroy only after replacement capacity can drain safely."""
+
+        node = self.nodes.get(node_id)
+        if node is None or node.state != Lifecycle.REPLACING:
+            raise ValueError("replacement cleanup requires a replacing node")
+        replacement = self.nodes.get(node.replace_node_id or "")
+        if replacement is None or replacement.state != Lifecycle.READY:
+            self.counters["drain_unresolved_total"] += 1
+            self._alert(
+                "node_drain_unresolved",
+                "critical",
+                node.placement.region,
+                "replacement_not_ready",
+                now,
+            )
+            return ()
+        peers = [candidate for candidate in self._ready_nodes(node.tier) if candidate.node_id != node_id]
+        available = sum(max(0, peer.capacity_viewers - len(peer.sessions)) for peer in peers)
+        if len(node.sessions) > available:
+            self._drain_node(node.node_id, now)
+            return ()
+        destroy = self._replacement_destroy_action(node, now)
+        self._execute((destroy,), now)
+        if node.state != Lifecycle.TERMINATED:
+            raise RuntimeError("replacement cleanup did not terminate drained node")
         self.counters["nodes_replaced_total"] += 1
-        return (action,)
+        return (destroy,)
 
     def enforce_timeouts(self, now: int) -> tuple[str, ...]:
         failed: list[str] = []
@@ -657,9 +738,14 @@ class ControlPlane:
         for node in self.nodes.values():
             node.sessions.clear()
         actions: list[Action] = []
+        actions.extend(
+            self._replacement_destroy_action(node, now)
+            for node in sorted(self.nodes.values(), key=lambda item: item.node_id)
+            if node.state == Lifecycle.REPLACING
+        )
         for tier in Tier:
             self.desired[tier] = 0
-            actions.extend(self._plan_delta(tier, 0, now, "safe_shutdown"))
+            actions.extend(self._plan_delta(tier, 0, now, ActionReason.SAFE_SHUTDOWN))
         result = tuple(actions)
         self._execute(result, now)
         self._emit("global", self.generation, "control_plane_shutdown", now, {"remaining_sessions": 0})
@@ -729,8 +815,33 @@ class ControlPlane:
             "config_digest": self.config.config_digest,
             "desired_nodes": {tier.value: self.desired[tier] for tier in Tier},
         }
-        validate_desired_state(value)
+        validate_desired_state(
+            value,
+            maximum_nodes_by_tier={tier.value: self.config.tiers[tier].maximum_nodes for tier in Tier},
+        )
         return value
+
+    def action_envelope(
+        self,
+        actions: tuple[Action, ...],
+        *,
+        partition: str | None = None,
+        generation: int | None = None,
+    ) -> dict[str, Any]:
+        selected_partition = partition or self.config.controller.partitions[0]
+        if selected_partition not in self.config.controller.partitions:
+            raise ValueError("unknown action-envelope partition")
+        selected_generation = self.generation if generation is None else generation
+        return serialize_action_envelope(
+            deployment_id=self.config.deployment_id,
+            partition=selected_partition,
+            generation=selected_generation,
+            image_digest=self.config.image_digest,
+            config_digest=self.config.config_digest,
+            actions=actions,
+            maximum_actions=self.config.provider.action_envelope_max_actions,
+            maximum_bytes=self.config.provider.action_envelope_max_bytes,
+        )
 
     def events_since(self, sequence: int) -> tuple[Event, ...]:
         if self._events and sequence < self._events[0].sequence - 1:

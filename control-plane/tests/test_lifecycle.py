@@ -92,12 +92,71 @@ class LifecycleTest(unittest.TestCase):
         self.plane.set_sessions(10, now=1)
         old_node = self.plane._ready_nodes(Tier.CORE)[0]
         actions = self.plane.fail_and_replace(old_node.node_id, now=2)
-        self.assertEqual(1, len(actions))
+        self.assertEqual(["create", "destroy"], [action.operation for action in actions])
+        self.assertEqual(old_node.node_id, actions[0].replaces_node_id)
+        self.assertTrue(actions[1].requires_drained)
         self.assertEqual(Lifecycle.TERMINATED, old_node.state)
         distribution = self.plane.session_distribution()
         self.assertEqual(10, sum(distribution.values()))
         self.assertEqual(10, len(self.plane.sessions))
         self.assertEqual(0, self.plane.counters["drain_unresolved_total"])
+
+    def test_unresolved_replacement_defers_destroy_and_can_retry(self) -> None:
+        self.plane.set_sessions(10, now=1)
+        old_node = self.plane._ready_nodes(Tier.CORE)[0]
+        self.plane.provider.mode = "dry-run"
+        actions = self.plane.fail_and_replace(old_node.node_id, now=2)
+        self.assertEqual(["create"], [action.operation for action in actions])
+        self.assertEqual(Lifecycle.REPLACING, old_node.state)
+        self.assertEqual(10, len(old_node.sessions))
+        self.assertEqual(10, len(self.plane.sessions))
+
+        replacement = self.plane.nodes[old_node.replace_node_id]
+        self.plane.provider.mode = "simulate"
+        for state in (
+            Lifecycle.PROVISIONING,
+            Lifecycle.BOOTSTRAPPING,
+            Lifecycle.AUTHENTICATED,
+            Lifecycle.REGISTERED,
+            Lifecycle.READY,
+        ):
+            self.assertTrue(
+                self.plane.apply_lifecycle_event(replacement.node_id, replacement.generation, state, now=3)
+            )
+        deferred = self.plane.retry_replacement_cleanup(old_node.node_id, now=4)
+        self.assertEqual(["destroy"], [action.operation for action in deferred])
+        self.assertEqual(Lifecycle.TERMINATED, old_node.state)
+        self.assertEqual(10, len(self.plane.sessions))
+        self.assertEqual(10, sum(self.plane.session_distribution().values()))
+
+        cleanup = self.plane.shutdown(now=5)
+        self.assertTrue(cleanup)
+        self.assertTrue(all(node.state == Lifecycle.TERMINATED for node in self.plane.nodes.values()))
+
+    def test_final_cleanup_includes_deferred_replacement_resource(self) -> None:
+        self.plane.set_sessions(10, now=1)
+        old_node = self.plane._ready_nodes(Tier.CORE)[0]
+        self.plane.provider.mode = "dry-run"
+        self.assertEqual(
+            ["create"],
+            [action.operation for action in self.plane.fail_and_replace(old_node.node_id, now=2)],
+        )
+        replacement = self.plane.nodes[old_node.replace_node_id]
+        self.plane.provider.mode = "simulate"
+        for state in (
+            Lifecycle.PROVISIONING,
+            Lifecycle.BOOTSTRAPPING,
+            Lifecycle.AUTHENTICATED,
+            Lifecycle.REGISTERED,
+            Lifecycle.READY,
+        ):
+            self.assertTrue(
+                self.plane.apply_lifecycle_event(replacement.node_id, replacement.generation, state, now=3)
+            )
+        cleanup = self.plane.shutdown(now=4)
+        self.assertIn(old_node.node_id, {action.node_id for action in cleanup})
+        self.assertTrue(all(node.state == Lifecycle.TERMINATED for node in self.plane.nodes.values()))
+        self.assertEqual(0, len(self.plane.sessions))
 
     def test_drain_without_peer_preserves_assignments_and_is_not_reported_clean(self) -> None:
         before = self.plane.set_sessions(10, now=1)

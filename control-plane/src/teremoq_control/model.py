@@ -18,6 +18,15 @@ class Tier(StrEnum):
     VIEWER_EDGE = "viewer-edge"
 
 
+class ActionReason(StrEnum):
+    CONFIGURED_MINIMUM = "configured_minimum"
+    AUTOSCALE_OUT = "autoscale_out"
+    AUTOSCALE_IN = "autoscale_in"
+    FAILED_NODE_REPLACEMENT = "failed_node_replacement"
+    FAILED_NODE_CLEANUP = "failed_node_cleanup"
+    SAFE_SHUTDOWN = "safe_shutdown"
+
+
 class Lifecycle(StrEnum):
     REQUESTED = "requested"
     PROVISIONING = "provisioning"
@@ -40,7 +49,7 @@ FORWARD_TRANSITIONS: dict[Lifecycle, frozenset[Lifecycle]] = {
     Lifecycle.READY: frozenset({Lifecycle.DRAINING, Lifecycle.FAILED}),
     Lifecycle.DRAINING: frozenset({Lifecycle.TERMINATED, Lifecycle.FAILED}),
     Lifecycle.FAILED: frozenset({Lifecycle.REPLACING, Lifecycle.TERMINATED}),
-    Lifecycle.REPLACING: frozenset({Lifecycle.TERMINATED}),
+    Lifecycle.REPLACING: frozenset({Lifecycle.DRAINING, Lifecycle.TERMINATED}),
     Lifecycle.TERMINATED: frozenset(),
 }
 
@@ -148,17 +157,29 @@ class Action:
     generation: int
     tier: Tier
     placement: Placement
-    reason: str
+    reason: ActionReason
+    capacity_viewers: int
+    capacity_egress_mbps: int
+    deadline_at: int
+    requires_drained: bool
+    replaces_node_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "operation": self.operation,
             "node_id": self.node_id,
             "generation": self.generation,
             "tier": self.tier.value,
             "placement": asdict(self.placement),
-            "reason": self.reason,
+            "reason": self.reason.value,
+            "capacity_viewers": self.capacity_viewers,
+            "capacity_egress_mbps": self.capacity_egress_mbps,
+            "deadline_at": self.deadline_at,
+            "requires_drained": self.requires_drained,
         }
+        if self.replaces_node_id is not None:
+            value["replaces_node_id"] = self.replaces_node_id
+        return value
 
 
 @dataclass(frozen=True, slots=True)

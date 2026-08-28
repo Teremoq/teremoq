@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .model import Placement, Tier
+from .contracts import CONTRACT_MAX_ACTIONS, CONTRACT_MAX_RESERVATIONS
 
 
 class ConfigError(ValueError):
@@ -102,6 +103,9 @@ class LifecycleConfig:
 class ProviderConfig:
     mode: str
     adapter: str
+    action_envelope_max_actions: int
+    action_envelope_max_bytes: int
+    idempotency_registry_limit: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,7 +336,7 @@ def load_config(path: str | Path) -> Config:
         maximum_reservations_per_sample=_integer(
             scaling["maximum_reservations_per_sample"],
             0,
-            MAX_CONFIG_COLLECTION_LIMIT,
+            CONTRACT_MAX_RESERVATIONS,
             "scaling.maximum_reservations_per_sample",
         ),
         reservation_registry_limit=_integer(
@@ -344,7 +348,7 @@ def load_config(path: str | Path) -> Config:
         maximum_actions_per_reconcile=_integer(
             scaling["maximum_actions_per_reconcile"],
             1,
-            MAX_CONFIG_COLLECTION_LIMIT,
+            CONTRACT_MAX_ACTIONS,
             "scaling.maximum_actions_per_reconcile",
         ),
         drain_timeout_seconds=_integer(scaling["drain_timeout_seconds"], 1, 86_400, "scaling.drain_timeout_seconds"),
@@ -365,10 +369,44 @@ def load_config(path: str | Path) -> Config:
     provider = value["provider"]
     if not isinstance(provider, dict):
         raise ConfigError("provider: expected object")
-    _exact_keys(provider, {"mode", "adapter"}, set(), "provider")
+    _exact_keys(
+        provider,
+        {
+            "mode",
+            "adapter",
+            "action_envelope_max_actions",
+            "action_envelope_max_bytes",
+            "idempotency_registry_limit",
+        },
+        set(),
+        "provider",
+    )
     if provider["mode"] not in {"simulate", "dry-run"} or provider["adapter"] != "local-simulator":
         raise ConfigError("provider: only local-simulator in simulate or dry-run mode is allowed")
-    provider_config = ProviderConfig(mode=provider["mode"], adapter=provider["adapter"])
+    action_envelope_max_actions = _integer(
+        provider["action_envelope_max_actions"], 1, 1024, "provider.action_envelope_max_actions"
+    )
+    if scaling_config.maximum_actions_per_reconcile > action_envelope_max_actions:
+        raise ConfigError(
+            "provider.action_envelope_max_actions must cover scaling.maximum_actions_per_reconcile"
+        )
+    provider_config = ProviderConfig(
+        mode=provider["mode"],
+        adapter=provider["adapter"],
+        action_envelope_max_actions=action_envelope_max_actions,
+        action_envelope_max_bytes=_integer(
+            provider["action_envelope_max_bytes"],
+            1024,
+            4 * 1024 * 1024,
+            "provider.action_envelope_max_bytes",
+        ),
+        idempotency_registry_limit=_integer(
+            provider["idempotency_registry_limit"],
+            1,
+            MAX_CONFIG_COLLECTION_LIMIT,
+            "provider.idempotency_registry_limit",
+        ),
+    )
 
     cost = value["cost"]
     if not isinstance(cost, dict):

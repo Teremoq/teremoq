@@ -54,7 +54,7 @@ The explicit lifecycle is:
 ```text
 requested -> provisioning -> bootstrapping -> authenticated -> registered -> ready
 ready -> draining -> terminated
-any active provisioning/ready state -> failed -> replacing -> terminated
+any active provisioning/ready state -> failed -> replacing -> draining -> terminated
 ```
 
 Each node is bound to image digest, configuration digest and generation.
@@ -121,9 +121,18 @@ is rejected as replay/mutation.
   records are purged; saturation rejects new reservations fail closed.
 - Provider actions per pass: `scaling.maximum_actions_per_reconcile`; larger
   changes converge in deterministic batches.
+- Serialized actions and bytes per local action file: provider envelope limits;
+  the schema also enforces a per-payload technical maximum.
+- Metrics samples: schema `maxItems` plus the equal-or-smaller configured
+  reservation limit; JSON numbers are interoperable safe integers.
 - Snapshots: `controller.snapshot_limit`.
 - Session registry: `controller.session_registry_limit`.
 - Session assignments: sum of ready-node `capacity_viewers`; every node is also
   checked independently before an atomic assignment update.
 - Nodes: tier `maximum_nodes`.
 - No media buffers or payload queues exist in the control plane.
+
+These payload and registry limits control memory and amplification. They do not
+encode a 100/1,000/10,000/100,000 viewer or node ceiling. Viewer/node policy is
+deployment configuration; large changes converge across bounded action batches
+and regional partitions.

@@ -24,13 +24,21 @@ sessions continue when controllers are unavailable. It must never synchronously
 query the control plane for an Object, Group, Track or per-packet decision.
 
 The schemas in `contracts/` describe state payloads only. `audit-event` matches
-`Event.to_dict()`, `metrics-sample` matches `MetricsSample.to_dict()` and
-`desired-state` matches `ControlPlane.desired_state()`. Stdlib validators reject
+`Event.to_dict()`, `metrics-sample` matches `MetricsSample.to_dict()`,
+`desired-state` matches `ControlPlane.desired_state()` and the action envelope
+matches `ControlPlane.action_envelope()`. The demo emits the latter as local
+`actions-*.json` files. Stdlib validators reject
 unknown/missing fields and structural divergence. Integration must use
 an existing authenticated transport and serialization selected by ADR (for
 example an existing HTTPS/gRPC or durable event-store interface); it must not
 invent a Teremoq wire protocol. Payload size, request rate, authentication,
 authorization and cardinality limits remain mandatory.
+
+The schema-level JSON-safe numeric maxima and reservation/action cardinalities
+are per-payload security limits. The validator additionally receives the
+equal-or-smaller configured limits for a run. They are not viewer-count or
+deployment-scale ceilings; partition reconcilers converge through bounded
+batches.
 
 ## Security/PKI review gate
 
@@ -73,8 +81,29 @@ It must validate quota, budget, region and zone before apply. Prices require an
 explicit currency, source and `as_of` date supplied by the cost owner; missing
 tariffs produce `external_provider_estimate=null`, never an invented value.
 
+The version-1 local action envelope contains deployment/partition generation,
+immutable image/config digests and a bounded action array. Every action carries
+operation, node/generation fencing, neutral placement, requested viewer/egress
+capacity, a low-cardinality versioned reason and an absolute logical
+`deadline_at`. A create may carry `replaces_node_id`; a destroy always carries
+`requires_drained=true`. The SHA-256 idempotency key covers canonical JSON for
+all envelope context and action semantics. An adapter must persist the last
+accepted generation per partition and accepted keys: an older generation fails
+closed and a replay is a no-op. Registry saturation also fails closed; keys are
+never evicted merely to accept work. The local `ActionEnvelopeGuard`
+demonstrates those decisions without invoking a provider. Logical deadlines are
+derived from bounded lifecycle/drain configuration and do not claim wall-clock
+synchronization.
+
+Replacement is ordered: create capacity, reach ready, drain assignments and
+only then emit destroy for the old resource. An unresolved drain emits no
+destroy, leaves the old node in `replacing`, preserves its assignments and is
+retryable through `retry_replacement_cleanup()`. Final shutdown includes any
+still-pending replacement cleanup after the explicit local session cleanup.
+
 No real provider adapter, API request, credential, billing action or remote
-resource is included in this foundation.
+resource is included in this foundation. Platform has not consumed or accepted
+these files yet; transport, durable storage and execution remain review gates.
 
 ## Session capacity and unresolved drain
 

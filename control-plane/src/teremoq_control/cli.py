@@ -43,6 +43,9 @@ def run_demo(config: Config) -> dict[str, Any]:
     plane = ControlPlane(config)
     now = 0
     bootstrap_actions = plane.bootstrap(now)
+    action_envelopes: list[dict[str, Any]] = [
+        {"label": "bootstrap", "envelope": plane.action_envelope(bootstrap_actions)}
+    ]
     initial_snapshot = plane.snapshot("initial", now)
     sequence = 0
     scenarios: list[dict[str, Any]] = []
@@ -56,6 +59,14 @@ def run_demo(config: Config) -> dict[str, Any]:
             sequence += 1
             second = plane.reconcile(_sample(viewers, sequence, now, config.controller.partitions[0], config), now)
             results.append(second)
+        for result_index, result in enumerate(results):
+            if result.actions:
+                action_envelopes.append(
+                    {
+                        "label": f"scenario-{viewers}-{result_index + 1}",
+                        "envelope": plane.action_envelope(result.actions),
+                    }
+                )
         distribution = plane.set_sessions(viewers, now)
         scenarios.append(
             {
@@ -81,6 +92,9 @@ def run_demo(config: Config) -> dict[str, Any]:
     before_failure_distribution = plane.session_distribution()
     failed_node = ready_distributors[0].node_id
     replacement_actions = plane.fail_and_replace(failed_node, now + 1)
+    action_envelopes.append(
+        {"label": "replacement", "envelope": plane.action_envelope(replacement_actions)}
+    )
     after_recovery_distribution = plane.session_distribution()
     if failed_node in after_recovery_distribution:
         raise AssertionError("failed distributor remained ready")
@@ -96,6 +110,9 @@ def run_demo(config: Config) -> dict[str, Any]:
     cost = plane.cost_report(config.milestone.gate_viewers)
     audit = plane.audit_export()
     cleanup_actions = plane.shutdown(now + 4)
+    action_envelopes.append(
+        {"label": "cleanup", "envelope": plane.action_envelope(cleanup_actions)}
+    )
     cleanup_metrics = plane.metrics()
     if cleanup_metrics["active_sessions"] != 0 or any(
         node.state.value != "terminated" for node in plane.nodes.values()
@@ -130,6 +147,7 @@ def run_demo(config: Config) -> dict[str, Any]:
             "larger_scenario_executed": False,
         },
         "bootstrap_actions": [action.to_dict() for action in bootstrap_actions],
+        "action_envelopes": action_envelopes,
         "scenarios": scenarios,
         "failure_recovery": {
             "failed_node": failed_node,
@@ -159,6 +177,7 @@ def run_demo(config: Config) -> dict[str, Any]:
             "The opaque local auth context is test input, not a PKI or signature verification result.",
             "Unresolved drain preserves assignments; no forced session-termination policy is enabled.",
             "External provider cost estimates remain unavailable until dated tariffs are supplied.",
+            "Action envelope files are local plans; no Platform adapter or transport consumed them.",
             "The 100-viewer result is simulated control-state evidence, not real media capacity evidence.",
         ],
     }
@@ -188,7 +207,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             "",
             "## Failure and recovery",
             "",
-            f"Failed `{failure['failed_node']}`, created `{len(failure['replacement_actions'])}` simulated replacement, "
+            f"Failed `{failure['failed_node']}`, emitted ordered create/destroy replacement actions, "
             f"and recovered `{failure['sessions_recovered']}` session assignments. Distribution after recovery: "
             f"`{failure['after_distribution']}`.",
             "",
@@ -234,6 +253,12 @@ def main(argv: list[str] | None = None) -> int:
             markdown_path = arguments.report_dir / "milestone-100.md"
             json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             markdown_path.write_text(render_markdown(report), encoding="utf-8")
+            for item in report["action_envelopes"]:
+                action_path = arguments.report_dir / f"actions-{item['label']}.json"
+                action_path.write_text(
+                    json.dumps(item["envelope"], indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
         print(json.dumps(report, sort_keys=True))
         return 0
     except (ConfigError, ValueError, RuntimeError, AssertionError) as error:

@@ -9,11 +9,11 @@
     "schema_version": {"const": 1},
     "sample_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "partition": {"type": "string", "minLength": 1, "maxLength": 63},
-    "sequence": {"type": "integer", "minimum": 0},
-    "observed_at": {"type": "integer", "minimum": 0},
-    "authorized_viewers": {"type": "integer", "minimum": 0},
-    "active_sessions": {"type": "integer", "minimum": 0},
-    "egress_mbps": {"type": "integer", "minimum": 0},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "observed_at": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "authorized_viewers": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "active_sessions": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "egress_mbps": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
     "auth_context": {
       "type": "object",
       "additionalProperties": false,
@@ -21,19 +21,20 @@
       "properties": {
         "verification_id": {"type": "string", "minLength": 1, "maxLength": 128},
         "principal_ref": {"type": "string", "minLength": 1, "maxLength": 128},
-        "verified_at": {"type": "integer", "minimum": 0}
+        "verified_at": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
       }
     },
     "reservations": {
       "type": "array",
+      "maxItems": 4096,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["reservation_id", "viewers", "expires_at", "authorization_id", "nonce"],
         "properties": {
           "reservation_id": {"type": "string", "minLength": 1, "maxLength": 128},
-          "viewers": {"type": "integer", "minimum": 0},
-          "expires_at": {"type": "integer", "minimum": 0},
+          "viewers": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "expires_at": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
           "authorization_id": {"type": "string", "minLength": 1, "maxLength": 128},
           "nonce": {"type": "string", "minLength": 1, "maxLength": 128}
         }

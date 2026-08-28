@@ -84,7 +84,10 @@
   },
   "provider": {
     "mode": "simulate",
-    "adapter": "local-simulator"
+    "adapter": "local-simulator",
+    "action_envelope_max_actions": 8,
+    "action_envelope_max_bytes": 65536,
+    "idempotency_registry_limit": 4096
   },
   "cost": {
     "currency": "EUR",

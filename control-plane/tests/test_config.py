@@ -4,6 +4,7 @@ from __future__ import annotations
 import unittest
 
 from teremoq_control.config import ConfigError, load_config
+from teremoq_control.contracts import CONTRACT_MAX_RESERVATIONS
 from teremoq_control.engine import ControlPlane
 from teremoq_control.model import MetricsSample, Tier, VerifiedAuthContext
 
@@ -31,6 +32,20 @@ class ConfigTest(unittest.TestCase):
         value["image_digest"] = "local-simulator:latest"
         with temporary_config(value) as path:
             with self.assertRaisesRegex(ConfigError, "immutable sha256"):
+                load_config(path)
+
+    def test_payload_safety_limits_bound_run_configuration(self) -> None:
+        value = raw_config()
+        value["scaling"]["maximum_reservations_per_sample"] = CONTRACT_MAX_RESERVATIONS + 1
+        with temporary_config(value) as path:
+            with self.assertRaisesRegex(ConfigError, "maximum_reservations_per_sample"):
+                load_config(path)
+
+        value = raw_config()
+        value["scaling"]["maximum_actions_per_reconcile"] = 9
+        value["provider"]["action_envelope_max_actions"] = 8
+        with temporary_config(value) as path:
+            with self.assertRaisesRegex(ConfigError, "must cover"):
                 load_config(path)
 
     def test_three_or_more_controllers_require_no_code_change(self) -> None:

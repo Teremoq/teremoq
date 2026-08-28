@@ -28,6 +28,11 @@ control-plane/bin/control-plane \
   demo --report-dir control-plane/reports/latest
 ```
 
+The demo directory also contains pure `actions-*.json` files conforming to
+`contracts/action-envelope.schema.json`. They are reproducible local plans for
+an external Platform adapter; writing them performs no apply, transport or
+provider call.
+
 Or run the complete gate:
 
 ```bash
@@ -63,6 +68,13 @@ simulated as if they already existed.
 Only `local-simulator` with `simulate` or `dry-run` is accepted. There is no
 provider SDK, network client, subprocess execution, credential loader or remote
 resource type. Images and configuration snapshots use SHA-256 identifiers.
+
+Metrics and desired-state schemas impose a JSON-safe numeric ceiling and a
+per-sample reservation cardinality ceiling before run-specific configuration
+applies stricter limits. Action envelopes have separately configured action,
+byte and idempotency-registry bounds. These are payload/memory safety limits,
+not viewer, node-topology or commercial scale ceilings; larger deployments
+converge through bounded partition-local batches.
 
 The configured `forbidden_execution_viewers` prevents this milestone command
 from accidentally running a 1,000-viewer scenario. A configuration-only unit

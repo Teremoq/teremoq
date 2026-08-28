@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teremoq.invalid/control-plane/action-envelope.schema.json",
+  "title": "Teremoq provider-neutral local action envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "deployment_id", "partition", "generation", "image_digest", "config_digest", "actions"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "deployment_id": {"type": "string", "minLength": 1, "maxLength": 63},
+    "partition": {"type": "string", "minLength": 1, "maxLength": 63},
+    "generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "image_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "config_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation", "node_id", "generation", "tier", "placement", "reason", "capacity_viewers", "capacity_egress_mbps", "deadline_at", "requires_drained", "idempotency_key"],
+        "properties": {
+          "operation": {"enum": ["create", "destroy"]},
+          "node_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "tier": {"enum": ["origin", "core", "regional", "viewer-edge"]},
+          "placement": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["provider", "region", "zone"],
+            "properties": {
+              "provider": {"type": "string", "minLength": 1, "maxLength": 63},
+              "region": {"type": "string", "minLength": 1, "maxLength": 63},
+              "zone": {"type": "string", "minLength": 1, "maxLength": 63}
+            }
+          },
+          "reason": {"enum": ["configured_minimum", "autoscale_out", "autoscale_in", "failed_node_replacement", "failed_node_cleanup", "safe_shutdown"]},
+          "capacity_viewers": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "capacity_egress_mbps": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "deadline_at": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "requires_drained": {"type": "boolean"},
+          "replaces_node_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "idempotency_key": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"operation": {"const": "create"}}, "required": ["operation"]},
+            "then": {
+              "properties": {
+                "capacity_viewers": {"minimum": 1},
+                "capacity_egress_mbps": {"minimum": 1},
+                "requires_drained": {"const": false}
+              }
+            }
+          },
+          {
+            "if": {"properties": {"operation": {"const": "destroy"}}, "required": ["operation"]},
+            "then": {
+              "properties": {"requires_drained": {"const": true}},
+              "not": {"required": ["replaces_node_id"]}
+            }
+          }
+        ]
+      }
+    }
+  }
+}

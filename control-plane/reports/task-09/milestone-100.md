@@ -2,9 +2,9 @@
 
 - Result: `pass`
 - Scope: local deterministic control-plane simulation; no real video or provider capacity
-- Config digest: `sha256:533176b1adee2016df050ba7d74a68add407c91e8e19d149b0e4c7591a963a7d`
-- Report content digest: `sha256:4cd2cd5d463fbd24816e1d76b2b924aa05138deb3aa154cc83f06baad19b0ad0`
-- Measured wall execution: `7514527 ns`
+- Config digest: `sha256:68e94c063b6e3fb51225dd0a815b61e5e3b496d1619fadf5b509003e8be23fe6`
+- Report content digest: `sha256:7151edd5c0243db99616f224210c862c5316594045f0ab31a792b0b0e76e417e`
+- Measured wall execution: `6118752 ns`
 - Logical time: `54 s`
 
 ## Demonstrated gate
@@ -13,7 +13,7 @@ Progressive viewers: `[10, 25, 50, 100]`. Final topology: `1 origin`, `2 distrib
 
 ## Failure and recovery
 
-Failed `milestone-local-core-000002`, created `1` simulated replacement, and recovered `100` session assignments. Distribution after recovery: `{'milestone-local-core-000003': 50, 'milestone-local-core-000004': 50}`.
+Failed `milestone-local-core-000002`, emitted ordered create/destroy replacement actions, and recovered `100` session assignments. Distribution after recovery: `{'milestone-local-core-000003': 50, 'milestone-local-core-000004': 50}`.
 
 ## Cost boundary
 
@@ -30,4 +30,5 @@ Active sessions: `0`; terminated simulated nodes: `4`.
 - The opaque local auth context is test input, not a PKI or signature verification result.
 - Unresolved drain preserves assignments; no forced session-termination policy is enabled.
 - External provider cost estimates remain unavailable until dated tariffs are supplied.
+- Action envelope files are local plans; no Platform adapter or transport consumed them.
 - The 100-viewer result is simulated control-state evidence, not real media capacity evidence.

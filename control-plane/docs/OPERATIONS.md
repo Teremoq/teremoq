@@ -38,6 +38,26 @@ is SHA-256 protected. Rollback rejects tampering or a different image/config,
 advances generation to fence delayed events and restores deterministic state.
 Snapshots do not contain media, credentials or provider secrets.
 
+## Local action plans
+
+The milestone command writes `actions-bootstrap.json`, any non-empty scenario
+batch, `actions-replacement.json` and `actions-cleanup.json`. Each is a
+standalone versioned action envelope validated before return. Create requests
+carry neutral capacity, placement, immutable digests and a bounded logical
+deadline; replacement links to the failed node. Destroy requests retain node
+generation and require drain before termination. Deterministic idempotency keys
+cover every field affecting execution. Reasons come from a closed versioned
+enum; these files contain no IP address, credential, provider error or provider
+API type.
+
+`provider.action_envelope_max_actions` and `action_envelope_max_bytes` bound one
+file. `idempotency_registry_limit` bounds the demonstration replay guard. A full
+registry or stale generation is a fail-closed condition, not permission to
+evict a key. If replacement capacity is not ready or cannot receive all
+assignments, no destroy file/action is produced; operators can retry the
+explicit cleanup after capacity recovers. A production adapter needs durable
+fenced state. The local CLI neither executes nor sends these plans.
+
 ## Cost semantics
 
 The milestone uses zero rates sourced as `local-simulation-measured` because it

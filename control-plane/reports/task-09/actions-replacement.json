@@ -1,0 +1,45 @@
+{
+  "actions": [
+    {
+      "capacity_egress_mbps": 100,
+      "capacity_viewers": 60,
+      "deadline_at": 141,
+      "generation": 3,
+      "idempotency_key": "sha256:8446cd1c535de9263dd1557a8d39082287c1dbf5eb80fd284c4a1c95b43e76b6",
+      "node_id": "milestone-local-core-000004",
+      "operation": "create",
+      "placement": {
+        "provider": "local-sim-a",
+        "region": "eu-south",
+        "zone": "zone-a"
+      },
+      "reason": "failed_node_replacement",
+      "replaces_node_id": "milestone-local-core-000002",
+      "requires_drained": false,
+      "tier": "core"
+    },
+    {
+      "capacity_egress_mbps": 100,
+      "capacity_viewers": 60,
+      "deadline_at": 66,
+      "generation": 1,
+      "idempotency_key": "sha256:657f55ea5ad5d3453b1b7ab01a87da34edbe97837a760084ca95ca3449bf3130",
+      "node_id": "milestone-local-core-000002",
+      "operation": "destroy",
+      "placement": {
+        "provider": "local-sim-a",
+        "region": "eu-south",
+        "zone": "zone-a"
+      },
+      "reason": "failed_node_cleanup",
+      "requires_drained": true,
+      "tier": "core"
+    }
+  ],
+  "config_digest": "sha256:68e94c063b6e3fb51225dd0a815b61e5e3b496d1619fadf5b509003e8be23fe6",
+  "deployment_id": "milestone-local",
+  "generation": 3,
+  "image_digest": "sha256:07265afea47294d8bac3e450fb16c8c06403e9e4b86575d5816210f76ed8dd0b",
+  "partition": "eu-south",
+  "schema_version": 1
+}
