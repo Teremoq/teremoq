@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "deployment_id": "milestone-local",
+  "image_digest": "sha256:07265afea47294d8bac3e450fb16c8c06403e9e4b86575d5816210f76ed8dd0b",
+  "controller": {
+    "replicas": 1,
+    "partitions": ["eu-south"],
+    "event_queue_limit": 4096,
+    "snapshot_limit": 16,
+    "session_registry_limit": 500000
+  },
+  "tiers": {
+    "origin": {
+      "enabled": true,
+      "minimum_nodes": 1,
+      "maximum_nodes": 16,
+      "capacity_viewers_per_node": 10000000,
+      "capacity_egress_mbps_per_node": 10000000,
+      "placements": [
+        {"provider": "local-sim-a", "region": "eu-south", "zone": "zone-a"},
+        {"provider": "local-sim-b", "region": "eu-west", "zone": "zone-b"}
+      ]
+    },
+    "core": {
+      "enabled": true,
+      "minimum_nodes": 1,
+      "maximum_nodes": 1000000,
+      "capacity_viewers_per_node": 60,
+      "capacity_egress_mbps_per_node": 100,
+      "placements": [
+        {"provider": "local-sim-a", "region": "eu-south", "zone": "zone-a"},
+        {"provider": "local-sim-b", "region": "eu-west", "zone": "zone-b"}
+      ]
+    },
+    "regional": {
+      "enabled": false,
+      "minimum_nodes": 0,
+      "maximum_nodes": 1000000,
+      "capacity_viewers_per_node": 500,
+      "capacity_egress_mbps_per_node": 500,
+      "placements": [
+        {"provider": "local-sim-a", "region": "eu-south", "zone": "zone-a"},
+        {"provider": "local-sim-b", "region": "eu-west", "zone": "zone-b"}
+      ]
+    },
+    "viewer-edge": {
+      "enabled": false,
+      "minimum_nodes": 0,
+      "maximum_nodes": 1000000,
+      "capacity_viewers_per_node": 1000,
+      "capacity_egress_mbps_per_node": 1000,
+      "placements": [
+        {"provider": "local-sim-a", "region": "eu-south", "zone": "zone-a"},
+        {"provider": "local-sim-b", "region": "eu-west", "zone": "zone-b"}
+      ]
+    }
+  },
+  "scaling": {
+    "target_tier": "core",
+    "reserve_ratio": 0.1,
+    "scale_out_cooldown_seconds": 5,
+    "scale_in_cooldown_seconds": 30,
+    "scale_out_stability_seconds": 10,
+    "scale_in_stability_seconds": 30,
+    "scale_in_utilization_threshold": 0.35,
+    "metrics_max_age_seconds": 20,
+    "maximum_sequence_gap": 100,
+    "maximum_demand_increase_per_second": 20.0,
+    "maximum_reservations_per_sample": 4096,
+    "maximum_actions_per_reconcile": 8,
+    "drain_timeout_seconds": 15
+  },
+  "lifecycle": {
+    "timeouts_seconds": {
+      "provisioning": 30,
+      "bootstrapping": 30,
+      "authenticated": 15,
+      "registered": 15,
+      "draining": 15,
+      "replacing": 30
+    }
+  },
+  "provider": {
+    "mode": "simulate",
+    "adapter": "local-simulator"
+  },
+  "cost": {
+    "currency": "EUR",
+    "rate_source": "local-simulation-measured",
+    "rate_as_of": "2026-08-28",
+    "hourly_by_tier": {
+      "origin": 0.0,
+      "core": 0.0,
+      "regional": 0.0,
+      "viewer-edge": 0.0
+    },
+    "controller_hourly": 0.0,
+    "egress_per_gb": 0.0,
+    "workload_mbps_per_viewer": 0.8,
+    "protocol_overhead_ratio": 0.08,
+    "maximum_hourly_cost": 0.0,
+    "local_remote_infrastructure_cost": 0.0
+  },
+  "milestone": {
+    "gate_viewers": 100,
+    "progressive_scenarios": [10, 25, 50, 100],
+    "expected_origin_nodes": 1,
+    "expected_distributor_nodes": 2,
+    "expected_controller_nodes": 1,
+    "forbidden_execution_viewers": 1000
+  }
+}

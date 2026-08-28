@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teremoq.invalid/control-plane/metrics-sample.schema.json",
+  "title": "Teremoq aggregate capacity metrics sample",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sample_id", "partition", "sequence", "observed_at", "authorized_viewers", "active_sessions", "egress_mbps", "reservations"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "sample_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "partition": {"type": "string", "minLength": 1, "maxLength": 63},
+    "sequence": {"type": "integer", "minimum": 0},
+    "observed_at": {"type": "integer", "minimum": 0},
+    "authorized_viewers": {"type": "integer", "minimum": 0},
+    "active_sessions": {"type": "integer", "minimum": 0},
+    "egress_mbps": {"type": "integer", "minimum": 0},
+    "reservations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reservation_id", "viewers", "expires_at", "authorization_id", "nonce"],
+        "properties": {
+          "reservation_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "viewers": {"type": "integer", "minimum": 0},
+          "expires_at": {"type": "integer", "minimum": 0},
+          "authorization_id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "nonce": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    }
+  }
+}

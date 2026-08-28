@@ -1,0 +1,332 @@
+{
+  "alerts": [],
+  "audit_digest": "sha256:e8f04fbb4593339fbdc38ee65c0b85cd528a4ba2dd2f32f2666cdb2e96f865b7",
+  "bootstrap_actions": [
+    {
+      "generation": 1,
+      "node_id": "milestone-local-origin-000001",
+      "operation": "create",
+      "placement": {
+        "provider": "local-sim-a",
+        "region": "eu-south",
+        "zone": "zone-a"
+      },
+      "reason": "configured_minimum",
+      "tier": "origin"
+    },
+    {
+      "generation": 1,
+      "node_id": "milestone-local-core-000002",
+      "operation": "create",
+      "placement": {
+        "provider": "local-sim-a",
+        "region": "eu-south",
+        "zone": "zone-a"
+      },
+      "reason": "configured_minimum",
+      "tier": "core"
+    }
+  ],
+  "cleanup": {
+    "actions": [
+      {
+        "generation": 4,
+        "node_id": "milestone-local-origin-000001",
+        "operation": "destroy",
+        "placement": {
+          "provider": "local-sim-a",
+          "region": "eu-south",
+          "zone": "zone-a"
+        },
+        "reason": "safe_shutdown",
+        "tier": "origin"
+      },
+      {
+        "generation": 4,
+        "node_id": "milestone-local-core-000003",
+        "operation": "destroy",
+        "placement": {
+          "provider": "local-sim-b",
+          "region": "eu-west",
+          "zone": "zone-b"
+        },
+        "reason": "safe_shutdown",
+        "tier": "core"
+      },
+      {
+        "generation": 4,
+        "node_id": "milestone-local-core-000004",
+        "operation": "destroy",
+        "placement": {
+          "provider": "local-sim-a",
+          "region": "eu-south",
+          "zone": "zone-a"
+        },
+        "reason": "safe_shutdown",
+        "tier": "core"
+      }
+    ],
+    "active_sessions": 0,
+    "local_remote_infrastructure_cost": 0.0,
+    "terminated_nodes": 4
+  },
+  "cost": {
+    "billable_egress_gb": 38.88,
+    "billable_egress_mbps": 86.4,
+    "currency": "EUR",
+    "duration_hours": 1.0,
+    "egress_cost": 0.0,
+    "egress_per_gb": 0.0,
+    "estimated_cost_per_viewer_hour": 0.0,
+    "estimated_hourly_cost_at_workload": 0.0,
+    "estimated_total_cost": 0.0,
+    "external_provider_estimate": null,
+    "external_provider_tariff_required": true,
+    "local_measured_remote_infrastructure_cost": 0.0,
+    "maximum_hourly_cost": 0.0,
+    "node_and_controller_cost": 0.0,
+    "payload_egress_mbps": 80.0,
+    "protocol_overhead_ratio": 0.08,
+    "rate_as_of": "2026-08-28",
+    "rate_source": "local-simulation-measured",
+    "workload_mbps_per_viewer": 0.8
+  },
+  "failure_recovery": {
+    "after_distribution": {
+      "milestone-local-core-000003": 50,
+      "milestone-local-core-000004": 50
+    },
+    "before_distribution": {
+      "milestone-local-core-000002": 50,
+      "milestone-local-core-000003": 50
+    },
+    "failed_node": "milestone-local-core-000002",
+    "replacement_actions": [
+      {
+        "generation": 3,
+        "node_id": "milestone-local-core-000004",
+        "operation": "create",
+        "placement": {
+          "provider": "local-sim-a",
+          "region": "eu-south",
+          "zone": "zone-a"
+        },
+        "reason": "failed_node_replacement",
+        "tier": "core"
+      }
+    ],
+    "sessions_recovered": 100
+  },
+  "gate": {
+    "controller_nodes": 1,
+    "distributor_nodes": 2,
+    "larger_scenario_executed": false,
+    "origin_nodes": 1,
+    "out_of_scope_execution_floor": 1000,
+    "progressive_scenarios": [
+      10,
+      25,
+      50,
+      100
+    ],
+    "viewers": 100
+  },
+  "inputs": {
+    "config_digest": "sha256:ae6d9e003b9a03d25c2928f8c99a9578234fc15f7f8af6a06a704b5fa6dfb8c5",
+    "controller_replicas": 1,
+    "image_digest_identifier": "sha256:07265afea47294d8bac3e450fb16c8c06403e9e4b86575d5816210f76ed8dd0b",
+    "partitions": [
+      "eu-south"
+    ],
+    "provider_mode": "simulate"
+  },
+  "limitations": [
+    "The simulator does not create remote resources or forward video.",
+    "The local milestone runs one controller; leases and replicated storage are integration contracts.",
+    "External provider cost estimates remain unavailable until dated tariffs are supplied.",
+    "The 100-viewer result is simulated control-state evidence, not real media capacity evidence."
+  ],
+  "milestone_metrics": {
+    "active_sessions": 100,
+    "controllers_configured": 1,
+    "counters": {
+      "metrics_accepted_total": 5,
+      "metrics_rejected_total": 0,
+      "nodes_replaced_total": 1,
+      "scale_in_total": 0,
+      "scale_out_total": 1,
+      "sessions_reassigned_total": 50,
+      "stale_events_ignored_total": 0
+    },
+    "desired_nodes": {
+      "core": 2,
+      "origin": 1,
+      "regional": 0,
+      "viewer-edge": 0
+    },
+    "event_queue_capacity": 4096,
+    "event_queue_depth": 36,
+    "generation": 4,
+    "instance_id": "control-1",
+    "lifecycle_nodes": {
+      "authenticated": 0,
+      "bootstrapping": 0,
+      "draining": 0,
+      "failed": 0,
+      "provisioning": 0,
+      "ready": 3,
+      "registered": 0,
+      "replacing": 0,
+      "requested": 0,
+      "terminated": 1
+    },
+    "schema_version": 1,
+    "service": "teremoq-control-plane"
+  },
+  "report_content_digest": "sha256:7d24b9f4c336358d662c48f586b767d95b2e8540954859959b68bf4289a0acf5",
+  "result": "pass",
+  "runtime": {
+    "elapsed_ns_measured": 4671154,
+    "logical_time_seconds": 54,
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+    "python": "3.14.4"
+  },
+  "scenarios": [
+    {
+      "ready_distributors": 1,
+      "reconcile": [
+        {
+          "accepted": true,
+          "actions": [],
+          "alerts": [],
+          "desired_nodes": 1,
+          "fail_closed": false,
+          "reason": "stable",
+          "signal": {
+            "active_sessions": 10,
+            "authorized_viewers": 10,
+            "egress_mbps": 9,
+            "required_nodes": 1,
+            "reserved_viewers": 0
+          }
+        }
+      ],
+      "samples": 1,
+      "session_distribution": {
+        "milestone-local-core-000002": 10
+      },
+      "viewers": 10
+    },
+    {
+      "ready_distributors": 1,
+      "reconcile": [
+        {
+          "accepted": true,
+          "actions": [],
+          "alerts": [],
+          "desired_nodes": 1,
+          "fail_closed": false,
+          "reason": "stable",
+          "signal": {
+            "active_sessions": 25,
+            "authorized_viewers": 25,
+            "egress_mbps": 22,
+            "required_nodes": 1,
+            "reserved_viewers": 0
+          }
+        }
+      ],
+      "samples": 1,
+      "session_distribution": {
+        "milestone-local-core-000002": 25
+      },
+      "viewers": 25
+    },
+    {
+      "ready_distributors": 1,
+      "reconcile": [
+        {
+          "accepted": true,
+          "actions": [],
+          "alerts": [],
+          "desired_nodes": 1,
+          "fail_closed": false,
+          "reason": "stable",
+          "signal": {
+            "active_sessions": 50,
+            "authorized_viewers": 50,
+            "egress_mbps": 44,
+            "required_nodes": 1,
+            "reserved_viewers": 0
+          }
+        }
+      ],
+      "samples": 1,
+      "session_distribution": {
+        "milestone-local-core-000002": 50
+      },
+      "viewers": 50
+    },
+    {
+      "ready_distributors": 2,
+      "reconcile": [
+        {
+          "accepted": true,
+          "actions": [],
+          "alerts": [],
+          "desired_nodes": 1,
+          "fail_closed": false,
+          "reason": "scale_out_stability_pending",
+          "signal": {
+            "active_sessions": 100,
+            "authorized_viewers": 100,
+            "egress_mbps": 87,
+            "required_nodes": 2,
+            "reserved_viewers": 0
+          }
+        },
+        {
+          "accepted": true,
+          "actions": [
+            {
+              "generation": 2,
+              "node_id": "milestone-local-core-000003",
+              "operation": "create",
+              "placement": {
+                "provider": "local-sim-b",
+                "region": "eu-west",
+                "zone": "zone-b"
+              },
+              "reason": "autoscale_out",
+              "tier": "core"
+            }
+          ],
+          "alerts": [],
+          "desired_nodes": 2,
+          "fail_closed": false,
+          "reason": "scaled_out",
+          "signal": {
+            "active_sessions": 100,
+            "authorized_viewers": 100,
+            "egress_mbps": 87,
+            "required_nodes": 2,
+            "reserved_viewers": 0
+          }
+        }
+      ],
+      "samples": 2,
+      "session_distribution": {
+        "milestone-local-core-000002": 50,
+        "milestone-local-core-000003": 50
+      },
+      "viewers": 100
+    }
+  ],
+  "schema_version": 1,
+  "scope": "local deterministic control-plane simulation; no real video or provider capacity",
+  "snapshot_rollback": {
+    "initial_digest": "sha256:2587f1d636cf67f367ee16624825ff597a26852bb6eeece29b01a9e33fe3e639",
+    "recovered_digest": "sha256:83bde0228112d5bd9b4396b75e4838cd8c6cf8e18751a0eb86d20f972e46baa6",
+    "rollback_generation": 4
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://teremoq.invalid/control-plane/desired-state.schema.json",
+  "title": "Teremoq partition desired state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "partition", "generation", "image_digest", "config_digest", "desired_nodes"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "partition": {"type": "string", "minLength": 1, "maxLength": 63},
+    "generation": {"type": "integer", "minimum": 1},
+    "image_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "config_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "desired_nodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "core", "regional", "viewer-edge"],
+      "properties": {
+        "origin": {"type": "integer", "minimum": 0},
+        "core": {"type": "integer", "minimum": 0},
+        "regional": {"type": "integer", "minimum": 0},
+        "viewer-edge": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}
