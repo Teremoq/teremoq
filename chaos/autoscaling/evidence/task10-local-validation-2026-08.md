@@ -32,7 +32,7 @@ control-plane HA or production capacity.
 | 50 | 25/25 | 2 | 0 | 1 | 50/50 | 0 |
 | 100 | 50/50 | 2 | 0 | 1 | 100/100 | 0 |
 
-The state-only single-sample replacement times were 340, 350, 420 and 460 ms
+The state-only single-sample replacement times were 400, 350, 350 and 350 ms
 for profiles 10, 25, 50 and 100. These are local harness timings, not node boot
 or recovery SLOs.
 
@@ -43,16 +43,19 @@ networks and no host ports. Its one resource observation was:
 
 | Role | CPU sample | Memory sample | PIDs |
 | --- | ---: | ---: | ---: |
-| control | 6.60% | 1.992 MiB / 64 MiB | 2 |
-| distributor A | 6.12% | 2.234 MiB / 64 MiB | 2 |
-| distributor B | 5.41% | 1.863 MiB / 64 MiB | 2 |
-| origin | 5.45% | 2.246 MiB / 64 MiB | 2 |
+| control | 4.89% | 3.016 MiB / 64 MiB | 2 |
+| distributor A | 7.06% | 2.426 MiB / 64 MiB | 2 |
+| distributor B | 7.63% | 2.297 MiB / 64 MiB | 2 |
+| origin | 6.83% | 3.137 MiB / 64 MiB | 2 |
 
-The distributor recreation took 9,080 ms; reassignment, drain and rollback
-model transitions took 10, 440 and 0 ms. This is one idle-container sample and
+The distributor recreation took 12,200 ms; reassignment, drain and rollback
+model transitions took 20, 540 and 20 ms. This is one idle-container sample and
 cannot be extrapolated to real spectators. Cleanup reported containers 0,
 networks 0 and volumes 0. The ignored source report SHA-256 was
-`5480299785122a15fbe114a16d9d0fb4654f0bd9697bed752a0935ff5274a847`.
+`68ad4f34721ff21fb6ca179a9fa784f662f10a6c337546c670d9c3e7a50cadf5`.
+The runtime artifact SHA-256 recorded by that report was
+`b91762fb91e3cde47fdcb320b8bc30cb2ba4aab15743dc143b849b78cef0da29`,
+matching `versions.env` and the file used by Compose.
 
 ## Commands and outcomes
 
