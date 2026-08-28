@@ -452,6 +452,13 @@ mod tests {
             ])?]))?,
             FederatedIdentityError::AmbiguousUriIdentity
         );
+        assert_eq!(
+            rejection(authenticate_verified_chain(&[certificate(vec![
+                uri(GATEWAY_URI)?,
+                uri(GATEWAY_URI)?,
+            ])?]))?,
+            FederatedIdentityError::AmbiguousUriIdentity
+        );
         let dns = SanType::DnsName(Ia5String::try_from("gateway.test")?);
         assert_eq!(
             rejection(authenticate_verified_chain(&[certificate(vec![
