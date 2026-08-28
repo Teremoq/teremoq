@@ -10,6 +10,33 @@ un `canvas`.
 No forma parte del data plane del Gateway y no puede introducir contrapresión
 en ingesta, demux, scheduler ni publicación.
 
+## Centro de Operaciones read-only
+
+`/operations` añade una superficie separada y tolerante a fallos para explicar
+el estado operativo sin alterar el supervisor audiovisual de `/`. Consume el
+snapshot versionado real del Gateway mediante la frontera `/gateway` existente
+y distingue en cada dato `gateway-real`, `control-plane-simulation` y
+`cloud-future`, junto con estado de medida, timestamp, edad y frescura.
+
+La configuración por defecto no carga datos del plano de control y muestra
+`pendiente de integración`. Para una demostración exclusivamente local puede
+proyectarse el reporte versionado aceptado de Task 09:
+
+```bash
+TEREMOQ_OPERATIONS_LOCAL_SIMULATION=task-09 npm run dev
+```
+
+La Route Handler asociada sólo exporta `GET`, lee una ruta fija del reporte en
+el servidor, valida límites y contrato y devuelve una proyección redactada. El
+navegador nunca recibe digests, IDs de nodo, contexto de autenticación, paths o
+errores internos. No existe selector de archivo arbitrario.
+
+Los controles de evento, capacidad, drain, sustitución, redundancia,
+autoescalado y emergencia son elementos nativos `disabled`. No existe handler
+mutable ni endpoint `POST`, `PUT`, `PATCH` o `DELETE`. Una futura superficie
+autorizada emitirá órdenes validadas al plano de control y nunca administrará
+proveedores directamente.
+
 ## Requisitos
 
 - Chrome o Edge con WebTransport y WebCodecs.

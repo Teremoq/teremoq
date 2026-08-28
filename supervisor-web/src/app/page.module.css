@@ -56,6 +56,17 @@
   color: var(--text);
 }
 
+.operationsLink {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--signal) 35%, #314251);
+  color: var(--signal);
+}
+
+.operationsLink:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 3px;
+}
+
 .intro {
   padding: 68px 0 38px;
   max-width: 950px;
@@ -107,6 +118,10 @@
   }
 
   .context > span:first-child {
+    display: none;
+  }
+
+  .environment {
     display: none;
   }
 

@@ -1,4 +1,5 @@
 import { TeremoqPlayer } from "@/components/teremoq-player";
+import Link from "next/link";
 import styles from "./page.module.css";
 
 export default function Home() {
@@ -15,6 +16,9 @@ export default function Home() {
         <div className={styles.context}>
           <span>ZERO-LATENCY PLAYER</span>
           <span className={styles.environment}>LAB LOOPBACK</span>
+          <Link className={styles.operationsLink} href="/operations">
+            OPERACIONES
+          </Link>
         </div>
       </header>
 
