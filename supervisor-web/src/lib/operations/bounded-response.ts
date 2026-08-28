@@ -2,10 +2,6 @@ import { OperationsDataError } from "./validation";
 
 const READ_CHUNK_BYTES = 64 * 1024;
 
-type BodyReader =
-  | { mode: "byob"; reader: ReadableStreamBYOBReader }
-  | { mode: "default"; reader: ReadableStreamDefaultReader<Uint8Array> };
-
 /** Read at most limit + 1 bytes and cancel immediately on overflow. */
 export async function readResponseTextLimited(response: Response, limit: number): Promise<string> {
   if (!Number.isSafeInteger(limit) || limit < 1) throw new OperationsDataError("data-invalid");
@@ -27,24 +23,24 @@ export async function readResponseTextLimited(response: Response, limit: number)
   }
   if (response.body === null) return "";
 
-  const source = acquireReader(response.body);
+  const reader = acquireByobReader(response.body);
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let text = "";
   let bytesRead = 0;
   try {
     while (true) {
-      const result = source.mode === "byob"
-        ? await source.reader.read(new Uint8Array(Math.min(READ_CHUNK_BYTES, limit - bytesRead + 1)))
-        : await source.reader.read();
+      const result = await reader.read(
+        new Uint8Array(Math.min(READ_CHUNK_BYTES, limit - bytesRead + 1)),
+      );
       if (result.done) break;
       const chunk = result.value;
       if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0) {
-        cancelReader(source.reader);
+        cancelReader(reader);
         throw new OperationsDataError("data-invalid");
       }
       bytesRead += chunk.byteLength;
       if (bytesRead > limit) {
-        cancelReader(source.reader);
+        cancelReader(reader);
         throw new OperationsDataError("payload-excessive");
       }
       text += decoder.decode(chunk, { stream: true });
@@ -52,23 +48,24 @@ export async function readResponseTextLimited(response: Response, limit: number)
     text += decoder.decode();
     return text;
   } catch (cause: unknown) {
-    cancelReader(source.reader);
+    cancelReader(reader);
     if (cause instanceof OperationsDataError) throw cause;
     throw new OperationsDataError("data-invalid");
   } finally {
-    source.reader.releaseLock();
+    reader.releaseLock();
   }
 }
 
-function acquireReader(body: ReadableStream<Uint8Array>): BodyReader {
+function acquireByobReader(body: ReadableStream<Uint8Array>): ReadableStreamBYOBReader {
   try {
-    return { mode: "byob", reader: body.getReader({ mode: "byob" }) };
+    return body.getReader({ mode: "byob" });
   } catch {
-    return { mode: "default", reader: body.getReader() };
+    cancelUnlocked(body);
+    throw new OperationsDataError("data-invalid");
   }
 }
 
-function cancelReader(reader: ReadableStreamBYOBReader | ReadableStreamDefaultReader<Uint8Array>) {
+function cancelReader(reader: ReadableStreamBYOBReader) {
   void reader.cancel("payload-excessive").catch(() => undefined);
 }
 

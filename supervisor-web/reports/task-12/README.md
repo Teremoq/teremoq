@@ -12,6 +12,7 @@ Los hallazgos `B-F01`, `B-F02` y `B-F03` se atienden mediante un commit DCO
 adicional, sin modificar la superficie read-only ni las evidencias originales:
 
 - lectura incremental y cancelación en `límite + 1` para respuestas chunked;
+- rechazo y cancelación antes de toda lectura cuando el body no permite BYOB;
 - apertura, verificación, lectura acotada y cierre del fixture sobre el mismo
   descriptor;
 - validación cerrada de todas las estructuras anidadas y los cuatro escenarios

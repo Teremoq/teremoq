@@ -129,4 +129,25 @@ describe("adaptador de operaciones del Gateway", () => {
     expect(produced).toBe(limit + 1);
     expect(canceled).toBe(true);
   });
+
+  it("rechaza y cancela un body no-BYOB sin leer ningún chunk", async () => {
+    let pulls = 0;
+    let canceled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new Uint8Array(700 * 1024));
+      },
+      cancel() {
+        canceled = true;
+      },
+    }, { highWaterMark: 0 });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ status: 200, ok: true, headers: new Headers(), body }) as Response));
+
+    await expect(loadOperationsGatewaySnapshot(new AbortController().signal)).rejects.toThrow(
+      "data-invalid",
+    );
+    expect(pulls).toBe(0);
+    expect(canceled).toBe(true);
+  });
 });

@@ -306,8 +306,8 @@ ampliar el pathset ni la capacidad funcional del dashboard:
 - `B-F01`: Gateway y plano de control usan un lector incremental BYOB que
   solicita como máximo 64 KiB y reduce la última lectura a `límite + 1`;
   cancela el body inmediatamente al cruzar el límite. Si una implementación
-  sólo ofrece reader por defecto, cancela en el primer chunk que cruza el
-  límite y nunca lo acumula. El fixture se abre una vez, se verifica
+  no ofrece BYOB, cancela y rechaza fail-closed antes de leer el primer chunk.
+  El fixture se abre una vez, se verifica
   y lee sobre ese mismo descriptor con límite durante la lectura y cierre en
   `finally`, eliminando la ventana `stat(path)`/`readFile(path)`.
 - `B-F02`: el validador Task 09 v1 cierra `runtime`, `inputs`, rollback,
@@ -333,6 +333,29 @@ Puerta final de la corrección (`node:22-bookworm-slim`, montando la raíz local
 para leer el artefacto contractual junto a `supervisor-web`):
 
 - `npm test`: PASS, 15 ficheros / 93 tests.
+- `npm run lint`: PASS.
+- `npx tsc --noEmit`: PASS.
+- `npm run build`: PASS.
+- `npm audit --audit-level=high`: PASS, 0 vulnerabilidades.
+- `git diff --check`: PASS.
+
+### Re-revisión `B-RR-F01-01`
+
+La re-revisión de `TP-SEC-PKI` identificó que un `DefaultReader` podía entregar
+un chunk de tamaño arbitrario antes de que la aplicación lo cancelase. Se
+eliminó ese fallback: adquirir BYOB es ahora una precondición cerrada. Si
+`getReader({ mode: "byob" })` no está disponible, el body se cancela desbloqueado
+y la fuente se rechaza sin ejecutar ningún `pull`. El dashboard conserva el
+snapshot fuera de presentación y muestra la fuente/datos como rechazados o no
+disponibles; nunca convierte el fallo en cero.
+
+La regresión adversarial usa un body default preparado para producir 700 KiB y
+demuestra `pulls = 0` y cancelación observable. La cobertura total pasa a 94
+tests, sin cambios de UI, endpoints, controles, dependencias ni evidencia.
+
+Puerta final posterior a la re-revisión:
+
+- `npm test`: PASS, 15 ficheros / 94 tests.
 - `npm run lint`: PASS.
 - `npx tsc --noEmit`: PASS.
 - `npm run build`: PASS.
