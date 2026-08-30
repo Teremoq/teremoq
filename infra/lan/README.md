@@ -18,6 +18,7 @@ Windows 10 Chrome/Edge (outbound only)
   -> fixed backend 127.0.0.1:4433, dev_moq_relay
 
 test source -> SRT 127.0.0.1:19000 -> Gateway -> relay
+Gateway -> private run-scoped capability -> relay `/publish/<capability>`
 Gateway health/supervisor -> 127.0.0.1:9080 only
 ```
 
@@ -43,8 +44,9 @@ owned here and must not be stopped or changed by these scripts.
 
 Activation remains blocked until all of the following are true:
 
-1. the reviewed Rust LAN-SAN commit and reviewed Web LAN player bypass are
-   integrated and recorded (`pending_owner_integration` becomes `ready`);
+1. exact Rust LAN capability commit
+   `2f8fb1b3219483050bc997bee25a052c2db5f463` and the reviewed Web LAN player
+   bypass are ancestors of the clean integration HEAD;
 2. the TP-WEB-REALTIME lightweight 1/5/10/25 launcher contract is integrated;
 3. an authorized owner isolates the inherited publications and both preflights
    record no reserved/wildcard conflict;
@@ -112,9 +114,10 @@ window. Windows 10 stays WSL NAT.
 
 ## 3. Relay certificate
 
-`prepare-pki-plan.sh` exits 3 while the Rust owner integration is pending. It
-does not misuse the 30-day Smallstep identity profile. The integrated loopback
-relay creates its private runtime identity; then verify it exactly:
+`prepare-pki-plan.sh` requires the recorded Rust owner integration to be ready.
+It does not misuse the 30-day Smallstep identity profile. Activation separately
+requires the exact Rust commit above to be an ancestor of HEAD. The integrated
+loopback relay creates its private runtime identity; then verify it exactly:
 
 ```bash
 infra/lan/prepare-pki-plan.sh --config /ABSOLUTE/PRIVATE/PATH/lan.tsv
@@ -171,8 +174,9 @@ Prepare run-owned state and private copies of the command/authorization
 templates. The command manifest is an argv array, never a shell string. The
 authorization binds the independent server WSL preflight, both Windows
 preflights and firewall attestation by SHA-256,
-the command-manifest SHA-256, the commit, conflict cleanup, owner integrations
-and explicit operator approval. Every executable has its own SHA-256 and must
+the command-manifest SHA-256, the publish-capability metadata SHA-256, the
+commit, conflict cleanup, owner integrations and explicit operator approval.
+Every executable has its own SHA-256 and must
 reside in the exact clean worktree or a run-owned artifact directory with no
 write bits; generic shells, `cargo`, Python, Node and similar runners are denied.
 
@@ -181,7 +185,16 @@ infra/lan/prepare-runtime.sh --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
   --state-dir /tmp/teremoq-lan-RUN_ID
 cp infra/lan/config/lab-commands.example.json /ABSOLUTE/PRIVATE/PATH/lab-commands.json
 cp infra/lan/config/activation-authorization.example.tsv /ABSOLUTE/PRIVATE/PATH/activation.tsv
+sha256sum /tmp/teremoq-lan-RUN_ID/publish-capability.metadata.tsv
 ```
+
+For a `ready` exact Rust contract, preparation obtains 256 bits from Python's
+system-backed CSPRNG and creates `publish-capability` as a new run-owned regular
+file with exact mode `0600`. Its closed sidecar records only run/commit,
+filename, mode, UID, device/inode, byte count and SHA-256; it never contains the
+capability value. Record the sidecar digest in
+`publish_capability_metadata_sha256` inside the private authorization. Never
+print, copy, package or inspect the capability value.
 
 Before freezing the private artifact directory, copy only the already-built
 reviewed `dev_moq_relay` and `gateway-rs` binaries from the exact commit, add
@@ -212,8 +225,9 @@ infra/lan/start-lab.sh \
   --state-dir /tmp/teremoq-lan-RUN_ID
 ```
 
-The orchestrator sets `TEREMOQ_DEV_RELAY_LAN_IP_SAN` only in this opt-in run
-and forces relay 127.0.0.1:4433, Gateway SRT
+The orchestrator sets `TEREMOQ_DEV_RELAY_LAN_IP_SAN` only in this opt-in run,
+passes the same derived `TEREMOQ_DEV_RELAY_PUBLISH_CAPABILITY_FILE` path only to
+relay and Gateway, and forces relay 127.0.0.1:4433, Gateway SRT
 127.0.0.1:19000, supervisor 127.0.0.1:9080, source output loopback and the
 exact UDP/14433 proxy. It never runs the root Compose file. Relay UDP, Gateway
 health/SRT, source liveness and proxy readiness must each pass; otherwise the
@@ -221,7 +235,10 @@ run is not declared ready and its own child processes are stopped in reverse
 order. Runtime metrics contain timestamps and per-component RSS only.
 Activation also rechecks exact HEAD, full tracked/untracked cleanliness,
 owner-commit ancestry, manifest digest and every executable digest immediately
-before launch. Each bound preflight/attestation is read once through one
+before launch. The capability sidecar is authorization-bound; its exact private
+file, inode, mode and digest are revalidated before relay, before Gateway and
+during the run. Missing, replaced, permissive or partial state terminates the
+run without revealing the value. Each bound preflight/attestation is read once through one
 non-symlink descriptor, size/cardinality bounded and parsed as a closed schema.
 Authorization cannot replace its result: any `blocked`, `pending`,
 `unavailable`, `unknown`, inherited Docker publication, legacy listener,
@@ -241,6 +258,10 @@ rollback, verify both firewall residues are zero, and remove run-owned files:
 infra/lan/rollback-runtime.sh --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
   --state-dir /tmp/teremoq-lan-RUN_ID
 ```
+
+Rollback first verifies the exact run/source/owner markers, metadata and inode,
+then removes only that run's capability. A partial or foreign capability state
+is preserved and rejected for manual investigation rather than deleted.
 
 ## 6. Reproducible client package and evidence
 

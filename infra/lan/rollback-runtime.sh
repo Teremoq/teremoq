@@ -22,8 +22,11 @@ if [[ ! -e "${state_dir}" ]]; then
     printf 'teremoq LAN rollback: already absent\n'
     exit 0
 fi
-[[ -f "${state_dir}/run-id" && "$(<"${state_dir}/run-id")" == "${LAN_CONFIG[run_id]}" ]] || \
+[[ -f "${state_dir}/run-id" && ! -L "${state_dir}/run-id" && "$(<"${state_dir}/run-id")" == "${LAN_CONFIG[run_id]}" ]] || \
     lan_die 'state-dir ownership marker mismatch'
+[[ -f "${state_dir}/source-commit" && ! -L "${state_dir}/source-commit" && \
+   "$(<"${state_dir}/source-commit")" == "${LAN_CONFIG[source_commit]}" ]] || \
+    lan_die 'state-dir source ownership marker mismatch'
 for pid_name in lab.pid proxy.pid; do
     if [[ -e "${state_dir}/${pid_name}" ]]; then
         [[ -f "${state_dir}/${pid_name}" && ! -L "${state_dir}/${pid_name}" ]] || lan_die "unsafe ${pid_name} marker"
@@ -32,5 +35,13 @@ for pid_name in lab.pid proxy.pid; do
         if kill -0 "${owned_pid}" 2>/dev/null; then lan_die "refusing cleanup while run-owned process is live: ${pid_name}"; fi
     fi
 done
+if [[ "${LAN_CONFIG[relay_san_integration_status]}" == ready ]]; then
+    python3 "${SCRIPT_DIR}/publish_capability.py" remove --state-dir "${state_dir}" \
+        --run-id "${LAN_CONFIG[run_id]}" --source-commit "${LAN_CONFIG[source_commit]}" \
+        --owner-commit "${LAN_CONFIG[relay_san_integration_commit]}"
+elif [[ -e "${state_dir}/publish-capability" || -L "${state_dir}/publish-capability" || \
+        -e "${state_dir}/publish-capability.metadata.tsv" || -L "${state_dir}/publish-capability.metadata.tsv" ]]; then
+    lan_die 'pending integration state unexpectedly contains a publish capability'
+fi
 find "${state_dir}" -depth -delete
 printf 'teremoq LAN rollback: runtime removed\n'

@@ -19,7 +19,7 @@ SPEC.loader.exec_module(RUNTIME)
 
 RUN_ID = "lan-runtime-test"
 SOURCE_COMMIT = "a" * 40
-OWNER_COMMIT = "f" * 40
+OWNER_COMMIT = "2f8fb1b3219483050bc997bee25a052c2db5f463"
 SERVER_IP = "192.168.77.10"
 CLIENT_IP = "192.168.77.20"
 PROFILE = "Public"
@@ -91,6 +91,14 @@ class LabRuntimePolicyTest(unittest.TestCase):
     def test_runtime_explicitly_sets_the_approved_moq_namespace(self) -> None:
         source = (ROOT / "lab_runtime.py").read_text(encoding="utf-8")
         self.assertIn('"TEREMOQ_MOQ_NAMESPACE": args.moq_namespace', source)
+        capability_path = Path("/tmp/teremoq-lan-runtime-test/publish-capability")
+        inherited = {RUNTIME.PUBLISH_CAPABILITY_ENV: "/foreign/path", "SAFE": "yes"}
+        for component in ("relay", "gateway"):
+            environment = RUNTIME.environment_for_component(inherited, component, capability_path)
+            self.assertEqual(environment[RUNTIME.PUBLISH_CAPABILITY_ENV], str(capability_path))
+        source_environment = RUNTIME.environment_for_component(inherited, "source", capability_path)
+        self.assertNotIn(RUNTIME.PUBLISH_CAPABILITY_ENV, source_environment)
+        self.assertEqual(source_environment["SAFE"], "yes")
         self.assertIn('parser.add_argument("--moq-namespace", required=True)', source)
         self.assertIn('stream.write(evidence_payloads["proxy_attestation_sha256"])', source)
         self.assertIn('"--attestation", str(proxy_attestation_snapshot)', source)
@@ -158,6 +166,7 @@ class LabRuntimePolicyTest(unittest.TestCase):
                 "schema_version": "1", "run_id": RUN_ID, "source_commit": SOURCE_COMMIT,
                 "owner_integration_commit": OWNER_COMMIT,
                 "commands_sha256": "1" * 64,
+                "publish_capability_metadata_sha256": "9" * 64,
                 "wsl_preflight_sha256": "0" * 64,
                 "server_preflight_sha256": "b" * 64, "client_preflight_sha256": "c" * 64,
                 "firewall_attestation_sha256": "d" * 64,
@@ -192,6 +201,7 @@ class LabRuntimePolicyTest(unittest.TestCase):
             authorization = {
                 "schema_version": "1", "run_id": RUN_ID, "source_commit": SOURCE_COMMIT,
                 "owner_integration_commit": OWNER_COMMIT, "commands_sha256": "1" * 64,
+                "publish_capability_metadata_sha256": "9" * 64,
                 "wsl_preflight_sha256": digest, "server_preflight_sha256": "2" * 64,
                 "client_preflight_sha256": "3" * 64, "firewall_attestation_sha256": "4" * 64,
                 "proxy_attestation_sha256": "5" * 64, "owner_integrations_ready": "true",

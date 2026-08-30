@@ -20,13 +20,16 @@ import time
 import urllib.request
 
 from udp_proxy import exact_private_ipv4, read_regular_limited
+from publish_capability import CAPABILITY_NAME, RUST_LAN_CAPABILITY_COMMIT, verify_publish_capability
 
 COMPONENTS = ("relay", "gateway", "source")
+PUBLISH_CAPABILITY_ENV = "TEREMOQ_DEV_RELAY_PUBLISH_CAPABILITY_FILE"
 AUTH_KEYS = {
     "schema_version", "run_id", "source_commit", "server_preflight_sha256",
     "client_preflight_sha256", "wsl_preflight_sha256", "firewall_attestation_sha256",
     "proxy_attestation_sha256", "owner_integrations_ready", "operator_authorized",
     "owner_integration_commit", "commands_sha256",
+    "publish_capability_metadata_sha256",
 }
 CHECK_KEYS = {"check", "status", "value", "evidence_quality"}
 WINDOWS_PREFLIGHT_KEYS = {
@@ -104,9 +107,9 @@ def parse_authorization(path: Path) -> dict[str, str]:
         fail("invalid authorization run ID")
     if len(values["source_commit"]) != 40 or any(c not in "0123456789abcdef" for c in values["source_commit"]):
         fail("invalid authorization commit")
-    if len(values["owner_integration_commit"]) != 40 or any(c not in "0123456789abcdef" for c in values["owner_integration_commit"]):
-        fail("invalid owner integration commit")
-    for key in ("commands_sha256", "wsl_preflight_sha256", "server_preflight_sha256", "client_preflight_sha256", "firewall_attestation_sha256", "proxy_attestation_sha256"):
+    if values["owner_integration_commit"] != RUST_LAN_CAPABILITY_COMMIT:
+        fail("authorization requires the exact reviewed Rust LAN capability commit")
+    for key in ("commands_sha256", "publish_capability_metadata_sha256", "wsl_preflight_sha256", "server_preflight_sha256", "client_preflight_sha256", "firewall_attestation_sha256", "proxy_attestation_sha256"):
         if len(values[key]) != 64 or any(c not in "0123456789abcdef" for c in values[key]):
             fail(f"invalid authorization digest: {key}")
     for key in ("owner_integrations_ready", "operator_authorized"):
@@ -369,6 +372,16 @@ def verify_executable_hash(path: Path, expected: str) -> None:
         fail("component executable SHA-256 mismatch")
 
 
+def environment_for_component(base: dict[str, str], name: str, capability_path: Path) -> dict[str, str]:
+    if name not in COMPONENTS:
+        fail("unknown LAN component environment")
+    environment = base.copy()
+    environment.pop(PUBLISH_CAPABILITY_ENV, None)
+    if name in {"relay", "gateway"}:
+        environment[PUBLISH_CAPABILITY_ENV] = str(capability_path)
+    return environment
+
+
 def parse_commands(
     path: Path,
     source_commit: str,
@@ -613,6 +626,9 @@ def main() -> int:
         fail("state directory must be an absolute pre-created non-symlink directory")
     if any((args.state_dir / name).exists() for name in ("lab.pid", "lab.ready", "proxy.pid", "proxy.ready")):
         fail("lab/proxy state already exists")
+    capability_path = args.state_dir / CAPABILITY_NAME
+    verify_publish_capability(args.state_dir, args.run_id, args.source_commit, args.owner_commit,
+                              authorization["publish_capability_metadata_sha256"])
     require_free_udp("127.0.0.1", 4433)
     require_free_udp("127.0.0.1", 19000)
     require_free_udp(args.server_ip, 14433)
@@ -662,9 +678,13 @@ def main() -> int:
         for name in ("relay", "gateway", "source"):
             executable, command, cwd, executable_sha256 = commands[name]
             verify_executable_hash(executable, executable_sha256)
+            component_environment = environment_for_component(common, name, capability_path)
+            if name in {"relay", "gateway"}:
+                verify_publish_capability(args.state_dir, args.run_id, args.source_commit, args.owner_commit,
+                                          authorization["publish_capability_metadata_sha256"])
             log = (args.state_dir / f"{name}.log").open("xb")
             logs.append(log)
-            processes[name] = subprocess.Popen(command, cwd=cwd, env=common, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            processes[name] = subprocess.Popen(command, cwd=cwd, env=component_environment, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             if name == "relay":
                 wait_until("loopback relay UDP/4433", lambda: udp_occupied("127.0.0.1", 4433), processes)
             elif name == "gateway":
@@ -694,6 +714,8 @@ def main() -> int:
         with metrics_file.open("x", encoding="ascii") as metrics:
             metrics.write("timestamp_utc\tprocess_rss_kib\n")
             while not stop:
+                verify_publish_capability(args.state_dir, args.run_id, args.source_commit, args.owner_commit,
+                                          authorization["publish_capability_metadata_sha256"])
                 for name, process in processes.items():
                     if process.poll() is not None:
                         fail(f"{name} exited during the LAN run")

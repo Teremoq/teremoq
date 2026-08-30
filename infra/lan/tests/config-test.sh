@@ -14,6 +14,8 @@ commit="$(printf 'a%.0s' {1..40})"
 valid="${scratch}/valid.tsv"
 make_lan_config "${ROOT}/config/lan.example.tsv" "${valid}" "${scratch}" "${commit}"
 "${ROOT}/validate-config.sh" --config "${valid}" >/dev/null
+grep -Fq $'relay_san_integration_status\tready' "${ROOT}/config/lan.example.tsv"
+grep -Fq $'relay_san_integration_commit\t2f8fb1b3219483050bc997bee25a052c2db5f463' "${ROOT}/config/lan.example.tsv"
 
 expect_failure() { "$@" >/dev/null 2>&1 && { printf 'config-test: unexpected success\n' >&2; exit 1; }; return 0; }
 expect_failure "${ROOT}/validate-config.sh" --config "${ROOT}/config/lan.example.tsv"
@@ -33,4 +35,12 @@ for spec in \
     awk -F '\t' -v OFS='\t' -v key="${key}" -v replacement="${replacement}" '$1 == key {$2=replacement} {print}' "${valid}" >"${invalid}"
     expect_failure "${ROOT}/validate-config.sh" --config "${invalid}"
 done
+ready="${scratch}/ready.tsv"
+make_lan_config "${ROOT}/config/lan.example.tsv" "${ready}" "${scratch}" "${commit}" ready \
+    2f8fb1b3219483050bc997bee25a052c2db5f463
+"${ROOT}/validate-config.sh" --config "${ready}" >/dev/null
+wrong_owner="${scratch}/wrong-owner.tsv"
+awk -F '\t' -v OFS='\t' '$1 == "relay_san_integration_commit" {$2="7160d2b7318dea74dc7e593641c015266fa13dc4"} {print}' \
+    "${ready}" >"${wrong_owner}"
+expect_failure "${ROOT}/validate-config.sh" --config "${wrong_owner}"
 printf 'lan-config-test: pass\n'

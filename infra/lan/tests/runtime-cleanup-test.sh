@@ -19,6 +19,18 @@ state_dir="/tmp/teremoq-lan-runtime-test-$$-${RANDOM}"
 [[ ! -e "${state_dir}" ]]
 "${ROOT}/rollback-runtime.sh" --config "${config}" --state-dir "${state_dir}" >/dev/null
 [[ ! -e "${state_dir}" ]]
+ready_config="${scratch}/ready-config.tsv"
+owner_commit=2f8fb1b3219483050bc997bee25a052c2db5f463
+make_lan_config "${ROOT}/config/lan.example.tsv" "${ready_config}" "${scratch}" "${commit}" ready "${owner_commit}"
+ready_state="/tmp/teremoq-lan-runtime-capability-test-$$-${RANDOM}"
+"${ROOT}/prepare-runtime.sh" --config "${ready_config}" --state-dir "${ready_state}" >/dev/null
+[[ -f "${ready_state}/publish-capability" && ! -L "${ready_state}/publish-capability" ]]
+[[ "$(stat -c '%a' "${ready_state}/publish-capability")" == 600 ]]
+[[ "$(wc -c <"${ready_state}/publish-capability")" == 65 ]]
+grep -Fq $'run_id\tlan-policy-test' "${ready_state}/publish-capability.metadata.tsv"
+grep -Eq $'^capability_sha256\t[0-9a-f]{64}$' "${ready_state}/publish-capability.metadata.tsv"
+"${ROOT}/rollback-runtime.sh" --config "${ready_config}" --state-dir "${ready_state}" >/dev/null
+[[ ! -e "${ready_state}" ]]
 live_state="/tmp/teremoq-lan-runtime-live-test-$$-${RANDOM}"
 "${ROOT}/prepare-runtime.sh" --config "${config}" --state-dir "${live_state}" >/dev/null
 printf '%s\n' "$$" >"${live_state}/lab.pid"

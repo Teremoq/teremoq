@@ -31,7 +31,7 @@ set -e
 (( start_status == 2 ))
 grep -Fq 'owner integration remains pending' <<<"${start_output}"
 "${ROOT}/rollback-runtime.sh" --config "${pending}" --state-dir "${state_dir}" >/dev/null
-owner_commit="$(printf 'b%.0s' {1..40})"
+owner_commit=2f8fb1b3219483050bc997bee25a052c2db5f463
 ready="${scratch}/ready.tsv"
 make_lan_config "${ROOT}/config/lan.example.tsv" "${ready}" "${scratch}" "${commit}" ready "${owner_commit}"
 plan="$("${ROOT}/lab-control.sh" --action start-plan --config "${ready}")"

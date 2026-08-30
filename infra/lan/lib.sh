@@ -133,8 +133,8 @@ lan_validate_config() {
     [[ "${LAN_CONFIG[relay_san_integration_status]}" =~ ^(pending_owner_integration|ready)$ ]] || \
         lan_die 'invalid relay SAN integration status'
     if [[ "${LAN_CONFIG[relay_san_integration_status]}" == ready ]]; then
-        [[ "${LAN_CONFIG[relay_san_integration_commit]}" =~ ^[0-9a-f]{40}$ ]] || \
-            lan_die 'ready relay SAN integration requires an explicit owner commit'
+        [[ "${LAN_CONFIG[relay_san_integration_commit]}" == 2f8fb1b3219483050bc997bee25a052c2db5f463 ]] || \
+            lan_die 'ready relay LAN capability integration requires exact reviewed commit 2f8fb1b3219483050bc997bee25a052c2db5f463'
     else
         [[ "${LAN_CONFIG[relay_san_integration_commit]}" == unavailable ]] || \
             lan_die 'pending owner integration must not claim a commit'
