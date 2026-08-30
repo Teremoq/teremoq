@@ -60,6 +60,13 @@ WebTransport cuando se usa `serverCertificateHashes`. Al caducar debe rotarse
 de forma coordinada junto con su fingerprint; nunca se amplía su vigencia para
 evitar esa rotación.
 
+Para un proxy UDP de laboratorio explícito, `TEREMOQ_DEV_RELAY_LAN_IP_SAN`
+puede añadir una única IPv4 RFC1918 canónica al SAN sin cambiar el bind
+loopback del relay. El marker queda ligado a esa IP y cualquier cambio exige
+rotar certificado, clave, fingerprint y marker juntos. El fingerprint de
+browser no es mTLS de nodos; la allowlist del proxy y Windows Firewall siguen
+siendo fronteras separadas. El contrato completo está en `CONFIGURATION.md`.
+
 En otra terminal, arranca el observador de entrada:
 
 ```bash

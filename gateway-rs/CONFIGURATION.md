@@ -97,8 +97,33 @@ La espera remota usa el crecimiento exponencial acotado y jitter uniforme del 80
 
 ## Laboratorios MoQT separados
 
-- UDP/4433: `cargo run --locked --example dev_moq_relay`, laboratorio browser/playback existente. Su comportamiento no cambia.
+- UDP/4433: `cargo run --locked --example dev_moq_relay`, laboratorio browser/playback existente. Sin configuración adicional conserva bind `127.0.0.1:4433`, SAN `localhost`/`127.0.0.1` y el perfil persistente v1.
 - UDP/4443: `cargo run --locked --example dev_mtls_moq_relay`, laboratorio de federación privada mTLS, limitado a loopback y sólo `/publish`.
+
+### SAN LAN opt-in para el laboratorio browser
+
+`TEREMOQ_DEV_RELAY_LAN_IP_SAN` admite una única IPv4 RFC1918 canónica y
+no-loopback. No admite nombres DNS, IPv6, CIDR, puerto, ruta, espacios ni una
+dirección pública, link-local, multicast, broadcast o unspecified. La opción
+añade esa IP al certificado WebTransport temporal junto a `localhost` y
+`127.0.0.1`; no cambia `TEREMOQ_DEV_RELAY_BIND`, que continúa rechazando toda
+dirección no-loopback. Para alcanzar el socket desde otra máquina hace falta un
+proxy UDP explícito y separado.
+
+El marker del modo LAN está versionado y ligado mediante SHA-256 a la IP
+canónica, sin almacenar la IP en claro en el marker. Certificado, clave,
+fingerprint y marker se suministran con las variables `TEREMOQ_DEV_RELAY_TLS_*`
+y deben ubicarse bajo un directorio runtime ignorado, como `.teremoq-dev/`.
+Cualquier mezcla parcial, marker antiguo o cambio de IP falla cerrado y exige
+rotar coordinadamente los cuatro ficheros; el relay nunca sobrescribe material
+existente. El log sólo indica si el SAN LAN está configurado y no publica su
+valor.
+
+El fingerprint es SHA-256 del DER para `serverCertificateHashes` del browser.
+Este certificado autofirmado no es la identidad mTLS de los nodos, no autoriza
+publish/subscribe y no sustituye la PKI federada. La allowlist de origen del
+proxy UDP y Windows Firewall son fronteras operativas independientes que deben
+mantenerse acotadas; esta opción no abre puertos ni configura ninguna de ellas.
 
 El relay mTLS exige estas variables y no genera certificados:
 
