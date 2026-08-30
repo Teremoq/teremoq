@@ -82,6 +82,13 @@ harness has a technical bound of 64 calls per run; neither is an architectural
 control-plane limit. Profiles above 100 are rejected. There is no
 1,000-viewer profile or soak mode.
 
+`real-two-host-trial.md` is the separate entry/exit gate for a future real
+10/25/50/100 progression. It requires an already-existing reviewed viewer and
+media harness, authorized spectator manifests, real MoQT session and
+reservation queries, measured egress, digest-bound capacity creation and
+correlated audiovisual recovery. The local counter harness is never accepted
+as a substitute, and 1,000 remains blocked.
+
 ## Reports and alerts
 
 Generated reports are ignored under `reports/`. Each includes requested and
