@@ -20,10 +20,11 @@ provenance are recorded by their package managers and in the local SBOM.
   `supervisor-web/CLAUDE.md` are byte-identical to, or generated verbatim by,
   the Next.js 16.3.2 `create-next-app` templates. They retain the upstream
   copyright `2025 Vercel, Inc.` and MIT license.
-- Tracked Python bytecode under `gateway-rs/tests/preview/__pycache__/` is a
-  generated derivative of the adjacent Teremoq test helpers. The operations
-  screenshots under `supervisor-web/evidence/` are evidence generated from the
-  Teremoq UI. Both remain covered as Teremoq-owned Apache-2.0 files.
+- Python bytecode under `gateway-rs/tests/preview/__pycache__/` is ignored and
+  must remain untracked, so it is outside the REUSE inventory and committed
+  SBOM. Operations screenshots under `supervisor-web/evidence/` are evidence
+  generated from the Teremoq UI and remain covered as Teremoq-owned Apache-2.0
+  files.
 - Lockfiles are generated dependency-resolution metadata for this project.
   Their Apache-2.0 file annotation does not change the licenses of packages
   named inside them.
