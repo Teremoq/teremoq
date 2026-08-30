@@ -17,6 +17,7 @@ use crate::{
     observability::EventLogger,
     routing::TrackId,
     scheduler::{ScheduledObject, SubscriberId, SubscriberReceiver, SubscriberScheduler},
+    security::dev_relay_capability::is_capability_publish_path,
     supervisor::SignalMonitor,
 };
 
@@ -139,6 +140,7 @@ async fn connect_publisher_session(
     config: &MoqConfig,
     cancellation: &CancellationToken,
 ) -> GatewayResult<Option<(moq_transport::session::Session, Publisher, String)>> {
+    let redact_upstream_errors = is_capability_publish_path(config.relay_url.path());
     let connection = tokio::select! {
         () = cancellation.cancelled() => return Ok(None),
         result = tokio::time::timeout(
@@ -146,9 +148,15 @@ async fn connect_publisher_session(
             client.connect(&config.relay_url, None),
         ) => result,
     }
-    .map_err(|source| external_error("MoQT connection timed out", source))?
     .map_err(|source| {
-        GatewayError::with_source("MoQT connection failed", source.into_boxed_dyn_error()).boxed()
+        redactable_external_error("MoQT connection timed out", source, redact_upstream_errors)
+    })?
+    .map_err(|source| {
+        redactable_boxed_error(
+            "MoQT connection failed",
+            source.into_boxed_dyn_error(),
+            redact_upstream_errors,
+        )
     })?;
     let (webtransport, connection_id, transport) = connection;
     let setup = tokio::select! {
@@ -158,8 +166,12 @@ async fn connect_publisher_session(
             Publisher::connect(webtransport, transport),
         ) => result,
     }
-    .map_err(|source| external_error("MoQT setup timed out", source))?
-    .map_err(|source| external_error("MoQT setup failed", source))?;
+    .map_err(|source| {
+        redactable_external_error("MoQT setup timed out", source, redact_upstream_errors)
+    })?
+    .map_err(|source| {
+        redactable_external_error("MoQT setup failed", source, redact_upstream_errors)
+    })?;
     let (session, publisher) = setup;
     Ok(Some((session, publisher, connection_id)))
 }
@@ -519,6 +531,30 @@ fn external_error(
     source: impl std::error::Error + Send + Sync + 'static,
 ) -> crate::error::BoxError {
     GatewayError::with_source(context, Box::new(source)).boxed()
+}
+
+fn redactable_external_error(
+    context: &str,
+    source: impl std::error::Error + Send + Sync + 'static,
+    redact_source: bool,
+) -> crate::error::BoxError {
+    if redact_source {
+        GatewayError::new(context).boxed()
+    } else {
+        external_error(context, source)
+    }
+}
+
+fn redactable_boxed_error(
+    context: &str,
+    source: crate::error::BoxError,
+    redact_source: bool,
+) -> crate::error::BoxError {
+    if redact_source {
+        GatewayError::new(context).boxed()
+    } else {
+        GatewayError::with_source(context, source).boxed()
+    }
 }
 
 fn classify_handshake_failure(source: &(dyn std::error::Error + 'static)) -> &'static str {

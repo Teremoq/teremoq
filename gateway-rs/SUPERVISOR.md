@@ -66,6 +66,11 @@ loopback del relay. El marker queda ligado a esa IP y cualquier cambio exige
 rotar certificado, clave, fingerprint y marker juntos. El fingerprint de
 browser no es mTLS de nodos; la allowlist del proxy y Windows Firewall siguen
 siendo fronteras separadas. El contrato completo está en `CONFIGURATION.md`.
+El mismo opt-in requiere una capacidad run-scoped en el fichero absoluto
+`0600` indicado por `TEREMOQ_DEV_RELAY_PUBLISH_CAPABILITY_FILE`: relay y Gateway
+reciben sólo ese path, el Gateway publica mediante la capacidad cargada en
+memoria y el cliente LAN continúa limitado a `/watch`. La capacidad no se
+empaqueta ni se entrega al browser.
 
 En otra terminal, arranca el observador de entrada:
 

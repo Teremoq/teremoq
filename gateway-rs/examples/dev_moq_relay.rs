@@ -10,6 +10,9 @@ use std::{
 };
 
 use async_trait::async_trait;
+use gateway_rs::security::dev_relay_capability::{
+    DEV_RELAY_PUBLISH_CAPABILITY_ENV, DevRelayPublishCapability,
+};
 use moq_relay_ietf::{
     Coordinator, CoordinatorContext, CoordinatorError, CoordinatorResult, NamespaceOrigin,
     NamespaceRegistration, RelayConfig, ScopeInfo, ScopePermissions, SessionConfig,
@@ -33,14 +36,17 @@ const WEBTRANSPORT_CLOCK_SKEW_MINUTES: i64 = 5;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> anyhow::Result<()> {
+    let bind = env_socket("TEREMOQ_DEV_RELAY_BIND", DEFAULT_BIND)?;
+    ensure_loopback_bind(bind)?;
+    let lan_ip_san = env_lan_ip_san("TEREMOQ_DEV_RELAY_LAN_IP_SAN")?;
+    let capability_path = std::env::var_os(DEV_RELAY_PUBLISH_CAPABILITY_ENV).map(PathBuf::from);
+    let coordinator = LocalCoordinator::configured(lan_ip_san, capability_path.as_deref())?;
+
     tracing_subscriber::fmt()
         .with_env_filter("info,quinn=warn,moq_transport=info")
         .try_init()
         .map_err(|source| anyhow::anyhow!(source.to_string()))?;
 
-    let bind = env_socket("TEREMOQ_DEV_RELAY_BIND", DEFAULT_BIND)?;
-    ensure_loopback_bind(bind)?;
-    let lan_ip_san = env_lan_ip_san("TEREMOQ_DEV_RELAY_LAN_IP_SAN")?;
     let cert = env_path("TEREMOQ_DEV_RELAY_TLS_CERT", DEFAULT_CERT);
     let key = env_path("TEREMOQ_DEV_RELAY_TLS_KEY", DEFAULT_KEY);
     let fingerprint = env_path("TEREMOQ_DEV_RELAY_TLS_FINGERPRINT", DEFAULT_FINGERPRINT);
@@ -54,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
         disable_verify: false,
     }
     .load()?;
-    let coordinator: Arc<dyn Coordinator> = Arc::new(LocalCoordinator);
+    let coordinator: Arc<dyn Coordinator> = Arc::new(coordinator);
     let relay = RelayConfig {
         bind: Some(bind),
         endpoints: Vec::new(),
@@ -71,16 +77,29 @@ async fn main() -> anyhow::Result<()> {
     }
     .build_with_cache_idle_timeout(Duration::from_secs(5))?;
 
-    tracing::info!(
-        event = "dev_moq_relay_ready",
-        bind = %bind,
-        publisher_path = "/publish",
-        subscriber_path = "/watch",
-        tls_cert = %cert.display(),
-        tls_fingerprint = %fingerprint.display(),
-        lan_ip_san_configured = lan_ip_san.is_some(),
-        "development relay uses persistent TLS and loopback access control"
-    );
+    if lan_ip_san.is_some() {
+        tracing::info!(
+            event = "dev_moq_relay_ready",
+            bind = %bind,
+            publisher_capability_required = true,
+            subscriber_path = "/watch",
+            tls_cert = %cert.display(),
+            tls_fingerprint = %fingerprint.display(),
+            lan_ip_san_configured = true,
+            "development relay uses persistent TLS and capability-gated LAN publication"
+        );
+    } else {
+        tracing::info!(
+            event = "dev_moq_relay_ready",
+            bind = %bind,
+            publisher_path = "/publish",
+            subscriber_path = "/watch",
+            tls_cert = %cert.display(),
+            tls_fingerprint = %fingerprint.display(),
+            lan_ip_san_configured = false,
+            "development relay uses persistent TLS and loopback access control"
+        );
+    }
     tokio::select! {
         result = relay.run() => result,
         result = gateway_rs::lifecycle::shutdown_signal() => {
@@ -90,7 +109,44 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-struct LocalCoordinator;
+enum PublishAccess {
+    Loopback,
+    Capability(DevRelayPublishCapability),
+}
+
+struct LocalCoordinator {
+    publish_access: PublishAccess,
+}
+
+impl LocalCoordinator {
+    fn configured(
+        lan_ip_san: Option<Ipv4Addr>,
+        capability_path: Option<&Path>,
+    ) -> anyhow::Result<Self> {
+        let publish_access = match (lan_ip_san, capability_path) {
+            (None, None) => PublishAccess::Loopback,
+            (Some(_), Some(path)) => PublishAccess::Capability(
+                DevRelayPublishCapability::load(path)
+                    .map_err(|source| anyhow::anyhow!(source.to_string()))?,
+            ),
+            _ => {
+                anyhow::bail!(
+                    "LAN SAN and the private publish capability file must be configured together"
+                );
+            }
+        };
+        Ok(Self { publish_access })
+    }
+
+    fn publish_allowed(&self, connection_path: Option<&str>) -> bool {
+        match &self.publish_access {
+            PublishAccess::Loopback => connection_path == Some("/publish"),
+            PublishAccess::Capability(capability) => {
+                capability.authorizes_connection_path(connection_path)
+            }
+        }
+    }
+}
 
 #[async_trait]
 impl Coordinator for LocalCoordinator {
@@ -98,10 +154,12 @@ impl Coordinator for LocalCoordinator {
         &self,
         connection_path: Option<&str>,
     ) -> CoordinatorResult<Option<ScopeInfo>> {
-        let permissions = match connection_path {
-            Some("/publish") => ScopePermissions::ReadWrite,
-            Some("/watch") => ScopePermissions::ReadOnly,
-            _ => return Err(CoordinatorError::NamespaceNotFound),
+        let permissions = if connection_path == Some("/watch") {
+            ScopePermissions::ReadOnly
+        } else if self.publish_allowed(connection_path) {
+            ScopePermissions::ReadWrite
+        } else {
+            return Err(CoordinatorError::NamespaceNotFound);
         };
         Ok(Some(ScopeInfo {
             scope_id: LOCAL_SCOPE.to_owned(),
@@ -419,13 +477,17 @@ mod tests {
     use time::OffsetDateTime;
     use x509_parser::extensions::GeneralName;
 
+    use moq_relay_ietf::{Coordinator, ScopePermissions};
+
     use super::{
-        CalendarDuration, DEFAULT_BIND, DEFAULT_PROFILE_MARKER, WEBTRANSPORT_CERTIFICATE_DAYS,
-        WEBTRANSPORT_CLOCK_SKEW_MINUTES, certificate_subject_alt_names, ensure_loopback_bind,
-        ensure_persistent_identity, ensure_persistent_identity_at, identity_profile,
-        parse_lan_ip_san, sha256_hex,
+        CalendarDuration, DEFAULT_BIND, DEFAULT_PROFILE_MARKER, LocalCoordinator,
+        WEBTRANSPORT_CERTIFICATE_DAYS, WEBTRANSPORT_CLOCK_SKEW_MINUTES,
+        certificate_subject_alt_names, ensure_loopback_bind, ensure_persistent_identity,
+        ensure_persistent_identity_at, identity_profile, parse_lan_ip_san, sha256_hex,
     };
 
+    const TEST_CAPABILITY: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
     struct IdentityPaths {
@@ -649,6 +711,72 @@ mod tests {
                 "non-canonical or non-RFC1918 input must be rejected"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn default_coordinator_permissions_remain_unchanged() {
+        let coordinator =
+            LocalCoordinator::configured(None, None).expect("default coordinator must build");
+        let publish = coordinator
+            .resolve_scope(Some("/publish"))
+            .await
+            .expect("default publish path must resolve")
+            .expect("default publish path must be scoped");
+        let watch = coordinator
+            .resolve_scope(Some("/watch"))
+            .await
+            .expect("watch path must resolve")
+            .expect("watch path must be scoped");
+
+        assert_eq!(publish.permissions, ScopePermissions::ReadWrite);
+        assert_eq!(watch.permissions, ScopePermissions::ReadOnly);
+        assert!(coordinator.resolve_scope(Some("/unknown")).await.is_err());
+        assert!(coordinator.resolve_scope(None).await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn lan_coordinator_requires_capability_and_keeps_watch_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let paths = IdentityPaths::new("capability-policy");
+        fs::create_dir_all(&paths.root).expect("test directory must be created");
+        let capability_path = paths.root.join("publish-capability");
+        fs::write(&capability_path, format!("{TEST_CAPABILITY}\n"))
+            .expect("test capability must be written");
+        fs::set_permissions(&capability_path, fs::Permissions::from_mode(0o600))
+            .expect("test capability permissions must be private");
+        let lan_ip = Ipv4Addr::new(192, 168, 50, 10);
+
+        assert!(LocalCoordinator::configured(Some(lan_ip), None).is_err());
+        assert!(LocalCoordinator::configured(None, Some(&capability_path)).is_err());
+
+        let coordinator = LocalCoordinator::configured(Some(lan_ip), Some(&capability_path))
+            .expect("LAN coordinator must accept matching complete state");
+        let watch = coordinator
+            .resolve_scope(Some("/watch"))
+            .await
+            .expect("LAN watch path must resolve")
+            .expect("LAN watch path must be scoped");
+        let publish_path = format!("/publish/{TEST_CAPABILITY}");
+        let publish = coordinator
+            .resolve_scope(Some(&publish_path))
+            .await
+            .expect("capability publish path must resolve")
+            .expect("capability publish path must be scoped");
+
+        assert_eq!(watch.permissions, ScopePermissions::ReadOnly);
+        assert_eq!(publish.permissions, ScopePermissions::ReadWrite);
+        assert!(coordinator.resolve_scope(Some("/publish")).await.is_err());
+        assert!(
+            coordinator
+                .resolve_scope(Some(
+                    "/publish/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                ))
+                .await
+                .is_err()
+        );
+        assert!(coordinator.resolve_scope(Some("/unknown")).await.is_err());
     }
 
     #[test]

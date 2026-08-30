@@ -14,6 +14,7 @@ use url::Url;
 use crate::{
     error::{GatewayError, GatewayResult},
     routing::RouteTable,
+    security::dev_relay_capability::{DEV_RELAY_PUBLISH_CAPABILITY_ENV, DevRelayPublishCapability},
 };
 
 const DEFAULT_INSTANCE_ID: &str = "gateway-dev-1";
@@ -235,7 +236,12 @@ impl GatewayConfig {
     /// queda fuera de los límites documentados.
     pub fn from_env() -> GatewayResult<Self> {
         let instance_id = read_string_env("TEREMOQ_INSTANCE_ID", DEFAULT_INSTANCE_ID)?;
-        let log_filter = read_string_env("TEREMOQ_LOG", DEFAULT_LOG_FILTER)?;
+        let mut log_filter = read_string_env("TEREMOQ_LOG", DEFAULT_LOG_FILTER)?;
+        if env::var_os(DEV_RELAY_PUBLISH_CAPABILITY_ENV).is_some() {
+            // El setup cliente upstream incluye el path en DEBUG. La capacidad
+            // LAN no puede aparecer aunque el operador active debug global.
+            log_filter.push_str(",moq_transport::control=info");
+        }
         let shutdown_timeout_ms =
             parse_u64_env("TEREMOQ_SHUTDOWN_TIMEOUT_MS", DEFAULT_SHUTDOWN_TIMEOUT_MS)?;
 
@@ -307,10 +313,29 @@ impl GatewayConfig {
 
 impl MoqConfig {
     fn from_env() -> GatewayResult<Self> {
-        let relay_url = parse_moq_url(&read_string_env(
+        let mut relay_url = parse_moq_url(&read_string_env(
             "TEREMOQ_MOQ_RELAY_URL",
             DEFAULT_MOQ_RELAY_URL,
         )?)?;
+        if let Some(capability_path) = env::var_os(DEV_RELAY_PUBLISH_CAPABILITY_ENV) {
+            let capability = DevRelayPublishCapability::load(&PathBuf::from(capability_path))
+                .map_err(|source| {
+                    GatewayError::with_source(
+                        "development relay publish capability is invalid",
+                        Box::new(source),
+                    )
+                    .boxed()
+                })?;
+            capability
+                .apply_to_local_publish_url(&mut relay_url)
+                .map_err(|source| {
+                    GatewayError::with_source(
+                        "development relay publish capability cannot be applied",
+                        Box::new(source),
+                    )
+                    .boxed()
+                })?;
+        }
         let bind_addr = read_string_env("TEREMOQ_MOQ_BIND_ADDR", DEFAULT_MOQ_BIND_ADDR)?
             .parse::<SocketAddr>()
             .map_err(|source| {

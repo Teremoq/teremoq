@@ -113,6 +113,33 @@ añade esa IP al certificado WebTransport temporal junto a `localhost` y
 dirección no-loopback. Para alcanzar el socket desde otra máquina hace falta un
 proxy UDP explícito y separado.
 
+Como el proxy reenvía QUIC opaco a loopback, el relay no puede distinguir de
+forma fiable el Gateway local de un cliente LAN por IP, SNI, CID o
+`CoordinatorContext`. Por ello el opt-in LAN exige también
+`TEREMOQ_DEV_RELAY_PUBLISH_CAPABILITY_FILE`. Debe ser un path absoluto a un
+fichero regular no-symlink, con modo Unix exacto `0600`, que contenga 32 bytes
+generados por un CSPRNG y codificados como 64 hexadecimales minúsculos (se
+admite un único LF final). La capacidad es nueva para cada ejecución y se
+elimina al cerrarla; no se incluye en manifests, paquetes, argv o logs.
+
+La plataforma pasa **el mismo path** al proceso `dev_moq_relay` y al Gateway.
+El Gateway conserva en `TEREMOQ_MOQ_RELAY_URL` el endpoint local exacto
+`https://127.0.0.1:4433/publish`: carga la capacidad y compone el path efectivo
+sólo en memoria. En ese modo el relay concede `ReadWrite` exclusivamente al
+path con capacidad, mantiene `/watch` como `ReadOnly` y rechaza `/publish`, una
+capacidad incorrecta, un path ausente o cualquier ruta desconocida. El target
+de tracing upstream que podría imprimir el CLIENT_SETUP queda limitado a
+`info`. Si se configura SAN LAN sin fichero, o fichero sin SAN LAN en el relay,
+el arranque falla antes de aceptar conexiones. Sin ambas variables, `/publish`
+y `/watch` conservan exactamente el comportamiento loopback anterior.
+
+Este fichero es una capacidad de desarrollo, no una contraseña de usuario ni
+una identidad de nodo. La allowlist exacta del proxy y Windows Firewall siguen
+siendo fronteras independientes; el browser remoto sólo recibe `/watch` y el
+fingerprint, nunca la capacidad. Platform debe generar y distribuir el fichero
+run-scoped mediante su runtime privado, comprobar su eliminación al rollback y
+no copiarlo al directorio inmutable de artefactos.
+
 El marker del modo LAN está versionado y ligado mediante SHA-256 a la IP
 canónica, sin almacenar la IP en claro en el marker. Certificado, clave,
 fingerprint y marker se suministran con las variables `TEREMOQ_DEV_RELAY_TLS_*`
@@ -124,9 +151,11 @@ valor.
 
 El fingerprint es SHA-256 del DER para `serverCertificateHashes` del browser.
 Este certificado autofirmado no es la identidad mTLS de los nodos, no autoriza
-publish/subscribe y no sustituye la PKI federada. La allowlist de origen del
-proxy UDP y Windows Firewall son fronteras operativas independientes que deben
-mantenerse acotadas; esta opción no abre puertos ni configura ninguna de ellas.
+publish/subscribe y no sustituye la PKI federada. La capacidad LAN sólo separa
+el publisher local del lector remoto dentro de este laboratorio; tampoco es
+mTLS ni autorización federada. La allowlist de origen del proxy UDP y Windows
+Firewall son fronteras operativas independientes que deben mantenerse
+acotadas; esta opción no abre puertos ni configura ninguna de ellas.
 
 El relay mTLS exige estas variables y no genera certificados:
 
