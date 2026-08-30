@@ -104,7 +104,10 @@ La espera remota usa el crecimiento exponencial acotado y jitter uniforme del 80
 
 `TEREMOQ_DEV_RELAY_LAN_IP_SAN` admite una única IPv4 RFC1918 canónica y
 no-loopback. No admite nombres DNS, IPv6, CIDR, puerto, ruta, espacios ni una
-dirección pública, link-local, multicast, broadcast o unspecified. La opción
+dirección pública, link-local, multicast o unspecified. El relay no conoce la
+máscara de la interfaz: la detección de dirección de red o broadcast corresponde
+al preflight de plataforma, que dispone de `prefix_length`; aquí no se inventa
+semántica `/24`. La opción
 añade esa IP al certificado WebTransport temporal junto a `localhost` y
 `127.0.0.1`; no cambia `TEREMOQ_DEV_RELAY_BIND`, que continúa rechazando toda
 dirección no-loopback. Para alcanzar el socket desde otra máquina hace falta un

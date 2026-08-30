@@ -142,6 +142,24 @@ fn ensure_persistent_identity(
     identity_profile_path: &Path,
     lan_ip_san: Option<Ipv4Addr>,
 ) -> anyhow::Result<()> {
+    ensure_persistent_identity_at(
+        cert_path,
+        key_path,
+        fingerprint_path,
+        identity_profile_path,
+        lan_ip_san,
+        OffsetDateTime::now_utc(),
+    )
+}
+
+fn ensure_persistent_identity_at(
+    cert_path: &Path,
+    key_path: &Path,
+    fingerprint_path: &Path,
+    identity_profile_path: &Path,
+    lan_ip_san: Option<Ipv4Addr>,
+    now: OffsetDateTime,
+) -> anyhow::Result<()> {
     let expected_profile = identity_profile(lan_ip_san);
     let state = [
         cert_path.exists(),
@@ -157,7 +175,7 @@ fn ensure_persistent_identity(
                     "the persistent relay identity profile does not match the requested SAN mode; rotate all explicit development identity files"
                 );
             }
-            validate_certificate_profile(cert_path, lan_ip_san)?;
+            validate_certificate_profile_at(cert_path, lan_ip_san, now)?;
             return ensure_fingerprint(cert_path, fingerprint_path);
         }
         [false, false, false, false] => {}
@@ -173,12 +191,7 @@ fn ensure_persistent_identity(
     if let Some(parent) = key_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut subject_alt_names = vec!["127.0.0.1".to_owned(), "localhost".to_owned()];
-    if let Some(lan_ip_san) = lan_ip_san {
-        subject_alt_names.push(lan_ip_san.to_string());
-    }
-    let mut params = CertificateParams::new(subject_alt_names)?;
-    let now = OffsetDateTime::now_utc();
+    let mut params = CertificateParams::new(certificate_subject_alt_names(lan_ip_san))?;
     params.not_before = now
         .checked_sub(CalendarDuration::minutes(WEBTRANSPORT_CLOCK_SKEW_MINUTES))
         .ok_or_else(|| anyhow::anyhow!("cannot calculate certificate start time"))?;
@@ -193,6 +206,14 @@ fn ensure_persistent_identity(
     write_new(identity_profile_path, expected_profile.as_bytes(), false)
 }
 
+fn certificate_subject_alt_names(lan_ip_san: Option<Ipv4Addr>) -> Vec<String> {
+    let mut subject_alt_names = vec!["127.0.0.1".to_owned(), "localhost".to_owned()];
+    if let Some(lan_ip_san) = lan_ip_san {
+        subject_alt_names.push(lan_ip_san.to_string());
+    }
+    subject_alt_names
+}
+
 fn identity_profile(lan_ip_san: Option<Ipv4Addr>) -> String {
     lan_ip_san.map_or_else(
         || DEFAULT_PROFILE_MARKER.to_owned(),
@@ -203,9 +224,10 @@ fn identity_profile(lan_ip_san: Option<Ipv4Addr>) -> String {
     )
 }
 
-fn validate_certificate_profile(
+fn validate_certificate_profile_at(
     cert_path: &Path,
     lan_ip_san: Option<Ipv4Addr>,
+    now: OffsetDateTime,
 ) -> anyhow::Result<()> {
     let certificate = pem::parse(fs::read(cert_path)?)?;
     let (remaining, certificate) = x509_parser::parse_x509_certificate(certificate.contents())
@@ -267,6 +289,19 @@ fn validate_certificate_profile(
     if validity_seconds <= 0 || validity_seconds >= 14 * 24 * 60 * 60 {
         anyhow::bail!(
             "the persistent relay certificate validity exceeds the WebTransport profile; rotate all explicit development identity files"
+        );
+    }
+    let skew_start = now
+        .checked_sub(CalendarDuration::minutes(WEBTRANSPORT_CLOCK_SKEW_MINUTES))
+        .ok_or_else(|| anyhow::anyhow!("cannot calculate certificate validity window"))?;
+    let skew_end = now
+        .checked_add(CalendarDuration::minutes(WEBTRANSPORT_CLOCK_SKEW_MINUTES))
+        .ok_or_else(|| anyhow::anyhow!("cannot calculate certificate validity window"))?;
+    if certificate.validity().not_before.timestamp() > skew_start.unix_timestamp()
+        || certificate.validity().not_after.timestamp() <= skew_end.unix_timestamp()
+    {
+        anyhow::bail!(
+            "the persistent relay certificate is not currently valid for the WebTransport clock-skew window; rotate all explicit development identity files"
         );
     }
     Ok(())
@@ -354,18 +389,20 @@ fn parse_lan_ip_san(name: &str, raw: &str) -> anyhow::Result<Ipv4Addr> {
     let lan_ip = raw
         .parse::<Ipv4Addr>()
         .map_err(|_| anyhow::anyhow!("{name} must be a canonical RFC1918 IPv4 literal"))?;
-    if raw != lan_ip.to_string() || !is_rfc1918_host(lan_ip) {
+    if raw != lan_ip.to_string()
+        || !is_rfc1918(lan_ip)
+        || lan_ip.is_loopback()
+        || lan_ip.is_unspecified()
+        || lan_ip.is_multicast()
+    {
         anyhow::bail!("{name} must be a canonical RFC1918 IPv4 literal");
     }
     Ok(lan_ip)
 }
 
-fn is_rfc1918_host(address: Ipv4Addr) -> bool {
-    let [first, second, _, last] = address.octets();
-    let is_private = first == 10
-        || (first == 172 && (16..=31).contains(&second))
-        || (first == 192 && second == 168);
-    is_private && last != 0 && last != 255
+fn is_rfc1918(address: Ipv4Addr) -> bool {
+    let [first, second, _, _] = address.octets();
+    first == 10 || (first == 172 && (16..=31).contains(&second)) || (first == 192 && second == 168)
 }
 
 #[cfg(test)]
@@ -378,12 +415,15 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
+    use rcgen::{CertificateParams, KeyPair};
+    use time::OffsetDateTime;
     use x509_parser::extensions::GeneralName;
 
     use super::{
         CalendarDuration, DEFAULT_BIND, DEFAULT_PROFILE_MARKER, WEBTRANSPORT_CERTIFICATE_DAYS,
-        WEBTRANSPORT_CLOCK_SKEW_MINUTES, ensure_loopback_bind, ensure_persistent_identity,
-        identity_profile, parse_lan_ip_san, sha256_hex,
+        WEBTRANSPORT_CLOCK_SKEW_MINUTES, certificate_subject_alt_names, ensure_loopback_bind,
+        ensure_persistent_identity, ensure_persistent_identity_at, identity_profile,
+        parse_lan_ip_san, sha256_hex,
     };
 
     static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -419,6 +459,21 @@ mod tests {
                 &self.fingerprint,
                 &self.profile,
                 lan_ip_san,
+            )
+        }
+
+        fn ensure_at(
+            &self,
+            lan_ip_san: Option<Ipv4Addr>,
+            now: OffsetDateTime,
+        ) -> anyhow::Result<()> {
+            ensure_persistent_identity_at(
+                &self.cert,
+                &self.key,
+                &self.fingerprint,
+                &self.profile,
+                lan_ip_san,
+                now,
             )
         }
 
@@ -478,6 +533,32 @@ mod tests {
         }
     }
 
+    fn write_identity_with_validity(
+        paths: &IdentityPaths,
+        lan_ip_san: Option<Ipv4Addr>,
+        not_before: OffsetDateTime,
+        not_after: OffsetDateTime,
+    ) {
+        fs::create_dir_all(&paths.root).expect("test identity directory must be created");
+        let mut params = CertificateParams::new(certificate_subject_alt_names(lan_ip_san))
+            .expect("test certificate parameters must be valid");
+        params.not_before = not_before;
+        params.not_after = not_after;
+        let signing_key = KeyPair::generate().expect("test signing key must be generated");
+        let certificate = params
+            .self_signed(&signing_key)
+            .expect("test certificate must be generated");
+        fs::write(&paths.cert, certificate.pem()).expect("test certificate must be written");
+        fs::write(&paths.key, signing_key.serialize_pem()).expect("test key must be written");
+        fs::write(
+            &paths.fingerprint,
+            format!("{}\n", sha256_hex(certificate.der().as_ref())),
+        )
+        .expect("test fingerprint must be written");
+        fs::write(&paths.profile, identity_profile(lan_ip_san))
+            .expect("test profile must be written");
+    }
+
     #[test]
     fn certificate_profile_remains_below_webtransport_limit() {
         let validity = CalendarDuration::days(WEBTRANSPORT_CERTIFICATE_DAYS)
@@ -527,7 +608,15 @@ mod tests {
 
     #[test]
     fn accepts_only_canonical_rfc1918_ipv4_literals() {
-        for valid in ["10.1.2.3", "172.16.0.1", "172.31.255.254", "192.168.50.10"] {
+        for valid in [
+            "10.1.2.3",
+            "10.1.2.255",
+            "172.16.0.1",
+            "172.20.16.255",
+            "172.31.255.254",
+            "192.168.1.0",
+            "192.168.50.10",
+        ] {
             assert_eq!(
                 parse_lan_ip_san("TEST_LAN_IP", valid)
                     .expect("canonical RFC1918 address must be accepted")
@@ -548,8 +637,6 @@ mod tests {
             "0.0.0.0",
             "127.0.0.2",
             "100.64.0.1",
-            "10.1.2.255",
-            "192.168.1.0",
             " 192.168.1.2",
             "192.168.1.2 ",
             "192.168.1.2/path",
@@ -560,6 +647,48 @@ mod tests {
             assert!(
                 parse_lan_ip_san("TEST_LAN_IP", invalid).is_err(),
                 "non-canonical or non-RFC1918 input must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn persistent_identity_rejects_future_expired_and_skew_edge_certificates() {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000)
+            .expect("fixed validation time must be representable");
+        let cases = [
+            (
+                "future",
+                now + CalendarDuration::hours(1),
+                now + CalendarDuration::days(2),
+            ),
+            (
+                "expired",
+                now - CalendarDuration::days(2),
+                now - CalendarDuration::hours(1),
+            ),
+            (
+                "not-before-skew",
+                now - CalendarDuration::minutes(WEBTRANSPORT_CLOCK_SKEW_MINUTES - 1),
+                now + CalendarDuration::days(1),
+            ),
+            (
+                "expiry-skew",
+                now - CalendarDuration::days(1),
+                now + CalendarDuration::minutes(WEBTRANSPORT_CLOCK_SKEW_MINUTES),
+            ),
+        ];
+        for (label, not_before, not_after) in cases {
+            let paths = IdentityPaths::new(label);
+            write_identity_with_validity(&paths, None, not_before, not_after);
+            let before = paths.snapshot();
+
+            assert!(
+                paths.ensure_at(None, now).is_err(),
+                "certificate outside the full skew window must be rejected"
+            );
+            assert!(
+                paths.snapshot() == before,
+                "validity rejection must not overwrite identity material"
             );
         }
     }
