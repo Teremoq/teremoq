@@ -1,2 +1,4 @@
 /target/
 /.teremoq-dev/
+/tests/preview/**/__pycache__/
+/tests/preview/**/*.pyc
