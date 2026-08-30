@@ -9,17 +9,19 @@ one-player run lasts at least 10 minutes; only after its cleanup and manual
 Wi-Fi recovery pass may the same explicit commit progress to 5, then 10, then
 25 clients. Values above 25 are rejected.
 
-`player-evidence.example.tsv` is the fail-closed contract for the pending Web
-launcher `Collect` action. It must be populated by the player/session APIs,
-not by copying guessed values; its untouched `not_measured` form is rejected.
+`player-evidence.example.tsv` is the fail-closed composite contract produced by
+`Import-BrowserObservation.ps1` from the reviewed Web JSON schemas. The exact
+source bytes, their SHA-256 and every transformed field stay bound together;
+guessed values and the untouched template are rejected.
 
 Every level requires:
 
 - exactly 1/5/10/25 requested and peak real MoQT sessions from one allowed
   client IP; authenticated viewers remain `not_measured` and are not claimed;
 - numeric clock error with calibrated clocks;
-- real presented frames and received media objects greater than zero, plus
-  browser-observed RX-to-canvas p95; `network_and_subscriber` remains
+- positive received media objects and bytes; level 1 additionally requires
+  real presented frames, browser-observed RX-to-canvas p95 and an explicitly
+  armed/lost/recovered Wi-Fi observation; `network_and_subscriber` remains
   `not_measured` because no real instrument exposes it, and
   `ingest_to_publish` remains `not_measured` until a hash-bound Gateway/server
   collector supplies it;
@@ -32,8 +34,8 @@ Every level requires:
   Defender, Hyper-V and process residue; and
 - previous accepted evidence at 5/10/25 using the same local commit.
 
-At level 1 `glass_to_glass` must be `not_measured` unless the source has correlatable
-timecode and clocks are calibrated. `not_measured`, `unavailable`, `simulated`
+At level 1 `glass_to_glass` remains `not_available` unless Web measured it from
+correlatable source timecode and clocks are calibrated. `not_measured`, `not_available`, `unavailable`, `simulated`
 and numeric real values are distinct and are never converted to zero. At
 levels 5/10/25, render-only fields are `not_available` because lightweight
 sessions deliberately do not render.

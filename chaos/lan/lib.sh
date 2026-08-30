@@ -13,13 +13,14 @@ lan_results_load() {
     LAN_RESULT_KEYS=(
         schema_version run_id source_commit level result measurement_kind
         requested_sessions active_sessions_peak authorization_scope authorized_viewers duration_seconds approved_thresholds_id
-        visual_timecode_valid clocks_calibrated clock_error_ms ingest_to_publish_p95_ms ingest_to_publish_source
-        network_subscriber_p95_ms network_subscriber_source frames_presented media_objects_received media_session_source
+        g2g_measurement_status clocks_calibrated clock_error_ms ingest_to_publish_p95_ms ingest_to_publish_source
+        network_subscriber_p95_ms network_subscriber_source frames_presented media_objects_received media_bytes_received media_session_source
         rx_to_canvas_p95_ms rx_to_canvas_source glass_to_glass_p95_ms glass_to_glass_source
         icmp_echo_loss_percent_approximation icmp_echo_jitter_ms_approximation
         server_cpu_peak_percent server_memory_peak_mib client_cpu_peak_percent client_memory_peak_mib
-        server_bandwidth_peak_mbps client_bandwidth_peak_mbps wifi_recovery_ms wifi_recovery_source
-        session_loss_count reconnect_count defender_firewall_rule_count_during_run
+        server_bandwidth_peak_mbps client_bandwidth_peak_mbps
+        wifi_recovery_status wifi_recovery_armed wifi_loss_observed wifi_recovery_observed wifi_recovery_ms wifi_recovery_provenance wifi_recovery_source
+        session_loss_count session_recovery_count defender_firewall_rule_count_during_run
         hyperv_firewall_rule_count_during_run cleanup_processes
         cleanup_defender_firewall_rules cleanup_hyperv_firewall_rules
         package_sha256 server_collector_sha256 client_collector_sha256 player_collector_sha256 browser_observation_sha256 network_probe_kind network_probe_source host_resource_source evidence_quality
@@ -93,8 +94,8 @@ lan_validate_gate_results() {
     lan_numeric "${LAN_RESULTS[duration_seconds]}" && \
         awk -v value="${LAN_RESULTS[duration_seconds]}" 'BEGIN {exit !(value >= 600)}' || \
         lan_gate_die 'each real gate requires at least 600 measured seconds'
-    [[ "${LAN_RESULTS[visual_timecode_valid]}" =~ ^(true|false)$ && "${LAN_RESULTS[clocks_calibrated]}" =~ ^(true|false)$ ]] || \
-        lan_gate_die 'timecode/clock flags must be true or false'
+    [[ "${LAN_RESULTS[g2g_measurement_status]}" =~ ^(measured|not_available)$ && "${LAN_RESULTS[clocks_calibrated]}" =~ ^(true|false)$ ]] || \
+        lan_gate_die 'G2G status or clock flag is outside policy'
     for key in clock_error_ms \
         icmp_echo_loss_percent_approximation icmp_echo_jitter_ms_approximation \
         server_cpu_peak_percent server_memory_peak_mib client_cpu_peak_percent client_memory_peak_mib \
@@ -104,9 +105,11 @@ lan_validate_gate_results() {
         lan_numeric "${LAN_RESULTS[${key}]}" || lan_gate_die "${key} must be a measured numeric value"
     done
     lan_uint "${LAN_RESULTS[session_loss_count]}" || lan_gate_die 'session_loss_count must be a measured integer'
-    lan_uint "${LAN_RESULTS[reconnect_count]}" || lan_gate_die 'reconnect_count must be a measured integer'
+    lan_uint "${LAN_RESULTS[session_recovery_count]}" || lan_gate_die 'session_recovery_count must be a measured integer'
+    (( 10#${LAN_RESULTS[session_recovery_count]} <= 10#${LAN_RESULTS[session_loss_count]} )) || lan_gate_die 'session recoveries exceed session losses'
     [[ "${LAN_RESULTS[clocks_calibrated]}" == true ]] || lan_gate_die 'calibrated clocks and numeric error are required for phase evidence'
     lan_uint "${LAN_RESULTS[media_objects_received]}" && (( 10#${LAN_RESULTS[media_objects_received]} > 0 )) || lan_gate_die 'real received media object count must be a positive integer'
+    lan_uint "${LAN_RESULTS[media_bytes_received]}" && (( 10#${LAN_RESULTS[media_bytes_received]} > 0 )) || lan_gate_die 'real received media byte count must be a positive integer'
     [[ "${LAN_RESULTS[media_session_source]}" == local-browser-observation-user-exported ]] || lan_gate_die 'media/session fields must identify the raw browser observation source'
     if [[ "${requested_level}" == 1 ]]; then
         lan_uint "${LAN_RESULTS[frames_presented]}" && (( 10#${LAN_RESULTS[frames_presented]} > 0 )) || lan_gate_die 'level 1 requires positive integer presented frames'
@@ -121,17 +124,25 @@ lan_validate_gate_results() {
         lan_gate_die 'ingest-to-publish needs a future hash-bound Gateway/server collector and is currently not_measured'
     [[ "${LAN_RESULTS[network_subscriber_p95_ms]}" == not_measured && "${LAN_RESULTS[network_subscriber_source]}" == not_measured ]] || \
         lan_gate_die 'network/subscriber latency is not instrumented and must remain not_measured'
-    if [[ "${LAN_RESULTS[visual_timecode_valid]}" == true ]]; then
-        lan_numeric "${LAN_RESULTS[glass_to_glass_p95_ms]}" || lan_gate_die 'glass-to-glass must be numeric when source timecode exists'
+    if [[ "${LAN_RESULTS[g2g_measurement_status]}" == measured ]]; then
+        lan_numeric "${LAN_RESULTS[glass_to_glass_p95_ms]}" || lan_gate_die 'glass-to-glass must be numeric when Web measured it'
         [[ "${LAN_RESULTS[glass_to_glass_source]}" == local-browser-observation-user-exported ]] || lan_gate_die 'glass-to-glass source mismatch'
     else
-        [[ "${LAN_RESULTS[glass_to_glass_p95_ms]}" == not_measured && "${LAN_RESULTS[glass_to_glass_source]}" == not_measured ]] || lan_gate_die 'glass-to-glass must be not_measured without source timecode'
+        [[ "${LAN_RESULTS[glass_to_glass_p95_ms]}" == not_available && "${LAN_RESULTS[glass_to_glass_source]}" == not_available ]] || lan_gate_die 'glass-to-glass must remain not_available when Web did not measure it'
     fi
     if [[ "${requested_level}" == 1 ]]; then
-        lan_numeric "${LAN_RESULTS[wifi_recovery_ms]}" || lan_gate_die 'manual Wi-Fi recovery must be measured at level 1'
+        [[ "${LAN_RESULTS[wifi_recovery_status]}" == measured && "${LAN_RESULTS[wifi_recovery_armed]}" == true && \
+           "${LAN_RESULTS[wifi_loss_observed]}" == true && "${LAN_RESULTS[wifi_recovery_observed]}" == true && \
+           "${LAN_RESULTS[wifi_recovery_provenance]}" == operator-armed-browser-monotonic-session-loss-to-first-recovered-object ]] || \
+            lan_gate_die 'level 1 Wi-Fi recovery must be explicitly armed, lost and recovered'
+        lan_uint "${LAN_RESULTS[wifi_recovery_ms]}" && (( 10#${LAN_RESULTS[wifi_recovery_ms]} >= 1 && 10#${LAN_RESULTS[wifi_recovery_ms]} <= 180000 )) || \
+            lan_gate_die 'manual Wi-Fi recovery must be a bounded integer measurement at level 1'
         [[ "${LAN_RESULTS[wifi_recovery_source]}" == local-browser-observation-user-exported ]] || lan_gate_die 'Wi-Fi recovery source mismatch'
     else
-        [[ "${LAN_RESULTS[wifi_recovery_ms]}" == not_measured && "${LAN_RESULTS[wifi_recovery_source]}" == not_measured ]] || lan_gate_die 'higher-level Wi-Fi recovery must remain not_measured'
+        [[ "${LAN_RESULTS[wifi_recovery_status]}" == not_available && "${LAN_RESULTS[wifi_recovery_armed]}" == not_available && \
+           "${LAN_RESULTS[wifi_loss_observed]}" == not_available && "${LAN_RESULTS[wifi_recovery_observed]}" == not_available && \
+           "${LAN_RESULTS[wifi_recovery_ms]}" == not_available && "${LAN_RESULTS[wifi_recovery_provenance]}" == not_available && \
+           "${LAN_RESULTS[wifi_recovery_source]}" == not_available ]] || lan_gate_die 'lightweight Wi-Fi fields must remain not_available'
     fi
     [[ "${LAN_RESULTS[cleanup_processes]}" == 0 && \
        "${LAN_RESULTS[cleanup_defender_firewall_rules]}" == 0 && \
@@ -157,7 +168,7 @@ lan_validate_player_evidence() {
     local path="$1" expected_sha="$2" actual_sha line=0 key value extra required_key
     [[ "${path}" == /* && -f "${path}" && ! -L "${path}" ]] || lan_gate_die 'player evidence must be an absolute regular non-symlink TSV file'
     lan_validate_export_path_and_sidecar "${path}" player-evidence.tsv "${expected_sha}"
-    PLAYER_EVIDENCE_KEYS=(schema_version collector_id evidence_origin browser_observation_sha256 run_id source_commit level started_at_utc ended_at_utc duration_seconds requested_sessions active_sessions_peak frames_presented media_objects_received rx_to_canvas_samples rx_to_canvas_p95_ms visual_timecode_valid glass_to_glass_p95_ms session_loss_count reconnect_count wifi_recovery_ms evidence_quality)
+    PLAYER_EVIDENCE_KEYS=(schema_version collector_id evidence_origin browser_observation_sha256 run_id source_commit level started_at_utc ended_at_utc duration_seconds requested_sessions active_sessions_peak frames_presented media_objects_received media_bytes_received rx_to_canvas_p95_ms g2g_measurement_status glass_to_glass_p95_ms session_loss_count session_recovery_count wifi_recovery_status wifi_recovery_armed wifi_loss_observed wifi_recovery_observed wifi_recovery_ms wifi_recovery_provenance evidence_quality)
     declare -gA PLAYER_EVIDENCE=() PLAYER_EVIDENCE_ALLOWED=()
     for required_key in "${PLAYER_EVIDENCE_KEYS[@]}"; do PLAYER_EVIDENCE_ALLOWED["${required_key}"]=1; done
     while IFS=$'\t' read -r key value extra || [[ -n "${key}${value}${extra}" ]]; do
@@ -182,31 +193,38 @@ lan_validate_player_evidence() {
     lan_validate_export_path_and_sidecar "${browser_observation}" local-browser-observation-user-exported.json "${browser_actual}"
     [[ "${browser_actual}" == "${PLAYER_EVIDENCE[browser_observation_sha256]}" ]] || lan_gate_die 'browser observation provenance hash mismatch'
     lan_validate_timing "${PLAYER_EVIDENCE[started_at_utc]}" "${PLAYER_EVIDENCE[ended_at_utc]}" "${PLAYER_EVIDENCE[duration_seconds]}"
-    for key in requested_sessions active_sessions_peak media_objects_received session_loss_count reconnect_count; do
+    for key in requested_sessions active_sessions_peak media_objects_received media_bytes_received session_loss_count session_recovery_count; do
         lan_uint "${PLAYER_EVIDENCE[${key}]}" || lan_gate_die "player count is not an integer: ${key}"
     done
     lan_numeric "${PLAYER_EVIDENCE[duration_seconds]}" || lan_gate_die 'player duration is not measured'
     awk -v value="${PLAYER_EVIDENCE[duration_seconds]}" 'BEGIN {exit !(value >= 600)}' || lan_gate_die 'player duration is shorter than 600 seconds'
     (( 10#${PLAYER_EVIDENCE[media_objects_received]} > 0 )) || lan_gate_die 'player received no real media objects'
+    (( 10#${PLAYER_EVIDENCE[media_bytes_received]} > 0 )) || lan_gate_die 'player received no real media bytes'
+    (( 10#${PLAYER_EVIDENCE[session_recovery_count]} <= 10#${PLAYER_EVIDENCE[session_loss_count]} )) || lan_gate_die 'player session recoveries exceed losses'
     if [[ "${PLAYER_EVIDENCE[level]}" == 1 ]]; then
         lan_uint "${PLAYER_EVIDENCE[frames_presented]}" && (( 10#${PLAYER_EVIDENCE[frames_presented]} > 0 )) || lan_gate_die 'level 1 player presented no real frames'
-        lan_uint "${PLAYER_EVIDENCE[rx_to_canvas_samples]}" && (( 10#${PLAYER_EVIDENCE[rx_to_canvas_samples]} > 0 )) || lan_gate_die 'level 1 player has no RX-to-canvas samples'
         lan_numeric "${PLAYER_EVIDENCE[rx_to_canvas_p95_ms]}" || lan_gate_die 'level 1 RX-to-canvas p95 is not measured'
     else
-        [[ "${PLAYER_EVIDENCE[frames_presented]}" == not_available && "${PLAYER_EVIDENCE[rx_to_canvas_samples]}" == not_available && \
-           "${PLAYER_EVIDENCE[rx_to_canvas_p95_ms]}" == not_available ]] || \
+        [[ "${PLAYER_EVIDENCE[frames_presented]}" == not_available && "${PLAYER_EVIDENCE[rx_to_canvas_p95_ms]}" == not_available ]] || \
             lan_gate_die 'lightweight player evidence must mark render metrics not_available'
     fi
-    [[ "${PLAYER_EVIDENCE[visual_timecode_valid]}" =~ ^(true|false)$ ]] || lan_gate_die 'invalid player visual_timecode flag'
-    if [[ "${PLAYER_EVIDENCE[visual_timecode_valid]}" == true ]]; then
-        lan_numeric "${PLAYER_EVIDENCE[glass_to_glass_p95_ms]}" || lan_gate_die 'player glass-to-glass must be numeric with timecode'
+    [[ "${PLAYER_EVIDENCE[g2g_measurement_status]}" =~ ^(measured|not_available)$ ]] || lan_gate_die 'invalid player G2G measurement status'
+    if [[ "${PLAYER_EVIDENCE[g2g_measurement_status]}" == measured ]]; then
+        lan_numeric "${PLAYER_EVIDENCE[glass_to_glass_p95_ms]}" || lan_gate_die 'player glass-to-glass must be numeric when measured'
     else
-        [[ "${PLAYER_EVIDENCE[glass_to_glass_p95_ms]}" == not_measured ]] || lan_gate_die 'player falsely claims glass-to-glass without timecode'
+        [[ "${PLAYER_EVIDENCE[glass_to_glass_p95_ms]}" == not_available ]] || lan_gate_die 'player falsely claims glass-to-glass without a Web measurement'
     fi
     if [[ "${PLAYER_EVIDENCE[level]}" == 1 ]]; then
-        lan_numeric "${PLAYER_EVIDENCE[wifi_recovery_ms]}" || lan_gate_die 'level 1 player evidence must measure manual Wi-Fi recovery'
+        [[ "${PLAYER_EVIDENCE[wifi_recovery_status]}" == measured && "${PLAYER_EVIDENCE[wifi_recovery_armed]}" == true && \
+           "${PLAYER_EVIDENCE[wifi_loss_observed]}" == true && "${PLAYER_EVIDENCE[wifi_recovery_observed]}" == true && \
+           "${PLAYER_EVIDENCE[wifi_recovery_provenance]}" == operator-armed-browser-monotonic-session-loss-to-first-recovered-object ]] || \
+            lan_gate_die 'level 1 player Wi-Fi proof is not armed and complete'
+        lan_uint "${PLAYER_EVIDENCE[wifi_recovery_ms]}" && (( 10#${PLAYER_EVIDENCE[wifi_recovery_ms]} >= 1 && 10#${PLAYER_EVIDENCE[wifi_recovery_ms]} <= 180000 )) || \
+            lan_gate_die 'level 1 player evidence must measure bounded Wi-Fi recovery'
     else
-        [[ "${PLAYER_EVIDENCE[wifi_recovery_ms]}" == not_measured || "${PLAYER_EVIDENCE[wifi_recovery_ms]}" =~ ^[0-9]+([.][0-9]+)?$ ]] || lan_gate_die 'invalid player Wi-Fi recovery evidence'
+        for key in wifi_recovery_status wifi_recovery_armed wifi_loss_observed wifi_recovery_observed wifi_recovery_ms wifi_recovery_provenance; do
+            [[ "${PLAYER_EVIDENCE[${key}]}" == not_available ]] || lan_gate_die "lightweight player ${key} must be not_available"
+        done
     fi
 }
 

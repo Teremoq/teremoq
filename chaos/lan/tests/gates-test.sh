@@ -26,20 +26,26 @@ make_results() {
         $1 == "authorized_viewers" {$2="not_measured"}
         $1 == "duration_seconds" {$2="600"}
         $1 == "approved_thresholds_id" {$2="approved-test-thresholds"}
+        $1 == "g2g_measurement_status" {$2="not_available"}
         $1 == "clocks_calibrated" {$2="true"}
         $1 == "clock_error_ms" {$2="1.5"}
         $1 ~ /^(ingest_to_publish_p95_ms|ingest_to_publish_source|network_subscriber_p95_ms|network_subscriber_source)$/ {$2="not_measured"}
         $1 == "frames_presented" {$2=(level == 1 ? "100" : "not_available")}
         $1 == "media_objects_received" {$2="100"}
+        $1 == "media_bytes_received" {$2="1000"}
         $1 == "media_session_source" {$2="local-browser-observation-user-exported"}
         $1 == "rx_to_canvas_p95_ms" {$2=(level == 1 ? "12.5" : "not_available")}
         $1 == "rx_to_canvas_source" {$2=(level == 1 ? "local-browser-observation-user-exported" : "not_available")}
-        $1 == "glass_to_glass_source" {$2="not_measured"}
+        $1 == "glass_to_glass_p95_ms" {$2="not_available"}
+        $1 == "glass_to_glass_source" {$2="not_available"}
         $1 ~ /^(icmp_echo_loss_percent_approximation|icmp_echo_jitter_ms_approximation|server_cpu_peak_percent|server_memory_peak_mib|client_cpu_peak_percent|client_memory_peak_mib|server_bandwidth_peak_mbps|client_bandwidth_peak_mbps)$/ {$2="1.0"}
-        $1 == "wifi_recovery_ms" {$2=(level == 1 ? "1200" : "not_measured")}
-        $1 == "wifi_recovery_source" {$2=(level == 1 ? "local-browser-observation-user-exported" : "not_measured")}
-        $1 == "session_loss_count" {$2="0"}
-        $1 == "reconnect_count" {$2=(level == 1 ? "1" : "0")}
+        $1 == "wifi_recovery_status" {$2=(level == 1 ? "measured" : "not_available")}
+        $1 ~ /^(wifi_recovery_armed|wifi_loss_observed|wifi_recovery_observed)$/ {$2=(level == 1 ? "true" : "not_available")}
+        $1 == "wifi_recovery_ms" {$2=(level == 1 ? "1200" : "not_available")}
+        $1 == "wifi_recovery_provenance" {$2=(level == 1 ? "operator-armed-browser-monotonic-session-loss-to-first-recovered-object" : "not_available")}
+        $1 == "wifi_recovery_source" {$2=(level == 1 ? "local-browser-observation-user-exported" : "not_available")}
+        $1 == "session_loss_count" {$2=(level == 1 ? "1" : "0")}
+        $1 == "session_recovery_count" {$2=(level == 1 ? "1" : "0")}
         $1 ~ /^(defender|hyperv)_firewall_rule_count_during_run$/ {$2="1"}
         $1 ~ /^cleanup_/ {$2="0"}
         $1 == "package_sha256" {$2=package_hash}
@@ -72,13 +78,18 @@ requested_sessions	${level}
 active_sessions_peak	${level}
 frames_presented	$(if [[ "${level}" == 1 ]]; then printf 100; else printf not_available; fi)
 media_objects_received	100
-rx_to_canvas_samples	$(if [[ "${level}" == 1 ]]; then printf 100; else printf not_available; fi)
+media_bytes_received	1000
 rx_to_canvas_p95_ms	$(if [[ "${level}" == 1 ]]; then printf 12.5; else printf not_available; fi)
-visual_timecode_valid	false
-glass_to_glass_p95_ms	not_measured
-session_loss_count	0
-reconnect_count	$(if [[ "${level}" == 1 ]]; then printf 1; else printf 0; fi)
-wifi_recovery_ms	$(if [[ "${level}" == 1 ]]; then printf 1200; else printf not_measured; fi)
+g2g_measurement_status	not_available
+glass_to_glass_p95_ms	not_available
+session_loss_count	$(if [[ "${level}" == 1 ]]; then printf 1; else printf 0; fi)
+session_recovery_count	$(if [[ "${level}" == 1 ]]; then printf 1; else printf 0; fi)
+wifi_recovery_status	$(if [[ "${level}" == 1 ]]; then printf measured; else printf not_available; fi)
+wifi_recovery_armed	$(if [[ "${level}" == 1 ]]; then printf true; else printf not_available; fi)
+wifi_loss_observed	$(if [[ "${level}" == 1 ]]; then printf true; else printf not_available; fi)
+wifi_recovery_observed	$(if [[ "${level}" == 1 ]]; then printf true; else printf not_available; fi)
+wifi_recovery_ms	$(if [[ "${level}" == 1 ]]; then printf 1200; else printf not_available; fi)
+wifi_recovery_provenance	$(if [[ "${level}" == 1 ]]; then printf operator-armed-browser-monotonic-session-loss-to-first-recovered-object; else printf not_available; fi)
 evidence_quality	real
 EOF
 }

@@ -46,12 +46,18 @@ lan_validate_player_evidence "${player_evidence}" "${LAN_RESULTS[player_collecto
    "${PLAYER_EVIDENCE[duration_seconds]}" == "${LAN_RESULTS[duration_seconds]}" && \
    "${PLAYER_EVIDENCE[frames_presented]}" == "${LAN_RESULTS[frames_presented]}" && \
    "${PLAYER_EVIDENCE[media_objects_received]}" == "${LAN_RESULTS[media_objects_received]}" && \
+   "${PLAYER_EVIDENCE[media_bytes_received]}" == "${LAN_RESULTS[media_bytes_received]}" && \
    "${PLAYER_EVIDENCE[rx_to_canvas_p95_ms]}" == "${LAN_RESULTS[rx_to_canvas_p95_ms]}" && \
-   "${PLAYER_EVIDENCE[visual_timecode_valid]}" == "${LAN_RESULTS[visual_timecode_valid]}" && \
+   "${PLAYER_EVIDENCE[g2g_measurement_status]}" == "${LAN_RESULTS[g2g_measurement_status]}" && \
    "${PLAYER_EVIDENCE[glass_to_glass_p95_ms]}" == "${LAN_RESULTS[glass_to_glass_p95_ms]}" && \
    "${PLAYER_EVIDENCE[session_loss_count]}" == "${LAN_RESULTS[session_loss_count]}" && \
-   "${PLAYER_EVIDENCE[reconnect_count]}" == "${LAN_RESULTS[reconnect_count]}" && \
-   "${PLAYER_EVIDENCE[wifi_recovery_ms]}" == "${LAN_RESULTS[wifi_recovery_ms]}" ]] || \
+   "${PLAYER_EVIDENCE[session_recovery_count]}" == "${LAN_RESULTS[session_recovery_count]}" && \
+   "${PLAYER_EVIDENCE[wifi_recovery_status]}" == "${LAN_RESULTS[wifi_recovery_status]}" && \
+   "${PLAYER_EVIDENCE[wifi_recovery_armed]}" == "${LAN_RESULTS[wifi_recovery_armed]}" && \
+   "${PLAYER_EVIDENCE[wifi_loss_observed]}" == "${LAN_RESULTS[wifi_loss_observed]}" && \
+   "${PLAYER_EVIDENCE[wifi_recovery_observed]}" == "${LAN_RESULTS[wifi_recovery_observed]}" && \
+   "${PLAYER_EVIDENCE[wifi_recovery_ms]}" == "${LAN_RESULTS[wifi_recovery_ms]}" && \
+   "${PLAYER_EVIDENCE[wifi_recovery_provenance]}" == "${LAN_RESULTS[wifi_recovery_provenance]}" ]] || \
     lan_gate_die 'player/session/phase fields differ from collector evidence'
 current_commit="${LAN_RESULTS[source_commit]}"
 if [[ -n "${previous}" ]]; then

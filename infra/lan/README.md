@@ -233,11 +233,12 @@ test "${#HEAD40}" -eq 40
 (cd supervisor-web && npm run package:lan -- --output /ABSOLUTE/NEW/PLAYER-ARTIFACT --source-commit "${HEAD40}")
 ```
 
-The last command is the required TP-WEB-REALTIME owner contract and remains a
-`pending_owner_integration` gate until its reviewed implementation accepts
-`--source-commit`. Its `player/lan-launcher.tsv` must have exactly the nine
-approved keys including `source_commit`; `MANIFEST.sha256.json` must bind that
-same commit and all standalone file hashes. Platform rejects a stale commit,
+The last command is the required TP-WEB-REALTIME owner contract. Its reviewed
+implementation accepts `--source-commit`; it must be run only after the Web and
+Platform commits are present in one clean integration branch. Its
+`player/lan-launcher.tsv` must have exactly the nine approved keys including
+`source_commit`; `MANIFEST.sha256.json` must bind that same commit and all
+standalone file hashes. Platform rejects a stale commit,
 extra/missing contract key, unlisted file or checksum mismatch and never marks
 the launcher ready in those cases. Only the public relay leaf and pin are
 included. No CA is installed or packaged as a trust root.
@@ -257,9 +258,10 @@ public `LAN-CONFIG.json`, hash-bound by `VERSION.tsv`, with the exact relay URL,
 pin, prefix and configured MoQT namespace segments. The approved
 `moq_namespace` is set explicitly in the Gateway runtime and serialized as
 the canonical path string `"teremoq/live"` for the contractual default; it is never independently
-defaulted by the client. Until TP-WEB-REALTIME supplies the reviewed nine-key
-launcher and versioned manifest, packaging fails with
-`pending_owner_integration`; no 1/5/10/25 start is claimed.
+defaulted by the client. This Platform-only branch deliberately remains
+`pending_owner_integration`; packaging fails until the reviewed nine-key Web
+launcher and versioned manifest are rebuilt from the exact clean integrated
+commit. No 1/5/10/25 start is claimed before that gate passes.
 
 During each later real level, run the bounded collector on both Windows hosts:
 

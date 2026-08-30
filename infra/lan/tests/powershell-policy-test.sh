@@ -66,22 +66,93 @@ if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${co
     -LocalIPv4 8.8.8.8 -PeerIPv4 192.168.77.10 -DurationSeconds 1 -EvidenceRoot 'C:\' >/dev/null 2>&1; then
     printf 'powershell-policy-test: collector accepted public local IP\n' >&2; exit 1
 fi
-commit="$(printf 'a%.0s' {1..40})"
-mkdir -p -- "${scratch}/package" "${scratch}/evidence" "${scratch}/download"
-printf '{"schema_version":1,"run_id":"lan-import-test","source_commit":"%s","relay_url":"https://192.168.77.10:14433/watch","fingerprint_sha256":"%s","prefix_length":24,"namespace":"teremoq/live"}\n' \
+commit="$(printf '1%.0s' {1..40})"
+run_id='lan-contract-fixture'
+mkdir -p -- "${scratch}/package" "${scratch}/evidence" "${scratch}/download" "${scratch}/light-download"
+printf '{"schema_version":1,"run_id":"%s","source_commit":"%s","relay_url":"https://192.168.77.10:14433/watch","fingerprint_sha256":"%s","prefix_length":24,"namespace":"teremoq/live"}\n' \
+    "${run_id}" \
     "${commit}" "$(printf 'b%.0s' {1..64})" >"${scratch}/package/LAN-CONFIG.json"
 config_sha="$(sha256sum "${scratch}/package/LAN-CONFIG.json" | awk '{print $1}')"
-printf 'source_commit\t%s\nrun_id\tlan-import-test\nlan_config_sha256\t%s\n' "${commit}" "${config_sha}" >"${scratch}/package/VERSION.tsv"
-printf '{"schema_version":1,"export_kind":"local-browser-observation-user-exported","run_id":"lan-import-test","source_commit":"%s","level":1,"started_at_utc":"2026-08-30T10:00:00Z","ended_at_utc":"2026-08-30T10:10:00Z","duration_seconds":600,"requested_sessions":1,"active_sessions_peak":1,"frames_presented":100,"media_objects_received":100,"rx_to_canvas_samples":100,"rx_to_canvas_p95_ms":12.5,"visual_timecode_valid":false,"glass_to_glass_p95_ms":"not_measured","session_loss_count":0,"reconnect_count":1,"wifi_recovery_ms":1200}\n' \
-    "${commit}" >"${scratch}/download/local-browser-observation-user-exported.json"
+printf 'source_commit\t%s\nrun_id\t%s\nlan_config_sha256\t%s\n' "${commit}" "${run_id}" "${config_sha}" >"${scratch}/package/VERSION.tsv"
+cp -- "${TEST_DIR}/fixtures/player-level-1.valid.json" "${scratch}/download/local-browser-observation-user-exported.json"
+cp -- "${TEST_DIR}/fixtures/lightweight-level-5.valid.json" "${scratch}/light-download/local-browser-observation-user-exported.json"
+[[ "$(sha256sum "${TEST_DIR}/fixtures/player-level-1.valid.json" | awk '{print $1}')" == 5f69843519ee19d190251ba93a992eb1e39c9a84a182aaa2a66f7ec41ea86a3f ]]
+[[ "$(sha256sum "${TEST_DIR}/fixtures/lightweight-level-5.valid.json" | awk '{print $1}')" == 653ec1dbc1240564b3389b4148b9f2bfb6907026ff0ba2f296da50eb1eeb8d43 ]]
 importer="$(wslpath -w "${ROOT}/client/Import-BrowserObservation.ps1")"
+grep -Fq 'New-Object IO.FileStream($source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)' "${ROOT}/client/Import-BrowserObservation.ps1"
+! grep -Eq 'Get-Content .*\$source|\[IO\.File\]::Copy\(\$source|Get-FileHash .*\$destination' "${ROOT}/client/Import-BrowserObservation.ps1"
+# The exact FileShare.None primitive used by the importer must deny a writer
+# while the single read handle remains open.
+TEREMOQ_PS_LOCK_SOURCE="${scratch}/download/local-browser-observation-user-exported.json" \
+    WSLENV="TEREMOQ_PS_LOCK_SOURCE/p${WSLENV:+:${WSLENV}}" powershell.exe -NoProfile -NonInteractive -Command '
+$stream = New-Object IO.FileStream($env:TEREMOQ_PS_LOCK_SOURCE, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+try {
+    $denied = $false
+    try { [IO.File]::WriteAllText($env:TEREMOQ_PS_LOCK_SOURCE, "replacement") } catch [IO.IOException] { $denied = $true }
+    if (-not $denied) { throw "exclusive import source handle allowed concurrent modification" }
+} finally { $stream.Dispose() }
+' >/dev/null
+source_hash_before="$(sha256sum "${scratch}/download/local-browser-observation-user-exported.json" | awk '{print $1}')"
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${importer}" \
     -SourcePath "$(wslpath -w "${scratch}/download/local-browser-observation-user-exported.json")" \
     -PackageRoot "$(wslpath -w "${scratch}/package")" -EvidenceRoot "$(wslpath -w "${scratch}/evidence")" \
-    -RunId lan-import-test -Level 1 >/dev/null
-imported="${scratch}/evidence/lan-import-test/level-1/player-evidence.tsv"
+    -RunId "${run_id}" -Level 1 >/dev/null
+imported="${scratch}/evidence/${run_id}/level-1/player-evidence.tsv"
+imported_json="${scratch}/evidence/${run_id}/level-1/local-browser-observation-user-exported.json"
 [[ -f "${imported}" && -f "${imported}.sha256" ]]
+[[ -f "${imported_json}" && -f "${imported_json}.sha256" ]]
 ! grep -q $'\r' "${imported}"
+cmp -- "${scratch}/download/local-browser-observation-user-exported.json" "${imported_json}"
+source_hash_after="$(sha256sum "${scratch}/download/local-browser-observation-user-exported.json" | awk '{print $1}')"
+destination_hash="$(sha256sum "${imported_json}" | awk '{print $1}')"
+[[ "${source_hash_before}" == "${source_hash_after}" && "${source_hash_before}" == "${destination_hash}" ]]
+grep -Fx "${destination_hash}  local-browser-observation-user-exported.json" "${imported_json}.sha256" >/dev/null
+grep -Fx $'browser_observation_sha256\t'"${destination_hash}" "${imported}" >/dev/null
 grep -Fx $'requested_sessions\t1' "${imported}" >/dev/null
+grep -Fx $'frames_presented\t12000' "${imported}" >/dev/null
+grep -Fx $'media_objects_received\t20000' "${imported}" >/dev/null
+grep -Fx $'media_bytes_received\t2000000' "${imported}" >/dev/null
+grep -Fx $'g2g_measurement_status\tnot_available' "${imported}" >/dev/null
+grep -Fx $'session_recovery_count\t1' "${imported}" >/dev/null
+grep -Fx $'wifi_recovery_armed\ttrue' "${imported}" >/dev/null
+grep -Fx $'wifi_recovery_provenance\toperator-armed-browser-monotonic-session-loss-to-first-recovered-object' "${imported}" >/dev/null
 grep -Fx $'evidence_origin\tlocal-browser-observation-user-exported' "${imported}" >/dev/null
+light_evidence="${scratch}/light-evidence"
+mkdir -- "${light_evidence}"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${importer}" \
+    -SourcePath "$(wslpath -w "${scratch}/light-download/local-browser-observation-user-exported.json")" \
+    -PackageRoot "$(wslpath -w "${scratch}/package")" -EvidenceRoot "$(wslpath -w "${light_evidence}")" \
+    -RunId "${run_id}" -Level 5 >/dev/null
+light_tsv="${light_evidence}/${run_id}/level-5/player-evidence.tsv"
+grep -Fx $'requested_sessions\t5' "${light_tsv}" >/dev/null
+grep -Fx $'frames_presented\tnot_available' "${light_tsv}" >/dev/null
+grep -Fx $'rx_to_canvas_p95_ms\tnot_available' "${light_tsv}" >/dev/null
+grep -Fx $'g2g_measurement_status\tnot_available' "${light_tsv}" >/dev/null
+grep -Fx $'wifi_recovery_ms\tnot_available' "${light_tsv}" >/dev/null
+mkdir -p -- "${scratch}/legacy" "${scratch}/legacy-evidence"
+printf '{"schema_version":1,"export_kind":"local-browser-observation-user-exported","run_id":"%s","source_commit":"%s","level":1,"duration_seconds":600,"frames_presented":100}\n' \
+    "${run_id}" "${commit}" >"${scratch}/legacy/local-browser-observation-user-exported.json"
+if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${importer}" \
+    -SourcePath "$(wslpath -w "${scratch}/legacy/local-browser-observation-user-exported.json")" \
+    -PackageRoot "$(wslpath -w "${scratch}/package")" -EvidenceRoot "$(wslpath -w "${scratch}/legacy-evidence")" \
+    -RunId "${run_id}" -Level 1 >/dev/null 2>&1; then
+    printf 'powershell-policy-test: obsolete Platform browser schema accepted\n' >&2; exit 1
+fi
+mkdir -p -- "${scratch}/unarmed" "${scratch}/unarmed-evidence"
+sed 's/"wifi_recovery_armed": true/"wifi_recovery_armed": false/' \
+    "${TEST_DIR}/fixtures/player-level-1.valid.json" >"${scratch}/unarmed/local-browser-observation-user-exported.json"
+if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${importer}" \
+    -SourcePath "$(wslpath -w "${scratch}/unarmed/local-browser-observation-user-exported.json")" \
+    -PackageRoot "$(wslpath -w "${scratch}/package")" -EvidenceRoot "$(wslpath -w "${scratch}/unarmed-evidence")" \
+    -RunId "${run_id}" -Level 1 >/dev/null 2>&1; then
+    printf 'powershell-policy-test: unarmed Wi-Fi observation accepted\n' >&2; exit 1
+fi
+mkdir -p -- "${scratch}/oversized" "${scratch}/oversized-evidence"
+head -c 65537 /dev/zero >"${scratch}/oversized/local-browser-observation-user-exported.json"
+if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${importer}" \
+    -SourcePath "$(wslpath -w "${scratch}/oversized/local-browser-observation-user-exported.json")" \
+    -PackageRoot "$(wslpath -w "${scratch}/package")" -EvidenceRoot "$(wslpath -w "${scratch}/oversized-evidence")" \
+    -RunId "${run_id}" -Level 1 >/dev/null 2>&1; then
+    printf 'powershell-policy-test: oversized browser observation accepted\n' >&2; exit 1
+fi
 printf 'lan-powershell-policy-test: pass\n'

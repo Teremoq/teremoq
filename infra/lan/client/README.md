@@ -89,11 +89,12 @@ only the deterministic run/level destination and a raw SHA-256 sidecar. This
 is explicitly a `local-browser-observation-user-exported` observation, not a
 cryptographic attestation; by itself it cannot pass the progressive gate.
 
-Run the packaged player only on client loopback using the launcher supplied by
-the reviewed TP-WEB-REALTIME artifact. Until that artifact supplies the
-versioned `player/lan-launcher.tsv` and checksum-bound launcher,
-packaging fails with `pending_owner_integration` and no load command can be
-issued; levels 1/5/10/25 must not be claimed.
+Run the packaged player only on client loopback using the reviewed
+TP-WEB-REALTIME artifact. Its final nine-key `player/lan-launcher.tsv`, launcher
+and closed manifest must be built from the same clean integration commit passed
+to `package-client.sh`; this Platform-only branch does not integrate Web and
+therefore remains `pending_owner_integration`. A missing or stale integrated
+artifact fails packaging and no 1/5/10/25 level may be claimed.
 `http://localhost` is the browser secure-context exception; a LAN HTTP origin
 is not. Chrome/Edge then initiates outbound UDP/14433 to the exact server
 address recorded in `VERSION.tsv`. Windows 10 WSL2 stays NAT and initiates only
