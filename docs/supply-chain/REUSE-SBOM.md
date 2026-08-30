@@ -52,7 +52,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
 
 ## Local SBOM scope
 
-`sbom/teremoq-local.cdx.json` is a local, reproducible inventory of the
+`sbom/teremoq-local.syft.json` is a local, reproducible inventory of the
 integrated source tree. It is not a release attestation, evidence of a clean
 consumer build, a production deployment inventory, or evidence of live MoQT or
 video sessions. It catalogs package-manager manifests and lockfiles, including
@@ -66,5 +66,83 @@ It is validated with the official CycloneDX CLI 0.33.1 (Apache-2.0), fixed to
 image digest
 `sha256:252c2e26f468c25fea1e63ecde1bc3198ad6e9dbb57f5ed3236bddcb2281b3a7`.
 
-Exact regeneration commands, the source commit, the resulting hashes, and
-known catalog limitations are recorded below after SBOM generation.
+The SBOM describes source commit
+`8a63b46e5e21ee587ea495fbe4eaa3015b70cb91`. That commit is based on the
+integrated baseline `97487782176e475cde144d9b7e1b50acaa8364f7` and adds only
+license/compliance metadata. The later commit that stores the SBOM does not
+change manifests, dependencies, or locks.
+
+The result contains 857 components: 375 Rust crates and 482 npm packages,
+including npm development dependencies. The three MoQ components each record
+the complete Git source and revision, and `web-transport` records version
+`0.10.9` and its crates.io checksum.
+
+### Reproduce from the clean source commit
+
+Run from a checkout that contains this guide. The output is written by Syft,
+outside the temporary source checkout, and no network is available to the
+generator:
+
+```sh
+teremoq_source_commit=8a63b46e5e21ee587ea495fbe4eaa3015b70cb91
+teremoq_clean_root="$(mktemp -d)"
+mkdir -p "$teremoq_clean_root/output"
+git worktree add --detach "$teremoq_clean_root/source" "$teremoq_source_commit"
+
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -e SYFT_CHECK_FOR_APP_UPDATE=false \
+  -e SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES=true \
+  -v "$teremoq_clean_root/source:/src:ro" \
+  -v "$teremoq_clean_root/output:/out" \
+  anchore/syft@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 \
+  scan dir:/src --source-name teremoq \
+  --source-version "$teremoq_source_commit" \
+  --output syft-json=/out/teremoq-local.syft.json
+
+cmp sbom/teremoq-local.syft.json \
+  "$teremoq_clean_root/output/teremoq-local.syft.json"
+(cd sbom && sha256sum -c SHA256SUMS)
+git worktree remove "$teremoq_clean_root/source"
+```
+
+Two independent clean-checkout generations produced the same SHA-256:
+
+```text
+54cd96a892b62fc19769e66db24e902f776235e1ecb6d1a93da99f90a619b01e  teremoq-local.syft.json
+```
+
+### Validate the committed SBOM
+
+Syft first parses its native schema 16.1.10 and converts it to a temporary
+CycloneDX 1.7 document. The official CycloneDX CLI then validates that document:
+
+```sh
+teremoq_validation_root="$(mktemp -d)"
+docker run --rm --network none --user "$(id -u):$(id -g)" \
+  -e SYFT_CHECK_FOR_APP_UPDATE=false \
+  -v "$PWD/sbom:/input:ro" -v "$teremoq_validation_root:/out" \
+  anchore/syft@sha256:678bfa565b60f747aac0f8e964fe5588a24445b8d0a480e91f6efd70020dfbb0 \
+  convert /input/teremoq-local.syft.json \
+  --output cyclonedx-json=/out/teremoq-local.cdx.json
+
+docker run --rm --network none \
+  -v "$teremoq_validation_root/teremoq-local.cdx.json:/data/sbom.json:ro" \
+  cyclonedx/cyclonedx-cli@sha256:252c2e26f468c25fea1e63ecde1bc3198ad6e9dbb57f5ed3236bddcb2281b3a7 \
+  validate --input-file /data/sbom.json --input-format json \
+  --input-version v1_7 --fail-on-errors
+```
+
+### Known limits
+
+- This is a source/lockfile inventory, not a catalog of compiled binaries,
+  container base images, host packages, or deployment-time services.
+- The control plane declares no Python packages, so the SBOM has no PyPI
+  components. Build tools themselves are not project runtime dependencies.
+- Syft's native JSON is retained because it is byte-reproducible for this scan.
+  Direct CycloneDX output contains a volatile timestamp and random UUID; the
+  converted CycloneDX document is therefore validation-only and is not stored.
+- Format conversion is marked experimental by Syft and may omit
+  format-specific details. The authoritative inventory is the committed Syft
+  JSON and its SHA-256.
+- An SBOM is an inventory, not a vulnerability decision or a license grant.
+  `cargo audit`, `cargo deny`, and `npm audit` remain separate validation gates.
