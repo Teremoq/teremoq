@@ -1,0 +1,288 @@
+<!-- SPDX-FileCopyrightText: 2026 Teremoq contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# Minimal opt-in LAN E2E laboratory
+
+This is a local, reversible preparation for one Windows 11 server and one
+Windows 10 client on the same private 5 GHz Wi-Fi. It does not alter normal
+loopback defaults, expose the root Compose stack, configure Windows by itself,
+run a load or claim production readiness.
+
+## Fixed boundary
+
+```text
+Windows 10 Chrome/Edge (outbound only)
+  -> exact client IPv4 -> exact server IPv4, WebTransport/QUIC UDP/14433
+  -> one run-owned Defender rule + one run-owned WSL Hyper-V rule
+  -> WSL mirrored, bounded infra/lan/udp_proxy.py
+  -> fixed backend 127.0.0.1:4433, dev_moq_relay
+
+test source -> SRT 127.0.0.1:19000 -> Gateway -> relay
+Gateway health/supervisor -> 127.0.0.1:9080 only
+```
+
+UDP/14433 is the only LAN exposure. SRT/19000, the source, relay, Gateway and
+supervisor remain server/loopback-only. There is no LAN rule for 19000 or
+4433, no dashboard LAN bind, and no Redis/Valkey, n8n, Ollama, Docker socket,
+router forwarding, UPnP or `netsh portproxy` exposure.
+
+The proxy never terminates or inspects QUIC. It binds the exact assigned
+server RFC1918 address, accepts only the exact client RFC1918 address, forwards
+only to `127.0.0.1:4433`, caps real clients at 25 plus exactly two technical
+QUIC tuple associations, rejects datagrams of 65535 bytes or more and expires
+idle tuples in 5--120 seconds. Inputs and logs are bounded; logs contain no
+payload or full client/server IP.
+
+## Current real blockers
+
+The observed host is Windows build 22621, WSL 2.7.12/kernel 6.18 in NAT,
+without `.wslconfig`, Wi-Fi 802.11ac/5 GHz, profile `Public`, non-elevated
+PowerShell 5.1 and default-deny Hyper-V inbound. Inherited containers currently
+publish wildcard TCP/4433, 5678, 6379, 11434 and UDP/4433, 9000. They are not
+owned here and must not be stopped or changed by these scripts.
+
+Activation remains blocked until all of the following are true:
+
+1. the reviewed Rust LAN-SAN commit and reviewed Web LAN player bypass are
+   integrated and recorded (`pending_owner_integration` becomes `ready`);
+2. the TP-WEB-REALTIME lightweight 1/5/10/25 launcher contract is integrated;
+3. an authorized owner isolates the inherited publications and both preflights
+   record no reserved/wildcard conflict;
+4. mirrored WSL is approved, applied and verified after `wsl --shutdown`;
+5. both exact firewall rules are applied and verified from an elevated session;
+6. certificate, fingerprint, capacity, clock, MTU, package and authorization
+   evidence pass.
+
+No script turns those prerequisites into success by substituting simulation.
+
+## 1. Private configuration and preflight
+
+Copy the template outside Git and replace every placeholder with current exact
+values. Versioned files contain no real addresses.
+
+```bash
+cp infra/lan/config/lan.example.tsv /ABSOLUTE/PRIVATE/PATH/lan.tsv
+infra/lan/validate-config.sh --config /ABSOLUTE/PRIVATE/PATH/lan.tsv
+infra/lan/preflight-wsl.sh --role server --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
+  > /ABSOLUTE/PRIVATE/PATH/server-wsl-preflight.tsv
+```
+
+Windows 11 server, read-only:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\infra\lan\windows\Preflight-Lan.ps1 `
+  -Role Server -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP `
+  -PrefixLength PREFIX -NetworkProfile Public -ExpectedWslMode mirrored `
+  | Set-Content -Encoding UTF8 C:\ABSOLUTE\PRIVATE\server-preflight.json
+```
+
+Windows 10 client, read-only and outbound-only:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\infra\lan\windows\Preflight-Client.ps1 `
+  -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP -PrefixLength PREFIX `
+  -NetworkProfile Public -ExpectedWslMode nat `
+  | Set-Content -Encoding UTF8 C:\ABSOLUTE\PRIVATE\client-preflight.json
+```
+
+The checks cover exact private IP/subnet/profile, Wi-Fi 5 GHz when observable,
+clock, Chrome/Edge, WSL mode, Docker/tools where applicable, MTU and capacity.
+Missing data is `unavailable`, never zero. Client ping fields are explicitly
+`icmp_echo_*_approximation`; they are not QUIC loss, jitter or reachability.
+QUIC stays `not_measured` until the real browser handshake. Docker conflicts
+report only service/protocol/port, never PID.
+Client loopback TCP/3000 is an additional fail-closed reservation for the
+standalone Node process and must be free in preflight and immediately before
+start; it is never exposed through the LAN firewall.
+
+## 2. Mirrored WSL plan
+
+These commands print exact changes and rollback but execute neither:
+
+```powershell
+.\infra\lan\windows\Wsl-Mirrored-Plan.ps1 -Action Plan -RunId RUN_ID
+.\infra\lan\windows\Wsl-Mirrored-Plan.ps1 -Action RollbackPlan -RunId RUN_ID
+```
+
+The plan refuses to overwrite an existing `.wslconfig`. Actual application,
+`wsl --shutdown` and rollback require the separately authorized maintenance
+window. Windows 10 stays WSL NAT.
+
+## 3. Relay certificate
+
+`prepare-pki-plan.sh` exits 3 while the Rust owner integration is pending. It
+does not misuse the 30-day Smallstep identity profile. The integrated loopback
+relay creates its private runtime identity; then verify it exactly:
+
+```bash
+infra/lan/prepare-pki-plan.sh --config /ABSOLUTE/PRIVATE/PATH/lan.tsv
+infra/lan/verify-runtime-pki.sh --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
+  --cert /ABSOLUTE/RUNTIME/relay/cert.pem \
+  --root /ABSOLUTE/RUNTIME/relay/cert.pem \
+  --fingerprint /ABSOLUTE/RUNTIME/relay/fingerprint.sha256
+```
+
+The leaf must be currently valid, have positive total validity strictly below
+14 days, DNS SAN exactly `localhost`, ordered IP SANs exactly `127.0.0.1` then
+the configured server IP, and the exact SHA-256 pin. Extra/duplicate SANs,
+expired/future/14-day certificates and mismatched pins fail. The profile marker
+must be exactly `webtransport-hash-v2-lan-ip-sha256:<sha256(canonical-server-ip)>`;
+the raw IP is not stored in the marker. Keys and real identities stay outside
+Git and logs; TLS verification is never disabled.
+
+## 4. Two exact firewall rules
+
+`Plan` is read-only and safely copyable. `Apply` and `Rollback` require both
+elevation and `-ConfirmApply`; this delivery executes neither.
+
+```powershell
+.\infra\lan\windows\Firewall-Lan.ps1 -Action Plan -RunId RUN_ID `
+  -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP `
+  -RouterIPv4 ROUTER_EXACT_IP -PrefixLength PREFIX -NetworkProfile Public
+```
+
+The script validates network/broadcast for server, client and router, requires
+the configured profile to match the interface, and creates exactly UDP/14433
+from client to server in Defender and Hyper-V. Hyper-V uses creator ID
+`{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}` and plural parameters. Rollback
+removes only both exact run Names and separately proves zero residue. It never
+changes the profile or Hyper-V `DefaultInboundAction`.
+
+## 5. Executable activation and stop
+
+Prepare run-owned state and private copies of the command/authorization
+templates. The command manifest is an argv array, never a shell string. The
+authorization binds both preflight files and firewall attestation by SHA-256,
+the command-manifest SHA-256, the commit, conflict cleanup, owner integrations
+and explicit operator approval. Every executable has its own SHA-256 and must
+reside in the exact clean worktree or a run-owned artifact directory with no
+write bits; generic shells, `cargo`, Python, Node and similar runners are denied.
+
+```bash
+infra/lan/prepare-runtime.sh --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
+  --state-dir /tmp/teremoq-lan-RUN_ID
+cp infra/lan/config/lab-commands.example.json /ABSOLUTE/PRIVATE/PATH/lab-commands.json
+cp infra/lan/config/activation-authorization.example.tsv /ABSOLUTE/PRIVATE/PATH/activation.tsv
+```
+
+Before freezing the private artifact directory, copy only the already-built
+reviewed `dev_moq_relay` and `gateway-rs` binaries from the exact commit, add
+`run-id` and `source-commit` marker files, record both executable SHA-256 values
+in `lab-commands.json`, then remove every write bit from the binaries, markers
+and artifact directory. Record `sha256sum lab-commands.json` in
+`activation.tsv`. The source command is the existing reviewed
+`gateway-rs/tests/preview/run-source.sh` from the same clean worktree; no viewer
+or media generator is added here.
+
+Once every gate is genuinely satisfied, activation is executable:
+
+```bash
+infra/lan/start-lab.sh \
+  --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
+  --commands /ABSOLUTE/PRIVATE/PATH/lab-commands.json \
+  --authorization /ABSOLUTE/PRIVATE/PATH/activation.tsv \
+  --server-preflight /ABSOLUTE/PRIVATE/PATH/server-preflight.json \
+  --client-preflight /ABSOLUTE/PRIVATE/PATH/client-preflight.json \
+  --firewall-attestation /ABSOLUTE/PRIVATE/PATH/firewall-verify.json \
+  --certificate /ABSOLUTE/RUNTIME/relay/cert.pem \
+  --key /ABSOLUTE/RUNTIME/relay/key.pem \
+  --fingerprint /ABSOLUTE/RUNTIME/relay/fingerprint.sha256 \
+  --identity-profile /ABSOLUTE/RUNTIME/relay/relay-webtransport-v1 \
+  --proxy-attestation /ABSOLUTE/PRIVATE/PATH/proxy-attestation.tsv \
+  --artifact-root /ABSOLUTE/PRIVATE/IMMUTABLE-ARTIFACTS \
+  --state-dir /tmp/teremoq-lan-RUN_ID
+```
+
+The orchestrator sets `TEREMOQ_DEV_RELAY_LAN_IP_SAN` only in this opt-in run
+and forces relay 127.0.0.1:4433, Gateway SRT
+127.0.0.1:19000, supervisor 127.0.0.1:9080, source output loopback and the
+exact UDP/14433 proxy. It never runs the root Compose file. Relay UDP, Gateway
+health/SRT, source liveness and proxy readiness must each pass; otherwise the
+run is not declared ready and its own child processes are stopped in reverse
+order. Runtime metrics contain timestamps and per-component RSS only.
+Activation also rechecks exact HEAD, full tracked/untracked cleanliness,
+owner-commit ancestry, manifest digest and every executable digest immediately
+before launch.
+
+Stop only the matching run-id lifecycle:
+
+```bash
+infra/lan/stop-lab.sh --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
+  --state-dir /tmp/teremoq-lan-RUN_ID
+```
+
+Then execute the separately reviewed elevated firewall rollback and mirrored
+rollback, verify both firewall residues are zero, and remove run-owned files:
+
+```bash
+infra/lan/rollback-runtime.sh --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
+  --state-dir /tmp/teremoq-lan-RUN_ID
+```
+
+## 6. Reproducible client package and evidence
+
+Build and package the Web player only after Rust, Web and Platform commits are
+reviewed into one clean integration branch. Capture its exact 40-character
+HEAD; never build from `origin/main` or copy an older `.next` tree:
+
+```bash
+test -z "$(git status --porcelain --untracked-files=normal)"
+HEAD40="$(git rev-parse HEAD)"
+test "${#HEAD40}" -eq 40
+(cd supervisor-web && npm run build:lan)
+(cd supervisor-web && npm run package:lan -- --output /ABSOLUTE/NEW/PLAYER-ARTIFACT --source-commit "${HEAD40}")
+```
+
+The last command is the required TP-WEB-REALTIME owner contract and remains a
+`pending_owner_integration` gate until its reviewed implementation accepts
+`--source-commit`. Its `player/lan-launcher.tsv` must have exactly the nine
+approved keys including `source_commit`; `MANIFEST.sha256.json` must bind that
+same commit and all standalone file hashes. Platform rejects a stale commit,
+extra/missing contract key, unlisted file or checksum mismatch and never marks
+the launcher ready in those cases. Only the public relay leaf and pin are
+included. No CA is installed or packaged as a trust root.
+
+```bash
+infra/lan/package-client.sh --repo "$PWD" --commit FULL_LOCAL_COMMIT \
+  --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
+  --player-dir /ABSOLUTE/REVIEWED/PLAYER-ARTIFACT \
+  --certificate /ABSOLUTE/RUNTIME/relay/cert.pem \
+  --fingerprint /ABSOLUTE/RUNTIME/relay/fingerprint.sha256 \
+  --output-dir /ABSOLUTE/PRIVATE/OUTPUT
+```
+
+The deterministic package has commit/version, endpoint, per-file SHA-256,
+archive SHA-256 and no key/token/password/`.env`. It also contains a closed
+public `LAN-CONFIG.json`, hash-bound by `VERSION.tsv`, with the exact relay URL,
+pin, prefix and configured MoQT namespace segments. The approved
+`moq_namespace` is set explicitly in the Gateway runtime and serialized as
+the canonical path string `"teremoq/live"` for the contractual default; it is never independently
+defaulted by the client. Until TP-WEB-REALTIME supplies the reviewed nine-key
+launcher and versioned manifest, packaging fails with
+`pending_owner_integration`; no 1/5/10/25 start is claimed.
+
+During each later real level, run the bounded collector on both Windows hosts:
+
+```powershell
+.\infra\lan\windows\Collect-Evidence.ps1 -Role Server -RunId RUN_ID `
+  -SourceCommit FULL_LOCAL_COMMIT -Level 1 -LocalIPv4 SERVER_EXACT_IP `
+  -PeerIPv4 CLIENT_EXACT_IP -DurationSeconds 600 `
+  -EvidenceRoot C:\ABSOLUTE\PRIVATE\EVIDENCE-EXPORT
+.\infra\lan\windows\Collect-Evidence.ps1 -Role Client -RunId RUN_ID `
+  -SourceCommit FULL_LOCAL_COMMIT -Level 1 -LocalIPv4 CLIENT_EXACT_IP `
+  -PeerIPv4 SERVER_EXACT_IP -DurationSeconds 600 `
+  -EvidenceRoot C:\ABSOLUTE\PRIVATE\EVIDENCE-EXPORT
+```
+
+Collectors record UTC timestamps, duration, samples, CPU, memory, adapter
+bandwidth and ICMP RTT/loss/jitter approximation with explicit provenance.
+They write only `EVIDENCE-EXPORT\RUN_ID\level-LEVEL\ROLE-host-evidence.tsv`
+plus its SHA-256 sidecar. The Web launcher uses the same deterministic layout
+for `player-evidence.tsv`; a manually renamed/moved file, missing sidecar or
+wrong run/level path is rejected. They do not claim QUIC transport telemetry.
+Progressive gates require exact collector hashes and cross-check measurable result fields; see
+`chaos/lan/README.md`.
+
+This two-machine laboratory does not prove HA, production capacity, an SLO or
+Internet safety. Before real execution it has measured no player, session,
+video, latency, loss, jitter or recovery result.

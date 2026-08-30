@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Teremoq contributors
+# SPDX-License-Identifier: Apache-2.0
+# Runtime-only operator attestation. Every REQUIRED_* field blocks startup.
+schema_version	1
+run_id	REQUIRED_RUN_ID
+source_commit	REQUIRED_LOCAL_COMMIT
+server_ipv4	REQUIRED_EXACT_PRIVATE_IPV4
+client_ipv4	REQUIRED_EXACT_PRIVATE_IPV4
+network_mode	mirrored
+network_profile	REQUIRED_PUBLIC_OR_PRIVATE
+windows_firewall_rule_name	REQUIRED_EXACT_CLASSIC_RULE_NAME
+hyperv_firewall_rule_name	REQUIRED_EXACT_HYPERV_RULE_NAME
+firewall_verified	false
+relay_san_integration_commit	REQUIRED_OWNER_COMMIT
+certificate_fingerprint_sha256	REQUIRED_CERTIFICATE_FINGERPRINT

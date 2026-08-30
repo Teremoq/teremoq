@@ -1,0 +1,23 @@
+{
+  "spdx_copyright": "2026 Teremoq contributors",
+  "spdx_license_identifier": "Apache-2.0",
+  "schema_version": 1,
+  "source_commit": "REQUIRED_LOCAL_COMMIT",
+  "components": {
+    "relay": {
+      "cwd": "REQUIRED_ABSOLUTE_REPOSITORY_PATH",
+      "command": ["REQUIRED_ABSOLUTE_IMMUTABLE_ARTIFACT_PATH/dev_moq_relay"],
+      "executable_sha256": "REQUIRED_SHA256"
+    },
+    "gateway": {
+      "cwd": "REQUIRED_ABSOLUTE_REPOSITORY_PATH",
+      "command": ["REQUIRED_ABSOLUTE_IMMUTABLE_ARTIFACT_PATH/gateway-rs"],
+      "executable_sha256": "REQUIRED_SHA256"
+    },
+    "source": {
+      "cwd": "REQUIRED_ABSOLUTE_REPOSITORY_PATH",
+      "command": ["REQUIRED_ABSOLUTE_REPOSITORY_PATH/gateway-rs/tests/preview/run-source.sh"],
+      "executable_sha256": "REQUIRED_SHA256"
+    }
+  }
+}

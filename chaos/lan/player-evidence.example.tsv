@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Teremoq contributors
+# SPDX-License-Identifier: Apache-2.0
+schema_version	1
+collector_id	teremoq-lan-player-v1
+evidence_origin	local-browser-observation-user-exported
+browser_observation_sha256	unavailable
+run_id	REQUIRED_RUN_ID
+source_commit	REQUIRED_LOCAL_COMMIT
+level	1
+started_at_utc	unavailable
+ended_at_utc	unavailable
+duration_seconds	not_measured
+requested_sessions	not_measured
+active_sessions_peak	not_measured
+frames_presented	not_measured
+media_objects_received	not_measured
+rx_to_canvas_samples	not_measured
+rx_to_canvas_p95_ms	not_measured
+visual_timecode_valid	false
+glass_to_glass_p95_ms	not_measured
+session_loss_count	not_measured
+reconnect_count	not_measured
+wifi_recovery_ms	not_measured
+evidence_quality	not_measured
