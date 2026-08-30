@@ -553,11 +553,13 @@ export function isCollectibleLanLoadSnapshot(snapshot: LanLoadSnapshot) {
     snapshot.firstConnectedMs !== null && snapshot.firstConnectedMs >= 0 &&
     snapshot.allActiveMs !== null && snapshot.allActiveMs >= snapshot.firstConnectedMs &&
     snapshot.lastObjectMs !== null && snapshot.lastObjectMs >= snapshot.firstConnectedMs &&
-    snapshot.elapsedMs !== null && snapshot.elapsedMs >= 600_000 && snapshot.elapsedMs >= snapshot.lastObjectMs &&
+    snapshot.elapsedMs !== null && snapshot.elapsedMs >= 600_000 &&
+    snapshot.elapsedMs <= 86_400_000 && snapshot.elapsedMs >= snapshot.lastObjectMs &&
     snapshot.runId !== null && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(snapshot.runId) &&
     snapshot.sourceCommit !== null && /^[0-9a-f]{40}$/.test(snapshot.sourceCommit) &&
     isCanonicalUtc(snapshot.startedAtUtc) && isCanonicalUtc(snapshot.endedAtUtc) &&
     Date.parse(snapshot.endedAtUtc!) >= Date.parse(snapshot.startedAtUtc!) &&
+    Math.abs(Date.parse(snapshot.endedAtUtc!) - Date.parse(snapshot.startedAtUtc!) - snapshot.elapsedMs) <= 5_000 &&
     Number.isSafeInteger(snapshot.errors) && snapshot.errors >= snapshot.localStreamRejections &&
     Number.isSafeInteger(snapshot.reconnectAttempts) && snapshot.reconnectAttempts >= 0 &&
     Number.isSafeInteger(snapshot.sessionLosses) && snapshot.sessionLosses >= 0 &&

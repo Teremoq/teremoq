@@ -103,6 +103,11 @@ export type PlayerSnapshot = {
   lastSessionRecoveryMs: number | null;
 };
 
+export type PlayerObservationEvent = Readonly<{
+  type: "session-loss" | "video-object";
+  observedAtMs: number;
+}>;
+
 export type VideoTrackId = 0 | 1;
 
 const INITIAL_SNAPSHOT: PlayerSnapshot = {
@@ -151,6 +156,7 @@ export class TeremoqPlayerEngine {
   readonly #trackId: VideoTrackId;
   readonly #trackName: CatalogVideoTrackName;
   readonly #deployment: PlayerDeployment;
+  readonly #onObservation: (event: PlayerObservationEvent) => void;
   readonly #reconnect = new BoundedReconnect();
   readonly #watchdog: ActivityWatchdog;
   #snapshot = { ...INITIAL_SNAPSHOT };
@@ -172,11 +178,13 @@ export class TeremoqPlayerEngine {
     onSnapshot: (snapshot: PlayerSnapshot) => void,
     trackId: VideoTrackId = 0,
     deployment: PlayerDeployment = loopbackDeployment(),
+    onObservation: (event: PlayerObservationEvent) => void = () => undefined,
   ) {
     this.#onSnapshot = onSnapshot;
     this.#trackId = trackId;
     this.#trackName = trackId === 0 ? "0-video-hq" : "1-video-lq";
     this.#deployment = deployment;
+    this.#onObservation = onObservation;
     this.#decoder = new CanvasVideoDecoder(canvas, (event) => this.#handleDecoderEvent(event));
     this.#watchdog = new ActivityWatchdog({
       onVideoStale: () => {
@@ -333,6 +341,7 @@ export class TeremoqPlayerEngine {
   #handleVideoObject(object: MoqObject, generation: number) {
     if (generation !== this.#generation || this.#stopped || object.status !== null) return;
     this.#markActivity(generation, true);
+    this.#onObservation({ type: "video-object", observedAtMs: performance.now() });
     this.#update({
       videoObjects: this.#snapshot.videoObjects + 1,
       videoBytes: this.#snapshot.videoBytes + object.payload.byteLength,
@@ -415,6 +424,7 @@ export class TeremoqPlayerEngine {
     }
     if (this.#snapshot.frames > 0 && this.#recoveryStartedAt === null) {
       this.#recoveryStartedAt = performance.now();
+      this.#onObservation({ type: "session-loss", observedAtMs: this.#recoveryStartedAt });
       this.#update({ sessionLosses: this.#snapshot.sessionLosses + 1 });
     }
     this.#disposeGeneration("reconexión automática");

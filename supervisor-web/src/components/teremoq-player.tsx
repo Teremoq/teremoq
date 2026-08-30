@@ -28,6 +28,11 @@ import {
   exportPlayerEvidence,
   isCollectiblePlayerEvidence,
 } from "@/lib/lan-lab/player-evidence";
+import {
+  INITIAL_WIFI_RECOVERY_SNAPSHOT,
+  WifiRecoveryObservation,
+  type WifiRecoverySnapshot,
+} from "@/lib/lan-lab/wifi-recovery";
 
 const INPUT_LATENCY_SAMPLES = 512;
 const EMPTY_LATENCY: LatencyPercentiles = {
@@ -51,6 +56,7 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputFrameRef = useRef<HTMLIFrameElement>(null);
   const engineRef = useRef<TeremoqPlayerEngine | null>(null);
+  const wifiRecoveryRef = useRef<WifiRecoveryObservation | null>(null);
   const uiGenerationRef = useRef(0);
   const playerStartedAtRef = useRef<number | null>(null);
   const [snapshot, setSnapshot] = useState(() => initialPlayerSnapshot(deployment));
@@ -58,6 +64,9 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
   const [playerElapsedMs, setPlayerElapsedMs] = useState<number | null>(null);
   const [playerStartedAtUtc, setPlayerStartedAtUtc] = useState<string | null>(null);
   const [playerEndedAtUtc, setPlayerEndedAtUtc] = useState<string | null>(null);
+  const [wifiRecovery, setWifiRecovery] = useState<WifiRecoverySnapshot>(
+    INITIAL_WIFI_RECOVERY_SNAPSHOT,
+  );
   const [inputPreviewUrl, setInputPreviewUrl] = useState<string | null>(null);
   const [inputMessage, setInputMessage] = useState(
     lanLab ? "Preview de entrada no disponible en el paquete LAN" : "Leyendo configuración del observador",
@@ -93,6 +102,16 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
       : snapshot.reason;
   const activeTracks =
     gatewaySnapshot?.tracks.filter((track) => track.status === "active").length ?? 0;
+
+  useEffect(() => {
+    if (!lanLab) return;
+    const observation = new WifiRecoveryObservation(setWifiRecovery);
+    wifiRecoveryRef.current = observation;
+    return () => {
+      observation.dispose();
+      wifiRecoveryRef.current = null;
+    };
+  }, [lanLab]);
 
   useEffect(() => {
     let stopped = false;
@@ -216,6 +235,7 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
     const canvas = canvasRef.current;
     if (!canvas || !compatible || !configurationAvailable) return;
     const generation = ++uiGenerationRef.current;
+    wifiRecoveryRef.current?.reset();
     playerStartedAtRef.current = performance.now();
     setPlayerStartedAtUtc(new Date().toISOString());
     setPlayerElapsedMs(null);
@@ -228,6 +248,15 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
       },
       trackId,
       deployment,
+      (event) => {
+        const observation = wifiRecoveryRef.current;
+        if (!lanLab || !observation) return;
+        if (event.type === "session-loss") {
+          observation.observeSessionLoss(event.observedAtMs);
+        } else {
+          observation.observeRecoveredObject(event.observedAtMs);
+        }
+      },
     );
     engineRef.current = engine;
     try {
@@ -245,6 +274,7 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
       }
       playerStartedAtRef.current = null;
       setPlayerEndedAtUtc(new Date().toISOString());
+      wifiRecoveryRef.current?.cancel();
       engineRef.current.stop();
       uiGenerationRef.current += 1;
       engineRef.current = null;
@@ -260,16 +290,16 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
       playerStartedAtUtc,
       playerEndedAtUtc,
     );
-    if (!isCollectiblePlayerEvidence(snapshot, context)) return;
+    if (!isCollectiblePlayerEvidence(snapshot, context, wifiRecovery)) return;
     const contents = `${JSON.stringify(
-      exportPlayerEvidence(snapshot, selectedVideoTrack, context),
+      exportPlayerEvidence(snapshot, selectedVideoTrack, context, wifiRecovery),
       null,
       2,
     )}\n`;
     const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = "teremoq-lan-player-1.json";
+    link.download = "local-browser-observation-user-exported.json";
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -281,6 +311,7 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
     engineRef.current?.stop();
     engineRef.current = null;
     setSnapshot(initialPlayerSnapshot(deployment));
+    wifiRecoveryRef.current?.reset();
     setSelectedVideoTrack(trackId);
     if (reconnect) void startSession(trackId);
   };
@@ -605,6 +636,35 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
           {active ? "Detener sesión" : `Conectar Track ${selectedVideoTrack}`}
         </button>
         {lanLab && (
+          <div className={styles.wifiRecovery} aria-labelledby="wifi-recovery-title">
+            <div>
+              <strong id="wifi-recovery-title">Recuperación Wi-Fi manual</strong>
+              <span role="status" aria-live="polite">{wifiRecoveryLabel(wifiRecovery)}</span>
+            </div>
+            <div>
+              <button
+                type="button"
+                disabled={!active || snapshot.videoObjects < 1}
+                onClick={() => wifiRecoveryRef.current?.arm()}
+              >
+                {wifiRecovery.armed ? "Rearmar observación" : "Armar observación"}
+              </button>
+              <button
+                type="button"
+                disabled={wifiRecovery.status !== "armed_waiting_loss" &&
+                  wifiRecovery.status !== "armed_waiting_recovery_object"}
+                onClick={() => wifiRecoveryRef.current?.cancel()}
+              >
+                Cancelar observación
+              </button>
+            </div>
+            <p>
+              Arma antes de desconectar manualmente. Sólo una pérdida de sesión posterior y
+              el primer Object nuevo recuperado generan la medida; vence a los 180 segundos.
+            </p>
+          </div>
+        )}
+        {lanLab && (
           <button
             type="button"
             disabled={!isCollectiblePlayerEvidence(
@@ -615,6 +675,7 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
                 playerStartedAtUtc,
                 playerEndedAtUtc,
               ),
+              wifiRecovery,
             )}
             onClick={downloadPlayerEvidence}
           >
@@ -623,7 +684,7 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
         )}
         <p className={styles.note}>
           {lanLab
-            ? "Recuperación manual disponible tras agotar el backoff: vuelve a conectar sin recargar ni crear reintentos ilimitados."
+            ? "La atribución Wi-Fi exige armado explícito; un reconnect ordinario no genera esa medida."
             : "G2G solo aparece al validar el timecode visual del fixture. En otras fuentes permanece no disponible."}
         </p>
       </aside>
@@ -638,6 +699,18 @@ function Metric({ label, value, accent = false }: { label: string; value: string
       <strong className={accent ? styles.accent : undefined}>{value}</strong>
     </div>
   );
+}
+
+function wifiRecoveryLabel(snapshot: WifiRecoverySnapshot) {
+  const labels: Record<WifiRecoverySnapshot["status"], string> = {
+    not_measured: "NO ARMADA · NO MEDIDA",
+    armed_waiting_loss: "ARMADA · ESPERANDO PÉRDIDA",
+    armed_waiting_recovery_object: "PÉRDIDA OBSERVADA · ESPERANDO OBJECT",
+    measured: snapshot.recoveryMs === null ? "MEDICIÓN INVÁLIDA" : `MEDIDA · ${snapshot.recoveryMs} ms`,
+    cancelled: "CANCELADA · NO MEDIDA",
+    expired: "EXPIRADA · NO MEDIDA",
+  };
+  return labels[snapshot.status];
 }
 
 function playerEvidenceContext(

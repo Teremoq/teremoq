@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "../moqt/session";
 import type { MoqObject } from "../moqt/subgroup";
@@ -86,7 +87,15 @@ function successfulHarness(clock = new TestClock()) {
     onEvent({ type: "connected" });
     return session;
   };
-  return { clock, sessions, events, signals, connector };
+  const epoch = Date.parse("2026-08-30T20:00:00.000Z");
+  return {
+    clock,
+    sessions,
+    events,
+    signals,
+    connector,
+    nowUtc: () => new Date(epoch + clock.time).toISOString(),
+  };
 }
 
 describe("generador ligero LAN", () => {
@@ -187,6 +196,13 @@ describe("generador ligero LAN", () => {
       duration_ms: 600_000,
     });
     expect(JSON.stringify(evidence)).not.toContain("authorized_clients");
+    const fixture = JSON.parse(readFileSync(
+      new URL("fixtures/lightweight-level-5.valid.json", import.meta.url),
+      "utf8",
+    )) as Record<string, unknown>;
+    expect(Object.keys(evidence).sort()).toEqual(Object.keys(fixture).sort());
+    expect(Object.keys(evidence.unavailable_measurements).sort())
+      .toEqual(Object.keys(fixture.unavailable_measurements as object).sort());
   });
 
   it("aborta todos los handshakes pendientes y no deja timers al detener", async () => {

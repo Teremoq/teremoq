@@ -176,9 +176,18 @@ cardinalidad, duración mínima de 600 segundos, identidad pública, timestamps 
 relaciones y SHA-256, pero devuelve
 `not_attested_user_export`; el hash detecta cambios, no demuestra autenticidad.
 
+Para el nivel 1, antes del corte manual se pulsa **Armar observación**. La
+ventana dura como máximo 180 segundos y sólo mide desde la primera pérdida de
+sesión posterior al armado hasta el primer Object nuevo recuperado. Rearmar
+reemplaza la ventana anterior; cancelar, expirar o desmontar no produce una
+medición. Un reconnect no armado nunca se atribuye a Wi-Fi. El contrato JSON
+cerrado, sus límites y fixtures para Platform están en
+[`LAN-EVIDENCE-CONTRACT.md`](LAN-EVIDENCE-CONTRACT.md).
+
 No se infieren espectadores autorizados, subscribers de red,
-ingest-to-publish, pérdida/jitter QUIC ni recuperación Wi-Fi. Permanecen
-`not_measured` o `not_available`. G2G sólo es `measured` si el player decodificó
+ingest-to-publish ni pérdida/jitter QUIC. La recuperación Wi-Fi sólo existe con
+el armado explícito anterior; fuera de ese flujo permanece no medida/no
+disponible. G2G sólo es `measured` si el player decodificó
 el timecode visual; con cero muestras queda `null/not_available`.
 
 El paquete LAN no consulta snapshots, playback, operaciones ni el endpoint de

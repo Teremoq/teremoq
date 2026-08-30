@@ -100,7 +100,7 @@ export function LanLoadGeneratorPanel({
     const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = `teremoq-lan-load-${snapshot.requested}.json`;
+    link.download = "local-browser-observation-user-exported.json";
     link.click();
     URL.revokeObjectURL(url);
   };

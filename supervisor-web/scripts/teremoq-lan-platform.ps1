@@ -379,7 +379,7 @@ switch ($Action) {
       ConvertTo-Json -Compress
   }
   "collect" {
-    $EvidenceName = if ($Level -eq 1) { "teremoq-lan-player-1.json" } else { "teremoq-lan-load-$Level.json" }
+    $EvidenceName = "local-browser-observation-user-exported.json"
     $MetricsPath = Join-Path $ResolvedEvidence $EvidenceName
     $MetricsItem = Get-Item -LiteralPath $MetricsPath
     if ($MetricsItem.PSIsContainer -or

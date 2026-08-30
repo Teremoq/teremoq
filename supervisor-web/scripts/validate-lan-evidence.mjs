@@ -3,6 +3,11 @@ import { open } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const MAX_EVIDENCE_BYTES = 65_536;
+const MAX_EVIDENCE_DURATION_MS = 86_400_000;
+const MAX_TIMESTAMP_DRIFT_MS = 5_000;
+const MAX_WIFI_RECOVERY_MS = 180_000;
+const WIFI_RECOVERY_PROVENANCE =
+  "operator-armed-browser-monotonic-session-loss-to-first-recovered-object";
 const LEVELS = new Set([1, 5, 10, 25]);
 const LOAD_ERRORS = new Set([
   null,
@@ -29,6 +34,8 @@ const PLAYER_KEYS = [
   "presentation_rx_to_canvas_p95_ms", "requested_sessions", "schema_version",
   "session_losses", "session_recoveries", "source", "track", "unavailable_measurements",
   "export_kind", "run_id", "source_commit", "started_at_utc", "ended_at_utc",
+  "wifi_recovery_status", "wifi_recovery_armed", "wifi_loss_observed",
+  "wifi_recovery_observed", "wifi_recovery_ms", "wifi_recovery_provenance",
 ];
 
 export function validateLanEvidence(value, level) {
@@ -55,7 +62,7 @@ function validateLoad(value, level) {
       !nonNegativeInteger(value.first_connected_ms) ||
       !nonNegativeInteger(value.all_active_ms) || value.all_active_ms < value.first_connected_ms ||
       !nonNegativeInteger(value.last_object_ms) || value.last_object_ms < value.first_connected_ms ||
-      !nonNegativeInteger(value.duration_ms) || value.duration_ms < 600_000 ||
+      !validDuration(value) ||
       value.duration_ms < value.last_object_ms ||
       !nonNegativeInteger(value.session_losses) ||
       !nonNegativeInteger(value.session_recoveries) || value.session_recoveries > value.session_losses ||
@@ -80,16 +87,24 @@ function validatePlayer(value) {
       !nonNegativeInteger(value.frames_observed) || value.frames_observed < 1 ||
       !nonNegativeInteger(value.objects_observed) || value.objects_observed < 1 ||
       !nonNegativeInteger(value.bytes_observed) || value.bytes_observed < 1 ||
-      !nonNegativeInteger(value.duration_ms) || value.duration_ms < 600_000 ||
+      !validDuration(value) ||
       typeof value.presentation_rx_to_canvas_p95_ms !== "number" ||
       !Number.isFinite(value.presentation_rx_to_canvas_p95_ms) ||
       value.presentation_rx_to_canvas_p95_ms < 0 ||
-      !validG2g(value.g2g_measurement_status, value.g2g_p95_ms) ||
+      value.presentation_rx_to_canvas_p95_ms > value.duration_ms ||
+      !validG2g(value.g2g_measurement_status, value.g2g_p95_ms, value.duration_ms) ||
       !nonNegativeInteger(value.session_losses) ||
       !nonNegativeInteger(value.session_recoveries) || value.session_recoveries > value.session_losses ||
       (value.session_recoveries === 0
         ? value.last_session_recovery_ms !== null
-        : !nonNegativeInteger(value.last_session_recovery_ms)) ||
+        : !nonNegativeInteger(value.last_session_recovery_ms) ||
+          value.last_session_recovery_ms > value.duration_ms) ||
+      value.wifi_recovery_status !== "measured" || value.wifi_recovery_armed !== true ||
+      value.wifi_loss_observed !== true || value.wifi_recovery_observed !== true ||
+      !nonNegativeInteger(value.wifi_recovery_ms) || value.wifi_recovery_ms < 1 ||
+      value.wifi_recovery_ms > MAX_WIFI_RECOVERY_MS ||
+      value.wifi_recovery_provenance !== WIFI_RECOVERY_PROVENANCE ||
+      value.session_losses < 1 ||
       value.last_error !== null) {
     throw new Error("evidencia del player incompleta o inconsistente");
   }
@@ -100,10 +115,10 @@ function validateUnavailable(value, lightweight) {
   if (!isRecord(value)) throw new Error("mediciones no disponibles inválidas");
   const baseKeys = [
     "authorized_viewers", "ingest_to_publish_ms", "network_subscribers",
-    "quic_jitter_ms", "quic_packet_loss", "wifi_recovery_ms",
+    "quic_jitter_ms", "quic_packet_loss",
   ];
   exactKeys(value, lightweight
-    ? [...baseKeys, "frames_observed", "g2g_p95_ms", "presentation_p95_ms"]
+    ? [...baseKeys, "wifi_recovery_ms", "frames_observed", "g2g_p95_ms", "presentation_p95_ms"]
     : baseKeys);
   if (value.authorized_viewers !== "not_measured" ||
       [
@@ -111,8 +126,12 @@ function validateUnavailable(value, lightweight) {
         value.network_subscribers,
         value.quic_jitter_ms,
         value.quic_packet_loss,
-        value.wifi_recovery_ms,
-        ...(lightweight ? [value.frames_observed, value.g2g_p95_ms, value.presentation_p95_ms] : []),
+        ...(lightweight ? [
+          value.wifi_recovery_ms,
+          value.frames_observed,
+          value.g2g_p95_ms,
+          value.presentation_p95_ms,
+        ] : []),
       ].some((status) => status !== "not_available")) {
     throw new Error("mediciones QUIC inferidas");
   }
@@ -130,9 +149,18 @@ function canonicalUtc(value) {
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
 
-function validG2g(status, value) {
+function validG2g(status, value, durationMs) {
   return (status === "not_available" && value === null) ||
-    (status === "measured" && typeof value === "number" && Number.isFinite(value) && value >= 0);
+    (status === "measured" && typeof value === "number" && Number.isFinite(value) &&
+      value >= 0 && value <= durationMs);
+}
+
+function validDuration(value) {
+  if (!nonNegativeInteger(value.duration_ms) || value.duration_ms < 600_000 ||
+      value.duration_ms > MAX_EVIDENCE_DURATION_MS) return false;
+  const wallDurationMs = Date.parse(value.ended_at_utc) - Date.parse(value.started_at_utc);
+  return Number.isFinite(wallDurationMs) &&
+    Math.abs(wallDurationMs - value.duration_ms) <= MAX_TIMESTAMP_DRIFT_MS;
 }
 
 function exactKeys(value, keys) {

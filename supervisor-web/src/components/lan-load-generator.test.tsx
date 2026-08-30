@@ -37,6 +37,8 @@ describe("superficie de carga ligera LAN", () => {
     expect(html).toContain("no medidos");
     expect(html).not.toContain("192.168.10.20");
     expect(html).not.toContain("aaaaaaaa");
+    expect(readFileSync("src/components/lan-load-generator.tsx", "utf8"))
+      .toContain('link.download = "local-browser-observation-user-exported.json"');
   });
 
   it("no crea canvas, decoder, Gateway, input ni endpoints mutables", () => {

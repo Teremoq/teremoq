@@ -30,4 +30,16 @@ describe("superficie del player LAN", () => {
     expect(component).toContain('disabled={!compatible || !configurationAvailable}');
     expect(component).toContain("Configuración LAN local ausente o inválida");
   });
+
+  it("arma de forma explícita y cancelable la recuperación Wi-Fi sólo en LAN", () => {
+    expect(component).toContain("Armar observación");
+    expect(component).toContain("Rearmar observación");
+    expect(component).toContain("Cancelar observación");
+    expect(component).toContain('disabled={!active || snapshot.videoObjects < 1}');
+    expect(component).toContain('event.type === "session-loss"');
+    expect(component).toContain("observation.observeRecoveredObject(event.observedAtMs)");
+    expect(component).toContain("wifiRecoveryRef.current?.cancel()");
+    expect(component).toContain("vence a los 180 segundos");
+    expect(component).toContain('link.download = "local-browser-observation-user-exported.json"');
+  });
 });

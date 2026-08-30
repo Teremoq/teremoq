@@ -37,17 +37,26 @@ contadores reales suficientes.
 
 - Nivel 1: frames, Objects, bytes, presentation/RX-to-canvas p95, G2G p95 sólo
   con timecode visual, pérdidas/recuperaciones y tiempo hasta el primer frame
-  recuperado.
+  recuperado. La recuperación Wi-Fi sólo se mide tras armado explícito del
+  operador, pérdida de sesión posterior y primer Object nuevo dentro de una
+  ventana cancelable de 180 segundos.
 - Niveles 5/10/25: sesiones solicitadas, pico activo, cierres, Objects, bytes,
   pérdidas/recuperaciones y tiempo hasta el primer Object recuperado.
 - `authorized_viewers` queda `not_measured`; frames/presentation/G2G en carga,
-  ingest-to-publish, subscribers de red, pérdida/jitter QUIC y causalidad Wi-Fi
-  quedan `not_available`.
+  ingest-to-publish, subscribers de red y pérdida/jitter QUIC quedan
+  `not_available`. La atribución Wi-Fi sólo existe para el flujo armado de
+  nivel 1; nunca se infiere de un reconnect ordinario.
 
 La descarga es `local-browser-observation-user-exported`. El operador la mueve
 manualmente al `EvidenceDirectory`; `collect` valida el esquema cerrado y
 registra SHA-256 como detección de cambios, con estado
 `not_attested_user_export`. No se presenta como evidencia autenticada.
+
+El contrato fuente exacto que Platform debe consumir, incluidos nombres,
+tipos, límites, invariantes y fixtures diferenciados, está en
+`LAN-EVIDENCE-CONTRACT.md`; no se sustituyen `duration_ms`, `frames_observed`,
+`objects_observed`, `presentation_rx_to_canvas_p95_ms`, `session_losses` o
+`session_recoveries` por aliases de Platform.
 
 ## Contrato Platform y paquete
 
@@ -69,7 +78,7 @@ commit; no se anticipan en este documento.
 ## Verificación
 
 - Runtime: Node Linux 22 (`node:22-bookworm-slim`).
-- `npm test`: 25 ficheros, 215/215 tests.
+- `npm test`: 26 ficheros, 226/226 tests.
 - `npm run lint`: correcto.
 - `tsc --noEmit`: correcto.
 - `npm run build`: correcto; `/` loopback estático y `/lan-load` no utilizable.
