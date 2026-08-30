@@ -67,15 +67,16 @@ image digest
 `sha256:252c2e26f468c25fea1e63ecde1bc3198ad6e9dbb57f5ed3236bddcb2281b3a7`.
 
 The SBOM describes source commit
-`b5c4d14237c575f14f8661c02ff3ef98142da8e1`. Relative to the previous SBOM
-source, this release-candidate state removes two tracked Python bytecode files
-and adds scoped ignore rules; it does not change manifests, dependencies, or
-locks. The later commit that stores the refreshed SBOM has the same constraint.
+`df769b3df973665183bc27ad5d33af6c4c99944b`. Relative to the previous SBOM
+source, this release-candidate state updates `chacha20` from 0.10.1 to 0.10.2
+and adds approved platform/two-host artifacts. The later commit that stores the
+refreshed SBOM does not change manifests, dependencies, locks, or product code.
 
 The result contains 857 components: 375 Rust crates and 482 npm packages,
 including npm development dependencies. The three MoQ components each record
 the complete Git source and revision, and `web-transport` records version
-`0.10.9` and its crates.io checksum.
+`0.10.9` and its crates.io checksum. The Rust inventory contains `chacha20`
+0.10.2 and no `chacha20` 0.10.1 component.
 
 ### Reproduce from the clean source commit
 
@@ -84,7 +85,7 @@ outside the temporary source checkout, and no network is available to the
 generator:
 
 ```sh
-teremoq_source_commit=b5c4d14237c575f14f8661c02ff3ef98142da8e1
+teremoq_source_commit=df769b3df973665183bc27ad5d33af6c4c99944b
 teremoq_clean_root="$(mktemp -d)"
 mkdir -p "$teremoq_clean_root/output"
 git worktree add --detach "$teremoq_clean_root/source" "$teremoq_source_commit"
@@ -108,7 +109,7 @@ git worktree remove "$teremoq_clean_root/source"
 Two independent clean-checkout generations produced the same SHA-256:
 
 ```text
-edc520b65564035b0e1b1bf7c8fbcf7f837b4529ed0be1385ea7c7fc0e733097  teremoq-local.syft.json
+6365310f51ea1741500f80f364facbd82a8f77476bee03af2b287e2be210fc6e  teremoq-local.syft.json
 ```
 
 ### Validate the committed SBOM
