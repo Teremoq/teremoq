@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import socket
 import stat
@@ -23,10 +24,28 @@ from udp_proxy import exact_private_ipv4, read_regular_limited
 COMPONENTS = ("relay", "gateway", "source")
 AUTH_KEYS = {
     "schema_version", "run_id", "source_commit", "server_preflight_sha256",
-    "client_preflight_sha256", "firewall_attestation_sha256", "server_preflight_gate",
-    "client_preflight_gate", "proxy_attestation_sha256", "legacy_conflicts_absent", "owner_integrations_ready",
-    "operator_authorized", "owner_integration_commit", "commands_sha256",
+    "client_preflight_sha256", "wsl_preflight_sha256", "firewall_attestation_sha256",
+    "proxy_attestation_sha256", "owner_integrations_ready", "operator_authorized",
+    "owner_integration_commit", "commands_sha256",
 }
+CHECK_KEYS = {"check", "status", "value", "evidence_quality"}
+WINDOWS_PREFLIGHT_KEYS = {
+    "schema_version", "report_kind", "run_id", "source_commit", "role", "server_ipv4",
+    "client_ipv4", "prefix_length", "network_profile", "expected_wsl_mode", "checks",
+}
+FIREWALL_ATTESTATION_KEYS = {
+    "schema_version", "run_id", "source_commit", "server_ipv4", "client_ipv4",
+    "network_profile", "protocol", "local_port", "classic_rule_name", "hyperv_rule_name",
+    "classic_rule_count", "hyperv_rule_count", "edge_traversal_policy", "firewall_verified",
+    "default_inbound_action_changed",
+}
+PROXY_ATTESTATION_KEYS = {
+    "schema_version", "run_id", "source_commit", "server_ipv4", "client_ipv4",
+    "network_mode", "network_profile", "windows_firewall_rule_name", "hyperv_firewall_rule_name",
+    "firewall_verified", "relay_san_integration_commit", "certificate_fingerprint_sha256",
+}
+LEGACY_UDP_PORTS = (4433, 9000)
+LEGACY_TCP_PORTS = (4433, 5678, 6379, 11434)
 
 
 def fail(message: str) -> "NoReturn":
@@ -87,15 +106,253 @@ def parse_authorization(path: Path) -> dict[str, str]:
         fail("invalid authorization commit")
     if len(values["owner_integration_commit"]) != 40 or any(c not in "0123456789abcdef" for c in values["owner_integration_commit"]):
         fail("invalid owner integration commit")
-    for key in ("commands_sha256", "server_preflight_sha256", "client_preflight_sha256", "firewall_attestation_sha256", "proxy_attestation_sha256"):
+    for key in ("commands_sha256", "wsl_preflight_sha256", "server_preflight_sha256", "client_preflight_sha256", "firewall_attestation_sha256", "proxy_attestation_sha256"):
         if len(values[key]) != 64 or any(c not in "0123456789abcdef" for c in values[key]):
             fail(f"invalid authorization digest: {key}")
-    for key in ("server_preflight_gate", "client_preflight_gate"):
-        if values[key] != "pass":
-            fail(f"{key} must be pass")
-    for key in ("legacy_conflicts_absent", "owner_integrations_ready", "operator_authorized"):
+    for key in ("owner_integrations_ready", "operator_authorized"):
         if values[key] != "true":
             fail(f"{key} must be explicitly true")
+    return values
+
+
+def read_bound_bytes(path: Path, maximum: int, expected_sha256: str, label: str) -> bytes:
+    """Read, hash and snapshot one evidence file through one stable descriptor."""
+    if not path.is_absolute():
+        fail(f"{label} path must be absolute")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError(f"{label} must be a readable non-symlink regular file") from error
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size <= 0 or before.st_size > maximum:
+            fail(f"{label} size or type is outside policy")
+        chunks: list[bytes] = []
+        total = 0
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, min(65536, maximum + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > maximum:
+                fail(f"{label} exceeds its byte limit")
+            chunks.append(chunk)
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in stable_fields) or total != before.st_size:
+            fail(f"{label} changed during its single-descriptor read")
+        if digest.hexdigest() != expected_sha256:
+            fail(f"authorization evidence digest mismatch: {label}")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def decode_json_object(payload: bytes, label: str) -> dict[str, object]:
+    try:
+        text = payload.decode("utf-8-sig", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label} encoding is invalid") from error
+
+    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                fail(f"{label} contains a duplicate JSON property: {key}")
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(text, object_pairs_hook=reject_duplicates)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{label} is not valid JSON") from error
+    if not isinstance(document, dict):
+        fail(f"{label} must be one JSON object")
+    return document
+
+
+def forbidden_evidence_token(value: str) -> bool:
+    return re.search(r"(?:^|[^a-z])(blocked|pending|unavailable|unknown|not_measured)(?:$|[^a-z])", value, re.IGNORECASE) is not None
+
+
+def validate_checks(document: dict[str, object], expected_names: set[str], label: str) -> dict[str, dict[str, str]]:
+    checks = document.get("checks")
+    if not isinstance(checks, list) or not 1 <= len(checks) <= 64:
+        fail(f"{label} check cardinality is outside policy")
+    parsed: dict[str, dict[str, str]] = {}
+    for index, record in enumerate(checks, 1):
+        if not isinstance(record, dict) or set(record) != CHECK_KEYS:
+            fail(f"{label} check {index} schema is not closed")
+        if not all(isinstance(record[key], str) and 0 < len(record[key]) <= 1024 for key in CHECK_KEYS):
+            fail(f"{label} check {index} has an invalid field")
+        name = record["check"]
+        if name == "inherited_docker_publication":
+            fail(f"{label} reports an inherited Docker listener conflict")
+        if name in parsed:
+            fail(f"{label} contains a duplicate check: {name}")
+        parsed[name] = record  # type: ignore[assignment]
+        if record["status"] not in {"pass", "observed"} or record["evidence_quality"] not in {"real", "configured"} or \
+           forbidden_evidence_token(record["value"]):
+            fail(f"{label} check is not activation-ready: {name}")
+    if set(parsed) != expected_names:
+        fail(f"{label} check-name schema is incomplete or unknown")
+    if parsed["preflight_gate"]["status"] != "pass" or parsed["preflight_gate"]["value"] != "ready":
+        fail(f"{label} preflight gate is not pass/ready")
+    return parsed
+
+
+SERVER_WINDOWS_CHECKS = {
+    "windows_caption", "windows_version", "configured_private_ip_present", "network_profile",
+    "wifi_adapter", "wifi_link_speed", "wifi_band", "wsl_mode", "expected_wsl_mode_gate",
+    "clock_offset", "mtu", "logical_cpu", "physical_memory_mib", "free_disk_mib",
+    "browser_msedge.exe", "browser_chrome.exe", "docker_server", "wslconfig_present", "preflight_gate",
+    *(f"listener_udp_{port}" for port in (*LEGACY_UDP_PORTS, 14433, 19000)),
+    *(f"listener_tcp_{port}" for port in LEGACY_TCP_PORTS),
+}
+CLIENT_WINDOWS_CHECKS = {
+    "windows_caption", "windows_version", "client_private_ip_present", "network_profile", "mtu",
+    "wifi_radio", "wifi_5ghz", "wsl_ipv4_mode", "browser_edge", "browser_chrome", "browser_gate",
+    "node_runtime_22_x", "player_loopback_tcp_3000", "clock_offset", "logical_cpu",
+    "physical_memory_mib", "free_disk_mib", "icmp_echo_loss_percent_approximation",
+    "icmp_echo_rtt_average_ms_approximation", "inbound_client_firewall", "preflight_gate",
+}
+WSL_PREFLIGHT_CHECKS = {
+    "schema_version", "report_kind", "run_id", "source_commit", "role", "server_ipv4", "client_ipv4",
+    "prefix_length", "network_profile", "expected_wsl_mode", "wsl_kernel", "windows_wsl_mode_observed",
+    "clock_synchronized", "route_to_peer", "route_interface", "mtu", "cpu_cores", "available_memory_mib",
+    "available_disk_mib", "tool_openssl", "tool_curl", "tool_sha256sum", "tool_tar", "docker_server",
+    "preflight_gate", *(f"listener_udp_{port}" for port in (*LEGACY_UDP_PORTS, 14433, 19000)),
+    *(f"listener_tcp_{port}" for port in LEGACY_TCP_PORTS),
+}
+
+
+def validate_listener_checks(checks: dict[str, dict[str, str]], label: str, udp_ports: tuple[int, ...], tcp_ports: tuple[int, ...]) -> None:
+    for protocol, ports in (("udp", udp_ports), ("tcp", tcp_ports)):
+        for port in ports:
+            record = checks[f"listener_{protocol}_{port}"]
+            if record["status"] != "pass" or record["value"] not in {"free", "absent"} or record["evidence_quality"] != "real":
+                fail(f"{label} listener conflict remains on {protocol.upper()}/{port}")
+
+
+def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commit: str, server_ip: str,
+                            client_ip: str, prefix_length: int, network_profile: str) -> dict[str, dict[str, str]]:
+    label = f"Windows {role} preflight"
+    document = decode_json_object(payload, label)
+    if set(document) != WINDOWS_PREFLIGHT_KEYS:
+        fail(f"{label} top-level schema is not closed")
+    expected_mode = "mirrored" if role == "server" else "nat"
+    expected = {
+        "schema_version": 1, "report_kind": "teremoq-lan-windows-preflight-v1", "run_id": run_id,
+        "source_commit": source_commit, "role": role, "server_ipv4": server_ip, "client_ipv4": client_ip,
+        "prefix_length": prefix_length, "network_profile": network_profile, "expected_wsl_mode": expected_mode,
+    }
+    if any(document.get(key) != value for key, value in expected.items()):
+        fail(f"{label} run/IP/profile/WSL/commit binding mismatch")
+    checks = validate_checks(document, SERVER_WINDOWS_CHECKS if role == "server" else CLIENT_WINDOWS_CHECKS, label)
+    if checks["network_profile"] != {"check": "network_profile", "status": "pass", "value": network_profile, "evidence_quality": "real"}:
+        fail(f"{label} current network profile mismatch")
+    mode_key = "expected_wsl_mode_gate" if role == "server" else "wsl_ipv4_mode"
+    if checks[mode_key]["status"] != "pass" or checks[mode_key]["value"] != expected_mode:
+        fail(f"{label} WSL mode mismatch")
+    if role == "server":
+        validate_listener_checks(checks, label, (*LEGACY_UDP_PORTS, 14433, 19000), LEGACY_TCP_PORTS)
+    elif checks["player_loopback_tcp_3000"]["status"] != "pass" or checks["player_loopback_tcp_3000"]["value"] != "free":
+        fail("Windows client preflight reports loopback TCP/3000 occupied")
+    return checks
+
+
+def parse_wsl_preflight(payload: bytes, run_id: str, source_commit: str, server_ip: str, client_ip: str,
+                        prefix_length: int, network_profile: str) -> dict[str, dict[str, str]]:
+    label = "WSL server preflight"
+    try:
+        text = payload.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label} encoding is invalid") from error
+    lines = text.splitlines()
+    if not lines or lines[0] != "check\tstatus\tvalue\tevidence_quality" or len(lines) > 65:
+        fail(f"{label} header/cardinality is outside policy")
+    records: list[dict[str, str]] = []
+    for number, line in enumerate(lines[1:], 2):
+        fields = line.split("\t")
+        if len(fields) != 4 or not all(fields):
+            fail(f"{label} line {number} must contain four fields")
+        records.append(dict(zip(("check", "status", "value", "evidence_quality"), fields)))
+    checks = validate_checks({"checks": records}, WSL_PREFLIGHT_CHECKS, label)
+    bindings = {
+        "schema_version": "1", "report_kind": "teremoq-lan-wsl-preflight-v1", "run_id": run_id,
+        "source_commit": source_commit, "role": "server", "server_ipv4": server_ip, "client_ipv4": client_ip,
+        "prefix_length": str(prefix_length), "network_profile": network_profile, "expected_wsl_mode": "mirrored",
+    }
+    for name, value in bindings.items():
+        if checks[name] != {"check": name, "status": "pass", "value": value, "evidence_quality": "configured"}:
+            fail(f"{label} binding mismatch: {name}")
+    if checks["windows_wsl_mode_observed"] != {"check": "windows_wsl_mode_observed", "status": "pass", "value": "mirrored", "evidence_quality": "real"}:
+        fail("WSL server NAT/unavailable mode is forbidden")
+    validate_listener_checks(checks, label, (*LEGACY_UDP_PORTS, 14433, 19000), LEGACY_TCP_PORTS)
+    return checks
+
+
+def parse_firewall_attestation(payload: bytes, run_id: str, source_commit: str, server_ip: str,
+                               client_ip: str, network_profile: str) -> dict[str, object]:
+    label = "firewall verification"
+    document = decode_json_object(payload, label)
+    if set(document) != FIREWALL_ATTESTATION_KEYS:
+        fail("firewall verification schema is not closed")
+    classic = f"Teremoq-LAN-{run_id}-Defender-QUIC-UDP-14433"
+    hyperv = f"Teremoq-LAN-{run_id}-HyperV-QUIC-UDP-14433"
+    expected = {
+        "schema_version": 1, "run_id": run_id, "source_commit": source_commit, "server_ipv4": server_ip,
+        "client_ipv4": client_ip, "network_profile": network_profile, "protocol": "UDP", "local_port": 14433,
+        "classic_rule_name": classic, "hyperv_rule_name": hyperv, "classic_rule_count": 1,
+        "hyperv_rule_count": 1, "edge_traversal_policy": "Block", "firewall_verified": True,
+        "default_inbound_action_changed": False,
+    }
+    if document != expected:
+        fail("firewall verification run/rule/property binding mismatch")
+    return document
+
+
+def parse_closed_tsv(payload: bytes, allowed: set[str], label: str) -> dict[str, str]:
+    try:
+        text = payload.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label} encoding is invalid") from error
+    values: dict[str, str] = {}
+    lines = text.splitlines()
+    if len(lines) > len(allowed) + 16:
+        fail(f"{label} cardinality is outside policy")
+    for number, raw in enumerate(lines, 1):
+        if not raw or raw.startswith("#"):
+            continue
+        fields = raw.split("\t")
+        if len(fields) != 2 or not all(fields):
+            fail(f"invalid {label} line {number}")
+        key, value = fields
+        if key not in allowed or key in values:
+            fail(f"unknown or duplicate {label} key: {key}")
+        values[key] = value
+    if set(values) != allowed:
+        fail(f"{label} schema is incomplete")
+    return values
+
+
+def parse_proxy_attestation(payload: bytes, run_id: str, source_commit: str, owner_commit: str,
+                            server_ip: str, client_ip: str, network_profile: str) -> dict[str, str]:
+    values = parse_closed_tsv(payload, PROXY_ATTESTATION_KEYS, "proxy attestation")
+    classic = f"Teremoq-LAN-{run_id}-Defender-QUIC-UDP-14433"
+    hyperv = f"Teremoq-LAN-{run_id}-HyperV-QUIC-UDP-14433"
+    expected = {
+        "schema_version": "1", "run_id": run_id, "source_commit": source_commit, "server_ipv4": server_ip,
+        "client_ipv4": client_ip, "network_mode": "mirrored", "network_profile": network_profile,
+        "windows_firewall_rule_name": classic, "hyperv_firewall_rule_name": hyperv,
+        "firewall_verified": "true", "relay_san_integration_commit": owner_commit,
+    }
+    if any(values.get(key) != value for key, value in expected.items()) or \
+       not re.fullmatch(r"[0-9a-f]{64}", values["certificate_fingerprint_sha256"]):
+        fail("proxy attestation run/IP/profile/firewall/owner binding mismatch")
     return values
 
 
@@ -291,13 +548,14 @@ def process_metrics(processes: dict[str, subprocess.Popen[bytes]]) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    for name in ("commands", "authorization", "server-preflight", "client-preflight", "firewall-attestation", "certificate", "key", "fingerprint", "identity-profile", "proxy-attestation", "repo-root", "artifact-root", "state-dir"):
+    for name in ("commands", "authorization", "wsl-preflight", "server-preflight", "client-preflight", "firewall-attestation", "certificate", "key", "fingerprint", "identity-profile", "proxy-attestation", "repo-root", "artifact-root", "state-dir"):
         parser.add_argument(f"--{name}", required=True, type=Path)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--owner-commit", required=True)
     parser.add_argument("--server-ip", required=True)
     parser.add_argument("--client-ip", required=True)
+    parser.add_argument("--network-profile", required=True, choices=("Public", "Private"))
     parser.add_argument("--moq-namespace", required=True)
     parser.add_argument("--prefix-length", required=True, type=int)
     parser.add_argument("--max-clients", required=True, type=int)
@@ -308,6 +566,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    server_ip = exact_private_ipv4(args.server_ip, "server_ip")
+    client_ip = exact_private_ipv4(args.client_ip, "client_ip")
+    if args.prefix_length < 8 or args.prefix_length > 30:
+        fail("prefix length is outside policy")
     authorization = parse_authorization(args.authorization)
     if authorization["run_id"] != args.run_id or authorization["source_commit"] != args.source_commit or \
        authorization["owner_integration_commit"] != args.owner_commit:
@@ -315,14 +577,26 @@ def main() -> int:
     verify_repository(args.repo_root, args.source_commit, args.owner_commit)
     verify_artifact_root(args.artifact_root, args.run_id, args.source_commit)
     evidence = {
-        "server_preflight_sha256": args.server_preflight,
-        "client_preflight_sha256": args.client_preflight,
-        "firewall_attestation_sha256": args.firewall_attestation,
-        "proxy_attestation_sha256": args.proxy_attestation,
+        "wsl_preflight_sha256": (args.wsl_preflight, 32768, "WSL server preflight"),
+        "server_preflight_sha256": (args.server_preflight, 65536, "Windows server preflight"),
+        "client_preflight_sha256": (args.client_preflight, 65536, "Windows client preflight"),
+        "firewall_attestation_sha256": (args.firewall_attestation, 8192, "firewall verification"),
+        "proxy_attestation_sha256": (args.proxy_attestation, 8192, "proxy attestation"),
     }
-    for key, path in evidence.items():
-        if sha256_bounded(path) != authorization[key]:
-            fail(f"authorization evidence digest mismatch: {key}")
+    evidence_payloads = {
+        key: read_bound_bytes(path, maximum, authorization[key], label)
+        for key, (path, maximum, label) in evidence.items()
+    }
+    parse_proxy_attestation(evidence_payloads["proxy_attestation_sha256"], args.run_id, args.source_commit,
+                            args.owner_commit, server_ip, client_ip, args.network_profile)
+    parse_wsl_preflight(evidence_payloads["wsl_preflight_sha256"], args.run_id, args.source_commit,
+                        server_ip, client_ip, args.prefix_length, args.network_profile)
+    parse_windows_preflight(evidence_payloads["server_preflight_sha256"], "server", args.run_id,
+                            args.source_commit, server_ip, client_ip, args.prefix_length, args.network_profile)
+    parse_windows_preflight(evidence_payloads["client_preflight_sha256"], "client", args.run_id,
+                            args.source_commit, server_ip, client_ip, args.prefix_length, args.network_profile)
+    parse_firewall_attestation(evidence_payloads["firewall_attestation_sha256"], args.run_id, args.source_commit,
+                               server_ip, client_ip, args.network_profile)
     commands = parse_commands(args.commands, args.source_commit, authorization["commands_sha256"], args.repo_root, args.artifact_root)
     for path, maximum in ((args.key, 32768), (args.certificate, 32768), (args.fingerprint, 128)):
         read_regular_limited(path, maximum, "ascii")
@@ -355,9 +629,16 @@ def main() -> int:
     pid_file = args.state_dir / "lab.pid"
     ready_file = args.state_dir / "lab.ready"
     metrics_file = args.state_dir / "runtime-metrics.tsv"
+    proxy_attestation_snapshot = args.state_dir / "proxy-attestation.snapshot.tsv"
     created_state: list[Path] = []
     proxy_launched = False
     try:
+        with proxy_attestation_snapshot.open("xb") as stream:
+            created_state.append(proxy_attestation_snapshot)
+            stream.write(evidence_payloads["proxy_attestation_sha256"])
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(proxy_attestation_snapshot, 0o400)
         with pid_file.open("x", encoding="ascii") as stream:
             stream.write(f"{os.getpid()}\n")
         created_state.append(pid_file)
@@ -397,7 +678,7 @@ def main() -> int:
             "--prefix-length", str(args.prefix_length),
             "--max-clients", str(args.max_clients), "--association-margin", str(args.association_margin),
             "--idle-timeout", str(args.idle_timeout), "--certificate", str(args.certificate),
-            "--fingerprint", str(args.fingerprint), "--attestation", str(args.proxy_attestation),
+            "--fingerprint", str(args.fingerprint), "--attestation", str(proxy_attestation_snapshot),
             "--state-dir", str(args.state_dir), "--run-id", args.run_id, "--source-commit", args.source_commit,
             "--owner-commit", args.owner_commit,
         ]

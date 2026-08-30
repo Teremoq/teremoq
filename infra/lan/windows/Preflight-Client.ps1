@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)][string]$RunId,
+    [Parameter(Mandatory = $true)][string]$SourceCommit,
     [Parameter(Mandatory = $true)][string]$ServerIPv4,
     [Parameter(Mandatory = $true)][string]$ClientIPv4,
     [Parameter(Mandatory = $true)][ValidateRange(8, 30)][int]$PrefixLength,
@@ -17,11 +19,16 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 $checks = New-Object System.Collections.Generic.List[object]
+$script:PreflightBlocked = $false
 
 function Add-Check([string]$Name, [string]$Status, $Value, [string]$Quality) {
     if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
         $Value = 'unavailable'
         $Quality = 'unavailable'
+    }
+    if ($Name -ne 'preflight_gate' -and ($Status -notin @('pass', 'observed') -or $Quality -notin @('real', 'configured') -or
+        [string]$Value -match '(?i)(^|[^a-z])(blocked|pending|unavailable|unknown|not_measured|occupied)($|[^a-z])')) {
+        $script:PreflightBlocked = $true
     }
     $checks.Add([pscustomobject]@{ check = $Name; status = $Status; value = [string]$Value; evidence_quality = $Quality })
 }
@@ -40,25 +47,23 @@ function Convert-ExactPrivateIPv4([string]$Name, [string]$Value) {
     return $parsed
 }
 
-function Get-IPv4Integer([Net.IPAddress]$Address) {
-    $bytes = $Address.GetAddressBytes()
-    return ([uint32]$bytes[0] -shl 24) -bor ([uint32]$bytes[1] -shl 16) -bor ([uint32]$bytes[2] -shl 8) -bor [uint32]$bytes[3]
+function Get-BitString([Net.IPAddress]$Address) {
+    return (($Address.GetAddressBytes() | ForEach-Object { [Convert]::ToString($_, 2).PadLeft(8, '0') }) -join '')
 }
 
 if ($MoqUdpPort -ne 14433 -or $PlayerTcpPort -ne 3000) { throw 'LAN reserves are outbound UDP/14433 and player loopback TCP/3000' }
+if ($RunId -notmatch '^lan-[a-z0-9][a-z0-9-]{0,31}$' -or $SourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'preflight run/commit binding is invalid' }
 $server = Convert-ExactPrivateIPv4 'ServerIPv4' $ServerIPv4
 $client = Convert-ExactPrivateIPv4 'ClientIPv4' $ClientIPv4
 if ($ServerIPv4 -eq $ClientIPv4) { throw 'server and client addresses must differ' }
-$mask = [uint32](([uint64]0xffffffff -shl (32 - $PrefixLength)) -band 0xffffffff)
-$serverInteger = Get-IPv4Integer $server
-$clientInteger = Get-IPv4Integer $client
-if (($serverInteger -band $mask) -ne ($clientInteger -band $mask)) {
+$serverBits = Get-BitString $server
+$clientBits = Get-BitString $client
+if ($serverBits.Substring(0, $PrefixLength) -ne $clientBits.Substring(0, $PrefixLength)) {
     throw 'server and client must share the configured subnet'
 }
-$hostMask = [uint32](([uint64]0xffffffff -bxor $mask) -band 0xffffffff)
-foreach ($entry in @(@{ Name = 'ServerIPv4'; Value = $serverInteger }, @{ Name = 'ClientIPv4'; Value = $clientInteger })) {
-    $host = $entry.Value -band $hostMask
-    if ($host -eq 0 -or $host -eq $hostMask) { throw "$($entry.Name) is a subnet or broadcast address" }
+foreach ($entry in @(@{ Name = 'ServerIPv4'; Bits = $serverBits }, @{ Name = 'ClientIPv4'; Bits = $clientBits })) {
+    $hostBits = $entry.Bits.Substring($PrefixLength)
+    if ($hostBits -notmatch '1' -or $hostBits -notmatch '0') { throw "$($entry.Name) is a subnet or broadcast address" }
 }
 
 $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
@@ -78,14 +83,14 @@ if ($address) {
     Add-Check 'mtu' 'blocked' 'unavailable' 'unavailable'
 }
 
-$wlanText = (& netsh.exe wlan show interfaces 2>$null | Out-String)
+$wlanText = (@(& "$env:SystemRoot\System32\netsh.exe" wlan show interfaces 2>$null) -join "`n")
 $radio = if ($wlanText -match '(?im)^\s*(Radio type|Tipo de radio)\s*:\s*([^\r\n]+)') { $Matches[2].Trim() } else { 'unavailable' }
 $band = if ($wlanText -match '(?im)^\s*(Band|Banda)\s*:\s*([^\r\n]+)') { $Matches[2].Trim() } else { 'unavailable' }
 $wifi5 = $band -match '5\s*GHz' -or $radio -match '802\.11(ac|ax)'
 Add-Check 'wifi_radio' 'observed' $radio $(if ($radio -eq 'unavailable') { 'unavailable' } else { 'real' })
 Add-Check 'wifi_5ghz' $(if ($wifi5) { 'pass' } else { 'blocked' }) $band $(if ($band -eq 'unavailable') { 'unavailable' } else { 'real' })
 
-$wslIPv4 = (& wsl.exe -e sh -lc "ip -o -4 addr show scope global 2>/dev/null | awk 'NR==1 {print `$4}'" 2>$null | Out-String).Trim()
+$wslIPv4 = (@(& "$env:SystemRoot\System32\wsl.exe" -e sh -lc "ip -o -4 addr show scope global 2>/dev/null | awk 'NR==1 {print `$4}'" 2>$null) -join "`n").Trim()
 $wslMode = 'unavailable'
 if ($wslIPv4 -match '^\d+\.\d+\.\d+\.\d+/\d+$') {
     $wslAddressText = $wslIPv4.Split('/')[0]
@@ -104,7 +109,7 @@ foreach ($browser in @(
 }
 Add-Check 'browser_gate' $(if ($browserFound) { 'pass' } else { 'blocked' }) $(if ($browserFound) { 'chrome-or-edge-present' } else { 'unavailable' }) $(if ($browserFound) { 'real' } else { 'unavailable' })
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
-$nodeVersion = if ($nodeCommand) { (& $nodeCommand.Source --version 2>$null | Out-String).Trim() } else { 'unavailable' }
+$nodeVersion = if ($nodeCommand) { (@(& $nodeCommand.Source --version 2>$null) -join "`n").Trim() } else { 'unavailable' }
 $nodeSupported = $nodeVersion -match '^v22\.[0-9]+\.[0-9]+$'
 Add-Check 'node_runtime_22_x' $(if ($nodeSupported) { 'pass' } else { 'blocked' }) `
     $(if ($nodeSupported) { $nodeVersion } else { 'unavailable; install an approved Node 22.x runtime before the LAN player' }) `
@@ -113,7 +118,7 @@ $playerListeners = @(Get-NetTCPConnection -State Listen -LocalPort $PlayerTcpPor
 Add-Check 'player_loopback_tcp_3000' $(if ($playerListeners.Count -eq 0) { 'pass' } else { 'blocked' }) `
     $(if ($playerListeners.Count -eq 0) { 'free' } else { 'occupied' }) 'real'
 
-$clockText = (& w32tm.exe /query /status 2>$null | Out-String)
+$clockText = (@(& "$env:SystemRoot\System32\w32tm.exe" /query /status 2>$null) -join "`n")
 $clockOffset = if ($clockText -match '(?im)^\s*(Phase Offset|Desfase de fase)\s*:\s*([^\r\n]+)') { $Matches[2].Trim() } else { 'unavailable' }
 Add-Check 'clock_offset' 'observed' $clockOffset $(if ($clockOffset -eq 'unavailable') { 'unavailable' } else { 'real' })
 $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
@@ -131,7 +136,18 @@ $loss = [math]::Round((1.0 - ($rtts.Count / 4.0)) * 100.0, 3)
 $rtt = if ($rtts.Count -gt 0) { [math]::Round(($rtts | Measure-Object -Average).Average, 3) } else { 'unavailable' }
 Add-Check 'icmp_echo_loss_percent_approximation' 'observed' $loss 'real'
 Add-Check 'icmp_echo_rtt_average_ms_approximation' 'observed' $rtt $(if ($rtts.Count -gt 0) { 'real' } else { 'unavailable' })
-Add-Check 'quic_udp_14433_reachability' 'pending' 'not_measured' 'not_measured'
-Add-Check 'secure_context' 'pending' 'player-must-bind-client-loopback;relay-uses-certificate-pin' 'configured'
 Add-Check 'inbound_client_firewall' 'pass' 'not-required;client-initiates-outbound-only' 'configured'
-$checks | ConvertTo-Json -Depth 4
+Add-Check 'preflight_gate' $(if ($script:PreflightBlocked) { 'blocked' } else { 'pass' }) $(if ($script:PreflightBlocked) { 'blocked' } else { 'ready' }) 'real'
+[ordered]@{
+    schema_version = 1
+    report_kind = 'teremoq-lan-windows-preflight-v1'
+    run_id = $RunId
+    source_commit = $SourceCommit
+    role = 'client'
+    server_ipv4 = $ServerIPv4
+    client_ipv4 = $ClientIPv4
+    prefix_length = $PrefixLength
+    network_profile = $NetworkProfile
+    expected_wsl_mode = $ExpectedWslMode
+    checks = @($checks | ForEach-Object { $_ })
+} | ConvertTo-Json -Depth 5

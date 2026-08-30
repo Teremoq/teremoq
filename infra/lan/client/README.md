@@ -29,6 +29,7 @@ First run the exact client preflight from the repository package:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\infra\lan\windows\Preflight-Client.ps1 `
+  -RunId RUN_ID -SourceCommit FULL_INTEGRATED_COMMIT `
   -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP -PrefixLength PREFIX `
   -NetworkProfile Public -ExpectedWslMode nat
 ```

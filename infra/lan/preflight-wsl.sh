@@ -23,29 +23,53 @@ emit() {
     local check="$1" status="$2" value="$3" quality="$4"
     value="${value//$'\t'/ }"; value="${value//$'\n'/ }"; value="${value//$'\r'/ }"
     [[ -n "${value}" ]] || value=unavailable
+    if [[ "${check}" != preflight_gate ]] && { [[ ! "${status}" =~ ^(pass|observed)$ ]] || [[ ! "${quality}" =~ ^(real|configured)$ ]] || \
+       [[ "${value,,}" =~ (^|[^a-z])(blocked|pending|unavailable|unknown|not_measured|occupied)($|[^a-z]) ]]; }; then
+        preflight_blocked=1
+    fi
     printf '%s\t%s\t%s\t%s\n' "${check}" "${status}" "${value}" "${quality}"
 }
 
+preflight_blocked=0
 printf 'check\tstatus\tvalue\tevidence_quality\n'
+emit schema_version pass 1 configured
+emit report_kind pass teremoq-lan-wsl-preflight-v1 configured
+emit run_id pass "${LAN_CONFIG[run_id]}" configured
+emit source_commit pass "${LAN_CONFIG[source_commit]}" configured
+emit role pass "${role}" configured
+emit server_ipv4 pass "${LAN_CONFIG[server_ipv4]}" configured
+emit client_ipv4 pass "${LAN_CONFIG[client_ipv4]}" configured
+emit prefix_length pass "${LAN_CONFIG[prefix_length]}" configured
+emit network_profile pass "${LAN_CONFIG[network_profile]}" configured
+emit expected_wsl_mode pass "${LAN_CONFIG[${role}_wsl_mode]}" configured
 if grep -qi microsoft /proc/version 2>/dev/null; then
     emit wsl_kernel observed "$(uname -r 2>/dev/null || printf unavailable)" real
 else
     emit wsl_kernel blocked unavailable unavailable
 fi
-emit configured_windows_ipv4 observed "${LAN_CONFIG[${role}_ipv4]}" configured
-emit configured_wsl_mode pending "${LAN_CONFIG[${role}_wsl_mode]}" configured
-emit windows_wsl_mode_observed blocked unavailable unavailable
-emit wifi_band_ghz blocked unavailable unavailable
-emit browser_secure_context pending 'localhost-or-reviewed-HTTPS-required' configured
-emit quic_udp_reachability pending not_measured not_measured
+
+observed_wsl_mode=unavailable
+if command -v wslinfo >/dev/null 2>&1; then
+    reported_mode="$(wslinfo --networking-mode 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    [[ "${reported_mode}" =~ ^(nat|mirrored)$ ]] && observed_wsl_mode="${reported_mode}"
+fi
+if [[ "${observed_wsl_mode}" == unavailable ]] && command -v ip >/dev/null 2>&1; then
+    global_ipv4="$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)"
+    if grep -Fxq "${LAN_CONFIG[${role}_ipv4]}" <<<"${global_ipv4}"; then observed_wsl_mode=mirrored
+    elif [[ -n "${global_ipv4}" ]]; then observed_wsl_mode=nat
+    fi
+fi
+emit windows_wsl_mode_observed "$([[ "${observed_wsl_mode}" == "${LAN_CONFIG[${role}_wsl_mode]}" ]] && printf pass || printf blocked)" \
+    "${observed_wsl_mode}" "$([[ "${observed_wsl_mode}" == unavailable ]] && printf unavailable || printf real)"
 
 clock_sync=unavailable
 if command -v timedatectl >/dev/null 2>&1; then
     clock_sync="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || printf unavailable)"
 fi
 [[ -n "${clock_sync}" ]] || clock_sync=unavailable
-emit clock_synchronized observed "${clock_sync}" "$([[ "${clock_sync}" == unavailable ]] && printf unavailable || printf real)"
-emit clock_offset_ms blocked unavailable unavailable
+clock_status=blocked
+[[ "${clock_sync,,}" =~ ^(yes|true|1)$ ]] && clock_status=pass
+emit clock_synchronized "${clock_status}" "${clock_sync}" "$([[ "${clock_sync}" == unavailable ]] && printf unavailable || printf real)"
 
 peer="${LAN_CONFIG[client_ipv4]}"
 [[ "${role}" == client ]] && peer="${LAN_CONFIG[server_ipv4]}"
@@ -61,25 +85,25 @@ if command -v ip >/dev/null 2>&1; then
         [[ -n "${mtu}" ]] || mtu=unavailable
     fi
 fi
-emit route_to_peer observed "${route_line}" "$([[ "${route_line}" == unavailable ]] && printf unavailable || printf real)"
-emit route_interface observed "${interface}" "$([[ "${interface}" == unavailable ]] && printf unavailable || printf real)"
-emit mtu observed "${mtu}" "$([[ "${mtu}" == unavailable ]] && printf unavailable || printf real)"
+emit route_to_peer "$([[ "${route_line}" == unavailable ]] && printf blocked || printf observed)" "${route_line}" "$([[ "${route_line}" == unavailable ]] && printf unavailable || printf real)"
+emit route_interface "$([[ "${interface}" == unavailable ]] && printf blocked || printf observed)" "${interface}" "$([[ "${interface}" == unavailable ]] && printf unavailable || printf real)"
+emit mtu "$([[ "${mtu}" == unavailable ]] && printf blocked || printf observed)" "${mtu}" "$([[ "${mtu}" == unavailable ]] && printf unavailable || printf real)"
 
 cpu="$(command -v nproc >/dev/null 2>&1 && nproc 2>/dev/null || printf unavailable)"
 memory="$(awk '/MemAvailable:/ {printf "%d", $2 / 1024}' /proc/meminfo 2>/dev/null || true)"
 [[ -n "${memory}" ]] || memory=unavailable
 disk="$(df -Pm "${SCRIPT_DIR}" 2>/dev/null | awk 'NR==2 {print $4}' || true)"
 [[ -n "${disk}" ]] || disk=unavailable
-emit cpu_cores observed "${cpu}" "$([[ "${cpu}" == unavailable ]] && printf unavailable || printf real)"
-emit available_memory_mib observed "${memory}" "$([[ "${memory}" == unavailable ]] && printf unavailable || printf real)"
-emit available_disk_mib observed "${disk}" "$([[ "${disk}" == unavailable ]] && printf unavailable || printf real)"
+emit cpu_cores "$([[ "${cpu}" == unavailable ]] && printf blocked || printf observed)" "${cpu}" "$([[ "${cpu}" == unavailable ]] && printf unavailable || printf real)"
+emit available_memory_mib "$([[ "${memory}" == unavailable ]] && printf blocked || printf observed)" "${memory}" "$([[ "${memory}" == unavailable ]] && printf unavailable || printf real)"
+emit available_disk_mib "$([[ "${disk}" == unavailable ]] && printf blocked || printf observed)" "${disk}" "$([[ "${disk}" == unavailable ]] && printf unavailable || printf real)"
 
 for tool in openssl curl sha256sum tar; do
-    if command -v "${tool}" >/dev/null 2>&1; then emit "tool_${tool}" observed present real; else emit "tool_${tool}" blocked unavailable unavailable; fi
+    if command -v "${tool}" >/dev/null 2>&1; then emit "tool_${tool}" pass present real; else emit "tool_${tool}" blocked unavailable unavailable; fi
 done
 if [[ "${role}" == server ]]; then
     docker_version="$(docker version --format '{{.Server.Version}}' 2>/dev/null || printf unavailable)"
-    emit docker_server observed "${docker_version}" "$([[ "${docker_version}" == unavailable ]] && printf unavailable || printf real)"
+    emit docker_server "$([[ "${docker_version}" == unavailable ]] && printf blocked || printf observed)" "${docker_version}" "$([[ "${docker_version}" == unavailable ]] && printf unavailable || printf real)"
     if command -v ss >/dev/null 2>&1; then
         for port in 4433 9000 "${LAN_CONFIG[moq_frontend_udp_port]}" "${LAN_CONFIG[srt_udp_port]}"; do
             if ss -H -lun "sport = :${port}" 2>/dev/null | grep -q .; then udp_state=occupied; else udp_state=free; fi
@@ -114,4 +138,4 @@ if [[ "${role}" == client ]]; then
         emit listener_tcp_3000 blocked unavailable unavailable
     fi
 fi
-emit preflight_gate blocked 'requires-legacy-conflict-isolation,Windows-preflight,clock-offset,Wi-Fi-and-live-QUIC-probe' not_measured
+if (( preflight_blocked == 0 )); then emit preflight_gate pass ready real; else emit preflight_gate blocked blocked real; fi

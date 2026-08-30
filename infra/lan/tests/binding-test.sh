@@ -21,7 +21,7 @@ state_dir="/tmp/teremoq-lan-binding-test-$$-${RANDOM}"
 "${ROOT}/prepare-runtime.sh" --config "${pending}" --state-dir "${state_dir}" >/dev/null
 set +e
 start_output="$("${ROOT}/start-lab.sh" --config "${pending}" --commands /absent/commands.json \
-    --authorization /absent/authorization.tsv --server-preflight /absent/server.json \
+    --authorization /absent/authorization.tsv --wsl-preflight /absent/wsl.tsv --server-preflight /absent/server.json \
     --client-preflight /absent/client.json --firewall-attestation /absent/firewall.json \
     --certificate /absent/cert.pem --key /absent/key.pem --fingerprint /absent/fingerprint.sha256 \
     --identity-profile /absent/profile --proxy-attestation /absent/proxy.tsv --artifact-root /absent/artifacts \

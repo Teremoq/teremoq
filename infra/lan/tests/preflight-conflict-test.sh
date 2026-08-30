@@ -27,5 +27,6 @@ grep -Fq $'listener_udp_4433\tblocked\toccupied\treal' "${scratch}/report.tsv"
 grep -Fq $'listener_tcp_5678\tblocked\toccupied\treal' "${scratch}/report.tsv"
 grep -Fq 'service=legacy-relay;port=4433/udp' "${scratch}/report.tsv"
 grep -Fq 'service=legacy-relay;port=5678/tcp' "${scratch}/report.tsv"
+grep -Fq $'preflight_gate\tblocked\tblocked\treal' "${scratch}/report.tsv"
 ! grep -Eiq 'pid=|process_id' "${scratch}/report.tsv"
 printf 'lan-preflight-conflict-test: pass\n'

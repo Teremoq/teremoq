@@ -5,6 +5,7 @@ set -Eeuo pipefail
 
 TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(cd -- "${TEST_DIR}/.." && pwd -P)"
+policy_commit="$(printf 'a%.0s' {1..40})"
 if ! command -v powershell.exe >/dev/null 2>&1 || ! command -v wslpath >/dev/null 2>&1; then
     printf 'lan-powershell-policy-test: skipped (Windows PowerShell runtime unavailable)\n'
     exit 0
@@ -30,22 +31,32 @@ IFS=$'\t' read -r server_ip client_ip router_ip prefix profile <<<"${context}"
 [[ -n "${profile}" ]]
 firewall="$(wslpath -w "${ROOT}/windows/Firewall-Lan.ps1")"
 plan="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall}" \
-    -Action Plan -RunId lan-firewall-test -ServerIPv4 "${server_ip}" -ClientIPv4 "${client_ip}" \
+    -Action Plan -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${client_ip}" \
     -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" 2>/dev/null | tr -d '\r')"
 [[ "${plan}" == *'New-NetFirewallRule'* && "${plan}" == *'New-NetFirewallHyperVRule'* ]]
 [[ "${plan}" == *'-LocalAddress'* && "${plan}" == *'-RemoteAddress'* && "${plan}" == *'-LocalAddresses'* && "${plan}" == *'-RemoteAddresses'* ]]
 [[ "${plan}" == *'UDP'* && "${plan}" == *'14433'* && "${plan}" == *'Remove-NetFirewallHyperVRule'* ]]
 [[ "${plan}" != *'DefaultInboundAction'* || "${plan}" == *'do not change DefaultInboundAction'* ]]
 if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall}" \
-    -Action Validate -RunId lan-firewall-test -ServerIPv4 "${server_ip}" -ClientIPv4 "${router_ip}" \
+    -Action Validate -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${router_ip}" \
     -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" >/dev/null 2>&1; then
     printf 'powershell-policy-test: router accepted as client\n' >&2; exit 1
 fi
 if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall}" \
-    -Action Validate -RunId lan-firewall-test -ServerIPv4 192.168.77.0 -ClientIPv4 192.168.77.20 \
+    -Action Validate -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 192.168.77.0 -ClientIPv4 192.168.77.20 \
     -RouterIPv4 192.168.77.1 -PrefixLength 24 -NetworkProfile Public >/dev/null 2>&1; then
     printf 'powershell-policy-test: network address accepted as server\n' >&2; exit 1
 fi
+firewall_fixture="$(wslpath -w "${TEST_DIR}/firewall-verify-fixture.ps1")"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall_fixture}" \
+    -ScriptPath "${firewall}" -Tamper none \
+    | tr -d '\r' | grep -Fq '"edge_traversal_policy":"Block"'
+for tamper in edge cardinality; do
+    if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall_fixture}" \
+        -ScriptPath "${firewall}" -Tamper "${tamper}" >/dev/null 2>&1; then
+        printf 'powershell-policy-test: firewall Verify accepted %s tamper\n' "${tamper}" >&2; exit 1
+    fi
+done
 wsl_plan="$(wslpath -w "${ROOT}/windows/Wsl-Mirrored-Plan.ps1")"
 wsl_plan_output="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wsl_plan}" -Action Plan -RunId lan-firewall-test 2>/dev/null | tr -d '\r')"
 grep -Fq 'networkingMode=mirrored' <<<"${wsl_plan_output}"
@@ -53,11 +64,11 @@ wsl_rollback_output="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolic
 grep -Fq 'wsl.exe --shutdown' <<<"${wsl_rollback_output}"
 client_preflight="$(wslpath -w "${ROOT}/windows/Preflight-Client.ps1")"
 if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${client_preflight}" \
-    -ServerIPv4 8.8.8.8 -ClientIPv4 192.168.77.20 -PrefixLength 24 -NetworkProfile Public -ExpectedWslMode nat >/dev/null 2>&1; then
+    -RunId lan-policy-test -SourceCommit "${policy_commit}" -ServerIPv4 8.8.8.8 -ClientIPv4 192.168.77.20 -PrefixLength 24 -NetworkProfile Public -ExpectedWslMode nat >/dev/null 2>&1; then
     printf 'powershell-policy-test: public server IP accepted by client preflight\n' >&2; exit 1
 fi
 if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${client_preflight}" \
-    -ServerIPv4 192.168.77.0 -ClientIPv4 192.168.77.20 -PrefixLength 24 -NetworkProfile Public -ExpectedWslMode nat >/dev/null 2>&1; then
+    -RunId lan-policy-test -SourceCommit "${policy_commit}" -ServerIPv4 192.168.77.0 -ClientIPv4 192.168.77.20 -PrefixLength 24 -NetworkProfile Public -ExpectedWslMode nat >/dev/null 2>&1; then
     printf 'powershell-policy-test: network address accepted by client preflight\n' >&2; exit 1
 fi
 collector="$(wslpath -w "${ROOT}/windows/Collect-Evidence.ps1")"

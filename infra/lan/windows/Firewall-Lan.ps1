@@ -6,6 +6,7 @@ param(
     [ValidateSet('Validate', 'Plan', 'Verify', 'Apply', 'Rollback')]
     [string]$Action,
     [Parameter(Mandatory = $true)][string]$RunId,
+    [Parameter(Mandatory = $true)][string]$SourceCommit,
     [Parameter(Mandatory = $true)][string]$ServerIPv4,
     [Parameter(Mandatory = $true)][string]$ClientIPv4,
     [Parameter(Mandatory = $true)][string]$RouterIPv4,
@@ -40,6 +41,7 @@ function Get-BitString([System.Net.IPAddress]$Address) {
 }
 
 if ($RunId -notmatch '^lan-[a-z0-9][a-z0-9-]{0,31}$') { throw 'RunId is outside the allowlist' }
+if ($SourceCommit -notmatch '^[0-9a-f]{40}$') { throw 'SourceCommit must be one exact integrated commit' }
 if ($MoqUdpPort -ne 14433) { throw 'the LAN QUIC frontend reserve contains only UDP/14433' }
 if ($DashboardTlsPort -ne 0) { throw 'dashboard LAN firewall is blocked until a reviewed TLS/read-only frontier exists' }
 $server = Convert-ExactPrivateIPv4 'ServerIPv4' $ServerIPv4
@@ -95,7 +97,7 @@ if ($Action -eq 'Validate') {
     exit 0
 }
 if ($Action -eq 'Plan') {
-    Write-Output "New-NetFirewallRule -Name '$ruleName' -DisplayName '$ruleName' -Group '$group' -Direction Inbound -Action Allow -Enabled True -Profile '$NetworkProfile' -LocalAddress '$ServerIPv4' -RemoteAddress '$ClientIPv4' -Protocol UDP -LocalPort $MoqUdpPort -EdgeTraversalPolicy Block"
+    Write-Output "New-NetFirewallRule -Name '$ruleName' -DisplayName '$ruleName' -Group '$group' -Description 'Temporary Teremoq LAN run $RunId; exact client only' -Direction Inbound -Action Allow -Enabled True -Profile '$NetworkProfile' -LocalAddress '$ServerIPv4' -RemoteAddress '$ClientIPv4' -Protocol UDP -LocalPort $MoqUdpPort -EdgeTraversalPolicy Block"
     Write-Output "New-NetFirewallHyperVRule -Name '$hyperVRuleName' -DisplayName '$hyperVRuleName' -Direction Inbound -Action Allow -Enabled True -Profiles '$NetworkProfile' -VMCreatorId '$wslCreatorId' -Protocol UDP -LocalAddresses '$ServerIPv4' -RemoteAddresses '$ClientIPv4' -LocalPorts $MoqUdpPort"
     Write-Output "Remove-NetFirewallRule -Name '$ruleName' -ErrorAction SilentlyContinue"
     Write-Output "Remove-NetFirewallHyperVRule -Name '$hyperVRuleName' -ErrorAction SilentlyContinue"
@@ -103,24 +105,41 @@ if ($Action -eq 'Plan') {
     exit 0
 }
 if ($Action -eq 'Verify') {
-    $classic = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
-    $hyperv = Get-NetFirewallHyperVRule -Name $hyperVRuleName -ErrorAction SilentlyContinue
-    if (-not $classic -or -not $hyperv) { throw 'both exact classic and Hyper-V rules must exist' }
-    $addressFilter = $classic | Get-NetFirewallAddressFilter
-    $portFilter = $classic | Get-NetFirewallPortFilter
-    if ($classic.Enabled -ne 'True' -or $classic.Direction -ne 'Inbound' -or $classic.Action -ne 'Allow' -or
-        [string]$classic.Profile -ne $NetworkProfile -or @($addressFilter.LocalAddress).Count -ne 1 -or
-        @($addressFilter.RemoteAddress).Count -ne 1 -or $addressFilter.LocalAddress -ne $ServerIPv4 -or
-        $addressFilter.RemoteAddress -ne $ClientIPv4 -or [string]$portFilter.Protocol -notmatch '^(UDP|17)$' -or
-        [string]$portFilter.LocalPort -ne [string]$MoqUdpPort) { throw 'classic rule properties differ from the exact plan' }
-    if ($hyperv.Enabled -ne 'True' -or $hyperv.Direction -ne 'Inbound' -or $hyperv.Action -ne 'Allow' -or
-        [string]$hyperv.VMCreatorId -ne $wslCreatorId -or @($hyperv.LocalAddresses).Count -ne 1 -or
-        @($hyperv.RemoteAddresses).Count -ne 1 -or [string]$hyperv.LocalAddresses -ne $ServerIPv4 -or
-        [string]$hyperv.RemoteAddresses -ne $ClientIPv4 -or [string]$hyperv.Protocol -notmatch '^(UDP|17)$' -or
-        [string]$hyperv.LocalPorts -ne [string]$MoqUdpPort -or [string]$hyperv.Profiles -ne $NetworkProfile) {
+    $classicRules = @(Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue)
+    $hypervRules = @(Get-NetFirewallHyperVRule -Name $hyperVRuleName -ErrorAction SilentlyContinue)
+    if ($classicRules.Count -ne 1 -or $hypervRules.Count -ne 1) { throw 'exactly one classic and one Hyper-V rule must exist' }
+    $classic = $classicRules[0]
+    $hyperv = $hypervRules[0]
+    $addressFilters = @($classic | Get-NetFirewallAddressFilter)
+    $portFilters = @($classic | Get-NetFirewallPortFilter)
+    if ($addressFilters.Count -ne 1 -or $portFilters.Count -ne 1) { throw 'classic rule filter cardinality differs from the exact plan' }
+    $addressFilter = $addressFilters[0]
+    $portFilter = $portFilters[0]
+    if ([string]$classic.Name -cne $ruleName -or [string]$classic.DisplayName -cne $ruleName -or
+        [string]$classic.Group -cne $group -or [string]$classic.Description -cne "Temporary Teremoq LAN run $RunId; exact client only" -or
+        [string]$classic.Enabled -ne 'True' -or [string]$classic.Direction -ne 'Inbound' -or [string]$classic.Action -ne 'Allow' -or
+        [string]$classic.Profile -ne $NetworkProfile -or [string]$classic.EdgeTraversalPolicy -ne 'Block' -or
+        @($addressFilter.LocalAddress).Count -ne 1 -or @($addressFilter.RemoteAddress).Count -ne 1 -or
+        [string]$addressFilter.LocalAddress -cne $ServerIPv4 -or [string]$addressFilter.RemoteAddress -cne $ClientIPv4 -or
+        [string]$portFilter.Protocol -notmatch '^(UDP|17)$' -or [string]$portFilter.LocalPort -ne [string]$MoqUdpPort -or
+        [string]$portFilter.RemotePort -ne 'Any') { throw 'classic rule properties differ from the exact plan' }
+    if ([string]$hyperv.Name -cne $hyperVRuleName -or [string]$hyperv.DisplayName -cne $hyperVRuleName -or
+        [string]$hyperv.Enabled -ne 'True' -or [string]$hyperv.Direction -ne 'Inbound' -or [string]$hyperv.Action -ne 'Allow' -or
+        [string]$hyperv.VMCreatorId -cne $wslCreatorId -or @($hyperv.LocalAddresses).Count -ne 1 -or
+        @($hyperv.RemoteAddresses).Count -ne 1 -or @($hyperv.LocalPorts).Count -ne 1 -or
+        [string]$hyperv.LocalAddresses -cne $ServerIPv4 -or [string]$hyperv.RemoteAddresses -cne $ClientIPv4 -or
+        [string]$hyperv.Protocol -notmatch '^(UDP|17)$' -or [string]$hyperv.LocalPorts -ne [string]$MoqUdpPort -or
+        [string]$hyperv.Profiles -ne $NetworkProfile) {
         throw 'Hyper-V rule properties differ from the exact plan'
     }
-    [pscustomobject]@{ firewall_verified = $true; classic_rule = $ruleName; hyperv_rule = $hyperVRuleName; default_inbound_action_changed = $false } | ConvertTo-Json -Compress
+    [ordered]@{
+        schema_version = 1; run_id = $RunId; source_commit = $SourceCommit
+        server_ipv4 = $ServerIPv4; client_ipv4 = $ClientIPv4; network_profile = $NetworkProfile
+        protocol = 'UDP'; local_port = $MoqUdpPort
+        classic_rule_name = $ruleName; hyperv_rule_name = $hyperVRuleName
+        classic_rule_count = $classicRules.Count; hyperv_rule_count = $hypervRules.Count
+        edge_traversal_policy = 'Block'; firewall_verified = $true; default_inbound_action_changed = $false
+    } | ConvertTo-Json -Compress
     exit 0
 }
 if (-not $ConfirmApply) { throw 'Apply and Rollback require explicit -ConfirmApply' }

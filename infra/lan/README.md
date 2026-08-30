@@ -71,7 +71,8 @@ Windows 11 server, read-only:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\infra\lan\windows\Preflight-Lan.ps1 `
-  -Role Server -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP `
+  -Role Server -RunId RUN_ID -SourceCommit FULL_INTEGRATED_COMMIT `
+  -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP `
   -PrefixLength PREFIX -NetworkProfile Public -ExpectedWslMode mirrored `
   | Set-Content -Encoding UTF8 C:\ABSOLUTE\PRIVATE\server-preflight.json
 ```
@@ -80,6 +81,7 @@ Windows 10 client, read-only and outbound-only:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\infra\lan\windows\Preflight-Client.ps1 `
+  -RunId RUN_ID -SourceCommit FULL_INTEGRATED_COMMIT `
   -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP -PrefixLength PREFIX `
   -NetworkProfile Public -ExpectedWslMode nat `
   | Set-Content -Encoding UTF8 C:\ABSOLUTE\PRIVATE\client-preflight.json
@@ -137,6 +139,7 @@ elevation and `-ConfirmApply`; this delivery executes neither.
 
 ```powershell
 .\infra\lan\windows\Firewall-Lan.ps1 -Action Plan -RunId RUN_ID `
+  -SourceCommit FULL_INTEGRATED_COMMIT `
   -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP `
   -RouterIPv4 ROUTER_EXACT_IP -PrefixLength PREFIX -NetworkProfile Public
 ```
@@ -147,12 +150,27 @@ from client to server in Defender and Hyper-V. Hyper-V uses creator ID
 `{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}` and plural parameters. Rollback
 removes only both exact run Names and separately proves zero residue. It never
 changes the profile or Hyper-V `DefaultInboundAction`.
+After a separately authorized `Apply`, capture the read-only, closed
+attestation used by activation with the same exact arguments and commit:
+
+```powershell
+.\infra\lan\windows\Firewall-Lan.ps1 -Action Verify -RunId RUN_ID `
+  -SourceCommit FULL_INTEGRATED_COMMIT `
+  -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP `
+  -RouterIPv4 ROUTER_EXACT_IP -PrefixLength PREFIX -NetworkProfile Public `
+  | Set-Content -Encoding UTF8 C:\ABSOLUTE\PRIVATE\firewall-verify.json
+```
+
+`Verify` requires exactly one Defender and one Hyper-V rule and checks all
+planned identities, filters and cardinalities, including Defender
+`EdgeTraversalPolicy=Block`, before emitting `firewall_verified=true`.
 
 ## 5. Executable activation and stop
 
 Prepare run-owned state and private copies of the command/authorization
 templates. The command manifest is an argv array, never a shell string. The
-authorization binds both preflight files and firewall attestation by SHA-256,
+authorization binds the independent server WSL preflight, both Windows
+preflights and firewall attestation by SHA-256,
 the command-manifest SHA-256, the commit, conflict cleanup, owner integrations
 and explicit operator approval. Every executable has its own SHA-256 and must
 reside in the exact clean worktree or a run-owned artifact directory with no
@@ -181,6 +199,7 @@ infra/lan/start-lab.sh \
   --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
   --commands /ABSOLUTE/PRIVATE/PATH/lab-commands.json \
   --authorization /ABSOLUTE/PRIVATE/PATH/activation.tsv \
+  --wsl-preflight /ABSOLUTE/PRIVATE/PATH/server-wsl-preflight.tsv \
   --server-preflight /ABSOLUTE/PRIVATE/PATH/server-preflight.json \
   --client-preflight /ABSOLUTE/PRIVATE/PATH/client-preflight.json \
   --firewall-attestation /ABSOLUTE/PRIVATE/PATH/firewall-verify.json \
@@ -202,7 +221,11 @@ run is not declared ready and its own child processes are stopped in reverse
 order. Runtime metrics contain timestamps and per-component RSS only.
 Activation also rechecks exact HEAD, full tracked/untracked cleanliness,
 owner-commit ancestry, manifest digest and every executable digest immediately
-before launch.
+before launch. Each bound preflight/attestation is read once through one
+non-symlink descriptor, size/cardinality bounded and parsed as a closed schema.
+Authorization cannot replace its result: any `blocked`, `pending`,
+`unavailable`, `unknown`, inherited Docker publication, legacy listener,
+server WSL NAT or firewall-property contradiction blocks activation.
 
 Stop only the matching run-id lifecycle:
 
