@@ -4,6 +4,7 @@
 name = "teremoq-control-plane"
 version = "0.1.0"
 description = "Deterministic, provider-neutral Teremoq control-plane simulator"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = []
 

@@ -1,0 +1,28 @@
+version = 1
+
+[[annotations]]
+path = "**"
+precedence = "override"
+SPDX-FileCopyrightText = "2026 Jose María García-Carrasco García"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = "gateway-rs/tests/fixtures/**"
+precedence = "override"
+SPDX-FileCopyrightText = "NONE"
+SPDX-License-Identifier = "CC0-1.0"
+
+[[annotations]]
+path = [
+  "supervisor-web/AGENTS.md",
+  "supervisor-web/CLAUDE.md",
+  "supervisor-web/public/file.svg",
+  "supervisor-web/public/globe.svg",
+  "supervisor-web/public/next.svg",
+  "supervisor-web/public/vercel.svg",
+  "supervisor-web/public/window.svg",
+  "supervisor-web/src/app/favicon.ico",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "2025 Vercel, Inc."
+SPDX-License-Identifier = "MIT"
