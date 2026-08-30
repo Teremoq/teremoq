@@ -67,10 +67,10 @@ image digest
 `sha256:252c2e26f468c25fea1e63ecde1bc3198ad6e9dbb57f5ed3236bddcb2281b3a7`.
 
 The SBOM describes source commit
-`8a63b46e5e21ee587ea495fbe4eaa3015b70cb91`. That commit is based on the
-integrated baseline `97487782176e475cde144d9b7e1b50acaa8364f7` and adds only
-license/compliance metadata. The later commit that stores the SBOM does not
-change manifests, dependencies, or locks.
+`b5c4d14237c575f14f8661c02ff3ef98142da8e1`. Relative to the previous SBOM
+source, this release-candidate state removes two tracked Python bytecode files
+and adds scoped ignore rules; it does not change manifests, dependencies, or
+locks. The later commit that stores the refreshed SBOM has the same constraint.
 
 The result contains 857 components: 375 Rust crates and 482 npm packages,
 including npm development dependencies. The three MoQ components each record
@@ -84,7 +84,7 @@ outside the temporary source checkout, and no network is available to the
 generator:
 
 ```sh
-teremoq_source_commit=8a63b46e5e21ee587ea495fbe4eaa3015b70cb91
+teremoq_source_commit=b5c4d14237c575f14f8661c02ff3ef98142da8e1
 teremoq_clean_root="$(mktemp -d)"
 mkdir -p "$teremoq_clean_root/output"
 git worktree add --detach "$teremoq_clean_root/source" "$teremoq_source_commit"
@@ -108,7 +108,7 @@ git worktree remove "$teremoq_clean_root/source"
 Two independent clean-checkout generations produced the same SHA-256:
 
 ```text
-54cd96a892b62fc19769e66db24e902f776235e1ecb6d1a93da99f90a619b01e  teremoq-local.syft.json
+edc520b65564035b0e1b1bf7c8fbcf7f837b4529ed0be1385ea7c7fc0e733097  teremoq-local.syft.json
 ```
 
 ### Validate the committed SBOM
