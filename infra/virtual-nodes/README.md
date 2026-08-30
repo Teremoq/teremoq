@@ -55,8 +55,13 @@ Its state root must be an explicit absolute ephemeral path. See
 required from Task 09.
 
 `action-envelope-consumer.py` binds the laboratory to the immutable
-`control-plane` subtree `1ffd80a0b2135c86b5d11751aeca49ae791de53d` through
-the calling harness. It imports the real Task 09 loader, action guard, enums
+`control-plane` subtree `55f5faf0458e50bd684dd5a5f1646b255606aab2` through
+`contract/v1/control-plane-binding.env` and the shared fail-closed verifier.
+The binding changed only because the Apache-2.0 package metadata added the
+`license` field to `control-plane/pyproject.toml`. The verifier rejects every
+other Git tree, dirty control-plane sources and a changed milestone config;
+its consumer test builds a distinct temporary Git tree and proves rejection.
+The consumer imports the real Task 09 loader, action guard, enums
 and serializer-compatible model from `control-plane/src`; it does not copy the
 action-envelope schema. It preflights every selected action before invoking
 the adapter, then records an explicit partial-apply result if an operational

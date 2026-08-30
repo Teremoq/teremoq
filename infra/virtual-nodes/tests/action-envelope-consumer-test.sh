@@ -9,7 +9,7 @@ ROOT="$(cd -- "${TEST_DIR}/.." && pwd -P)"
 REPO_ROOT="$(cd -- "${ROOT}/../.." && pwd -P)"
 CONTROL_REPO="${TEREMOQ_CONTROL_REPO:-${REPO_ROOT}}"
 CONTROL_ROOT="${CONTROL_REPO}/control-plane"
-CONTROL_TREE=1ffd80a0b2135c86b5d11751aeca49ae791de53d
+VERIFY_BINDING="${ROOT}/verify-control-plane-binding.sh"
 CONFIG="${CONTROL_ROOT}/config/milestone-100.json"
 CONSUMER="${ROOT}/action-envelope-consumer.py"
 ADAPTER="${ROOT}/provider-adapter.sh"
@@ -30,11 +30,19 @@ expect_failure() {
     fi
 }
 
-[[ "$(git -C "${CONTROL_REPO}" rev-parse HEAD:control-plane 2>/dev/null)" == "${CONTROL_TREE}" ]] || \
-    fail 'control-plane subtree binding changed'
-[[ "$(sha256sum "${CONFIG}" | awk '{print $1}')" == \
-   d6eb34768e62a87a39ab9cc4ba25d915198a2dc559c5c7b30930e77e55044506 ]] || \
-    fail 'milestone configuration hash changed'
+"${VERIFY_BINDING}" --repo "${CONTROL_REPO}"
+
+# Prove that the same verifier rejects a repository whose control-plane tree is
+# any value other than the contract binding. This is a real Git-tree mismatch,
+# not an override of the expected value.
+wrong_repo="${scratch}/wrong-control-repo"
+git init -q "${wrong_repo}"
+mkdir -p -- "${wrong_repo}/control-plane/config"
+printf '{"tampered":true}\n' >"${wrong_repo}/control-plane/config/milestone-100.json"
+git -C "${wrong_repo}" add control-plane
+git -C "${wrong_repo}" -c user.name='Teremoq test' -c user.email='test@invalid' \
+    commit -q -m 'test: wrong control-plane tree'
+expect_failure "${VERIFY_BINDING}" --repo "${wrong_repo}"
 "${CONTROL_ROOT}/bin/control-plane" --config "${CONFIG}" validate >/dev/null
 "${CONTROL_ROOT}/bin/control-plane" --config "${CONFIG}" \
     demo --report-dir "${report_dir}" >/dev/null

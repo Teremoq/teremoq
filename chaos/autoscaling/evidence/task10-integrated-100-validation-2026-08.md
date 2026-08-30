@@ -9,12 +9,19 @@ Remote cost was zero. This is not evidence of video capacity, MoQT sessions,
 media continuity, authentication, registration, cloud provisioning or
 production readiness.
 
+Binding refresh note (2026-08-30): the immutable control-plane subtree binding
+was advanced to `55f5faf0458e50bd684dd5a5f1646b255606aab2` after Apache-2.0
+metadata added `license` to `control-plane/pyproject.toml`. The consumer and
+integrated dry-run were revalidated against that tree, including rejection of
+a distinct Git subtree. The Docker measurements and artifact hashes below are
+the 2026-08-28 sample and are not silently recast as a new execution.
+
 ## Findings
 
 - The consumer used the real Task 09 configuration loader, action guard, model
   enums and CLI-produced `bootstrap`, `scenario-100-2`, `replacement` and
   `cleanup` artifacts. It was bound to control-plane subtree
-  `1ffd80a0b2135c86b5d11751aeca49ae791de53d`, independently of the repository
+  `55f5faf0458e50bd684dd5a5f1646b255606aab2`, independently of the repository
   `HEAD`.
 - Complete semantic preflight rejects a two-action envelope when its second
   action has altered capacity or an expired deadline, with zero nodes,

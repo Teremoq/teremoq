@@ -13,14 +13,16 @@ TOPOLOGY="${NODE_ROOT}/topology/default.tsv"
 REPORT_DIR="${TEREMOQ_AUTOSCALING_REPORT_DIR:-${SCRIPT_DIR}/reports}"
 CONTROL_REPO="${TEREMOQ_CONTROL_REPO:-${REPO_ROOT}}"
 CONTROL_ROOT="${CONTROL_REPO}/control-plane"
-CONTROL_TREE=1ffd80a0b2135c86b5d11751aeca49ae791de53d
+VERIFY_BINDING="${NODE_ROOT}/verify-control-plane-binding.sh"
+BINDING_FILE="${NODE_ROOT}/contract/v1/control-plane-binding.env"
 CONFIG="${CONTROL_ROOT}/config/milestone-100.json"
-CONFIG_FILE_SHA=d6eb34768e62a87a39ab9cc4ba25d915198a2dc559c5c7b30930e77e55044506
 IMAGE_MAP="${NODE_ROOT}/contract/v1/image-map.tsv"
 # shellcheck source=lib.sh
 source "${SCRIPT_DIR}/lib.sh"
 # shellcheck disable=SC1091
 source "${NODE_ROOT}/versions.env"
+# shellcheck disable=SC1091
+source "${BINDING_FILE}"
 
 mode=simulate
 with_docker=false
@@ -42,12 +44,8 @@ for command_name in awk date find git grep mktemp nproc python3 sed sha256sum so
 done
 [[ -x "${ADAPTER}" && -x "${CONSUMER}" && -x "${CONTROL_ROOT}/bin/control-plane" ]] || \
     autoscaling_die 'integrated executable boundary is incomplete'
-[[ "$(git -C "${CONTROL_REPO}" rev-parse HEAD:control-plane 2>/dev/null)" == "${CONTROL_TREE}" ]] || \
-    autoscaling_die 'control-plane integration subtree changed'
-git -C "${CONTROL_REPO}" diff --quiet -- control-plane || \
-    autoscaling_die 'control-plane source has uncommitted divergence'
-[[ "$(sha256sum "${CONFIG}" | awk '{print $1}')" == "${CONFIG_FILE_SHA}" ]] || \
-    autoscaling_die 'milestone configuration file changed'
+"${VERIFY_BINDING}" --repo "${CONTROL_REPO}" || \
+    autoscaling_die 'control-plane integration binding rejected'
 [[ "$(sha256sum "${NODE_ROOT}/node-runtime.sh" | awk '{print $1}')" == \
    "${VIRTUAL_NODE_RUNTIME_SHA256}" ]] || autoscaling_die 'virtual-node runtime hash mismatch'
 desired_image_identifier="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${CONTROL_ROOT}/src" \
@@ -159,11 +157,11 @@ render_integrated_report() {
         printf -- '- Run ID: `%s`\n- Started/finished UTC: `%s` / `%s`\n' \
             "${run_id}" "${started_utc}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf -- '- Workspace commit / control-plane subtree tree: `%s` / `%s`\n' \
-            "$(git -C "${REPO_ROOT}" rev-parse HEAD)" "${CONTROL_TREE}"
+            "$(git -C "${REPO_ROOT}" rev-parse HEAD)" "${CONTROL_PLANE_TREE_SHA1}"
         printf -- '- Mode/Docker: `%s` / `%s`\n' "${mode}" "${with_docker}"
         printf -- '- Requested/consumed simulated viewers: `%s` / `%s`\n' \
             "${viewers}" "${consumed_viewers}"
-        printf -- '- Configuration file SHA-256: `%s`\n' "${CONFIG_FILE_SHA}"
+        printf -- '- Configuration file SHA-256: `%s`\n' "${CONTROL_PLANE_CONFIG_SHA256}"
         printf -- '- Configuration digest: `%s`\n- Desired image identifier (Task 09 fixture): `%s`\n' \
             "${config_digest}" "${control_image_digest}"
         printf -- '- Mapped simulator runtime OCI: `%s`\n' "${VIRTUAL_NODE_IMAGE}"
