@@ -77,6 +77,8 @@ export type PlayerSnapshot = {
   codec: string;
   decoderQueue: number;
   frames: number;
+  videoObjects: number;
+  videoBytes: number;
   dropped: number;
   lastTimestampUs: number | null;
   rxToCanvasMs: number | null;
@@ -96,6 +98,9 @@ export type PlayerSnapshot = {
   telemetry: VehicleTelemetry | null;
   telemetryObjects: number;
   telemetryRejected: number;
+  sessionLosses: number;
+  sessionRecoveries: number;
+  lastSessionRecoveryMs: number | null;
 };
 
 export type VideoTrackId = 0 | 1;
@@ -110,6 +115,8 @@ const INITIAL_SNAPSHOT: PlayerSnapshot = {
   codec: "—",
   decoderQueue: 0,
   frames: 0,
+  videoObjects: 0,
+  videoBytes: 0,
   dropped: 0,
   lastTimestampUs: null,
   rxToCanvasMs: null,
@@ -129,6 +136,9 @@ const INITIAL_SNAPSHOT: PlayerSnapshot = {
   telemetry: null,
   telemetryObjects: 0,
   telemetryRejected: 0,
+  sessionLosses: 0,
+  sessionRecoveries: 0,
+  lastSessionRecoveryMs: null,
 };
 
 export class TeremoqPlayerEngine {
@@ -155,6 +165,7 @@ export class TeremoqPlayerEngine {
   #generation = 0;
   #generationController: AbortController | null = null;
   #stopped = true;
+  #recoveryStartedAt: number | null = null;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -225,7 +236,7 @@ export class TeremoqPlayerEngine {
     const connection = await resolvePlayerConnection(this.#deployment, controller.signal);
     if (this.#stopped || generation !== this.#generation) return;
     this.#namespace = [...connection.namespace];
-    this.#update({ message: "Abriendo transporte autenticado" });
+    this.#update({ message: "Abriendo transporte con fingerprint TLS fijado" });
     const session = await MoqSession.connect(
       connection.relayUrl,
       connection.fingerprint,
@@ -322,6 +333,10 @@ export class TeremoqPlayerEngine {
   #handleVideoObject(object: MoqObject, generation: number) {
     if (generation !== this.#generation || this.#stopped || object.status !== null) return;
     this.#markActivity(generation, true);
+    this.#update({
+      videoObjects: this.#snapshot.videoObjects + 1,
+      videoBytes: this.#snapshot.videoBytes + object.payload.byteLength,
+    }, true);
     const reordered = this.#videoReorder.push(object);
     if (reordered.dropped > 0) {
       this.#update({ dropped: this.#snapshot.dropped + reordered.dropped }, true);
@@ -398,6 +413,10 @@ export class TeremoqPlayerEngine {
       this.#failClosed(failure.reason, failure.message);
       return;
     }
+    if (this.#snapshot.frames > 0 && this.#recoveryStartedAt === null) {
+      this.#recoveryStartedAt = performance.now();
+      this.#update({ sessionLosses: this.#snapshot.sessionLosses + 1 });
+    }
     this.#disposeGeneration("reconexión automática");
     this.#presentationLatency.clear();
     this.#sourceToRxLatency.clear();
@@ -467,6 +486,14 @@ export class TeremoqPlayerEngine {
         lastTimestampUs: event.timestampUs,
         rxToCanvasMs: event.rxToCanvasMs,
       };
+      if (this.#recoveryStartedAt !== null) {
+        patch.sessionRecoveries = this.#snapshot.sessionRecoveries + 1;
+        patch.lastSessionRecoveryMs = Math.max(
+          0,
+          Math.round(performance.now() - this.#recoveryStartedAt),
+        );
+        this.#recoveryStartedAt = null;
+      }
       if (event.sourceTimecodeMs !== null) patch.sourceTimecodeMs = event.sourceTimecodeMs;
       const now = performance.now();
       if (now - this.#lastLatencySnapshotAt >= LATENCY_SNAPSHOT_INTERVAL_MS) {

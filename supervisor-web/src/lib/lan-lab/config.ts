@@ -6,8 +6,13 @@ const LAN_LAB_CONFIG_KEYS = [
   "namespace",
   "prefix_length",
   "relay_url",
+  "run_id",
   "schema_version",
+  "source_commit",
 ] as const;
+
+export const LAN_LOAD_SESSION_LEVELS = [5, 10, 25] as const;
+export type LanLoadSessionLevel = (typeof LAN_LOAD_SESSION_LEVELS)[number];
 
 export type LanLabConfiguration = Readonly<{
   schema_version: 1;
@@ -15,6 +20,8 @@ export type LanLabConfiguration = Readonly<{
   fingerprint_sha256: string;
   prefix_length: number;
   namespace: string;
+  run_id: string;
+  source_commit: string;
 }>;
 
 export type PlayerDeployment =
@@ -39,6 +46,17 @@ type RuntimeEnvironment = Readonly<Record<string, string | undefined>>;
 
 export function isLanLabEnabled(environment: RuntimeEnvironment) {
   return environment.TEREMOQ_LAN_LAB === "1";
+}
+
+export function configuredLanLoadLevel(
+  environment: RuntimeEnvironment,
+): LanLoadSessionLevel | null {
+  const value = environment.TEREMOQ_LAN_LAB_LEVEL;
+  if (value === undefined || value === "1") return null;
+  if (value === "5") return 5;
+  if (value === "10") return 10;
+  if (value === "25") return 25;
+  return null;
 }
 
 export function resolvePlayerDeployment(environment: RuntimeEnvironment): PlayerDeployment {
@@ -105,6 +123,10 @@ export function parseLanLabConfiguration(value: unknown): LanLabConfiguration {
     value.prefix_length < 8 ||
     value.prefix_length > 30 ||
     typeof value.namespace !== "string"
+    || typeof value.run_id !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value.run_id)
+    || typeof value.source_commit !== "string"
+    || !/^[0-9a-f]{40}$/.test(value.source_commit)
   ) {
     throw new Error("contrato LAN inválido");
   }
@@ -117,6 +139,8 @@ export function parseLanLabConfiguration(value: unknown): LanLabConfiguration {
     fingerprint_sha256: value.fingerprint_sha256,
     prefix_length: value.prefix_length,
     namespace,
+    run_id: value.run_id,
+    source_commit: value.source_commit,
   });
 }
 
@@ -144,7 +168,7 @@ export function lanLabRequestDecision(
 ): LanLabRequestDecision {
   if (!isLocalUiHost(host)) return "misdirected";
   if (method !== "GET" && method !== "HEAD") return "method-not-allowed";
-  if (isRestrictedLanPath(pathname)) return "not-found";
+  if (!isAllowedLanPath(pathname)) return "not-found";
   return "allow";
 }
 
@@ -247,17 +271,18 @@ function isLocalUiHost(value: string | null) {
   return Number(match[2]) <= 65_535;
 }
 
-function isRestrictedLanPath(pathname: string) {
+function isAllowedLanPath(pathname: string) {
   let normalized: string;
   try {
     normalized = decodeURIComponent(pathname).replaceAll("\\", "/").toLowerCase();
   } catch {
-    return true;
+    return false;
   }
-  if (normalized.startsWith("//")) return true;
-  return ["/gateway", "/input", "/operations"].some(
-    (prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`),
-  );
+  if (normalized.startsWith("//")) return false;
+  return normalized === "/" ||
+    normalized === "/lan-load" ||
+    normalized === "/favicon.ico" ||
+    normalized.startsWith("/_next/");
 }
 
 function hasExactConfigurationKeys(value: Record<string, unknown>) {

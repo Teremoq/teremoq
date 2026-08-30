@@ -1,0 +1,197 @@
+.panel {
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  padding: clamp(20px, 4vw, 40px);
+}
+
+.headingRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.headingRow h2 {
+  margin: 8px 0 0;
+  font-size: clamp(28px, 4vw, 50px);
+  letter-spacing: -0.04em;
+}
+
+.eyebrow,
+.phase,
+.controls legend,
+.metrics dt,
+.measurementPolicy {
+  font-family: var(--mono);
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--signal);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+
+.phase {
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+}
+
+.phase[data-phase="active"] {
+  border-color: var(--signal);
+  color: var(--signal);
+}
+
+.phase[data-phase="degraded"],
+.phase[data-phase="recovering"],
+.phase[data-phase="unavailable"] {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.explanation {
+  max-width: 850px;
+  margin: 22px 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.notice {
+  padding: 14px 16px;
+  border-left: 3px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 30px 0 12px;
+  padding: 22px;
+  border: 1px solid var(--line);
+}
+
+.controls legend {
+  padding: 0 8px;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.controls button,
+.secondaryControls button {
+  min-height: 46px;
+  border: 1px solid color-mix(in srgb, var(--signal) 45%, var(--line));
+  background: transparent;
+  color: var(--signal);
+  font: 700 11px/1 var(--mono);
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+
+.controls button:hover:not(:disabled),
+.secondaryControls button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--signal) 10%, transparent);
+}
+
+.controls button:focus-visible,
+.secondaryControls button:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 3px;
+}
+
+.controls button:disabled,
+.secondaryControls button:disabled {
+  border-color: var(--line);
+  color: #63717a;
+  cursor: not-allowed;
+}
+
+.secondaryControls {
+  display: flex;
+  gap: 12px;
+}
+
+.secondaryControls button {
+  padding: 0 18px;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 32px 0 0;
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+
+.metrics > div {
+  min-width: 0;
+  padding: 18px;
+  background: var(--surface-raised);
+}
+
+.metrics dt {
+  min-height: 28px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.metrics dd {
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+  font-size: clamp(18px, 2vw, 28px);
+  font-variant-numeric: tabular-nums;
+}
+
+.measurementPolicy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin-top: 22px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.measurementPolicy p {
+  margin: 0;
+}
+
+.measurementPolicy strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .headingRow,
+  .secondaryControls {
+    flex-direction: column;
+  }
+
+  .controls {
+    grid-template-columns: 1fr;
+  }
+
+  .secondaryControls button {
+    width: 100%;
+  }
+
+  .metrics {
+    grid-template-columns: 1fr;
+  }
+}

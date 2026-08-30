@@ -41,6 +41,11 @@ function HomeContent({ deployment }: Readonly<{ deployment: PlayerDeployment }>)
               OPERACIONES
             </Link>
           )}
+          {lanLab && (
+            <Link className={styles.operationsLink} href="/lan-load">
+              CARGA 5/10/25
+            </Link>
+          )}
         </div>
       </header>
 

@@ -24,6 +24,10 @@ import {
   playerDataPolicy,
   type PlayerDeployment,
 } from "@/lib/lan-lab/config";
+import {
+  exportPlayerEvidence,
+  isCollectiblePlayerEvidence,
+} from "@/lib/lan-lab/player-evidence";
 
 const INPUT_LATENCY_SAMPLES = 512;
 const EMPTY_LATENCY: LatencyPercentiles = {
@@ -48,8 +52,12 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
   const inputFrameRef = useRef<HTMLIFrameElement>(null);
   const engineRef = useRef<TeremoqPlayerEngine | null>(null);
   const uiGenerationRef = useRef(0);
+  const playerStartedAtRef = useRef<number | null>(null);
   const [snapshot, setSnapshot] = useState(() => initialPlayerSnapshot(deployment));
   const [selectedVideoTrack, setSelectedVideoTrack] = useState<VideoTrackId>(0);
+  const [playerElapsedMs, setPlayerElapsedMs] = useState<number | null>(null);
+  const [playerStartedAtUtc, setPlayerStartedAtUtc] = useState<string | null>(null);
+  const [playerEndedAtUtc, setPlayerEndedAtUtc] = useState<string | null>(null);
   const [inputPreviewUrl, setInputPreviewUrl] = useState<string | null>(null);
   const [inputMessage, setInputMessage] = useState(
     lanLab ? "Preview de entrada no disponible en el paquete LAN" : "Leyendo configuración del observador",
@@ -208,6 +216,10 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
     const canvas = canvasRef.current;
     if (!canvas || !compatible || !configurationAvailable) return;
     const generation = ++uiGenerationRef.current;
+    playerStartedAtRef.current = performance.now();
+    setPlayerStartedAtUtc(new Date().toISOString());
+    setPlayerElapsedMs(null);
+    setPlayerEndedAtUtc(null);
     engineRef.current?.stop();
     const engine = new TeremoqPlayerEngine(
       canvas,
@@ -228,12 +240,38 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
 
   const toggleSession = async () => {
     if (engineRef.current && snapshot.running) {
+      if (playerStartedAtRef.current !== null) {
+        setPlayerElapsedMs(Math.max(1, Math.round(performance.now() - playerStartedAtRef.current)));
+      }
+      playerStartedAtRef.current = null;
+      setPlayerEndedAtUtc(new Date().toISOString());
       engineRef.current.stop();
       uiGenerationRef.current += 1;
       engineRef.current = null;
       return;
     }
     await startSession(selectedVideoTrack);
+  };
+
+  const downloadPlayerEvidence = () => {
+    const context = playerEvidenceContext(
+      deployment,
+      playerElapsedMs,
+      playerStartedAtUtc,
+      playerEndedAtUtc,
+    );
+    if (!isCollectiblePlayerEvidence(snapshot, context)) return;
+    const contents = `${JSON.stringify(
+      exportPlayerEvidence(snapshot, selectedVideoTrack, context),
+      null,
+      2,
+    )}\n`;
+    const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "teremoq-lan-player-1.json";
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const selectVideoTrack = (trackId: VideoTrackId) => {
@@ -566,6 +604,23 @@ export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) 
         >
           {active ? "Detener sesión" : `Conectar Track ${selectedVideoTrack}`}
         </button>
+        {lanLab && (
+          <button
+            type="button"
+            disabled={!isCollectiblePlayerEvidence(
+              snapshot,
+              playerEvidenceContext(
+                deployment,
+                playerElapsedMs,
+                playerStartedAtUtc,
+                playerEndedAtUtc,
+              ),
+            )}
+            onClick={downloadPlayerEvidence}
+          >
+            Exportar evidencia player
+          </button>
+        )}
         <p className={styles.note}>
           {lanLab
             ? "Recuperación manual disponible tras agotar el backoff: vuelve a conectar sin recargar ni crear reintentos ilimitados."
@@ -583,6 +638,23 @@ function Metric({ label, value, accent = false }: { label: string; value: string
       <strong className={accent ? styles.accent : undefined}>{value}</strong>
     </div>
   );
+}
+
+function playerEvidenceContext(
+  deployment: PlayerDeployment,
+  elapsedMs: number | null,
+  startedAtUtc: string | null,
+  endedAtUtc: string | null,
+) {
+  return {
+    elapsedMs,
+    runId: deployment.mode === "lan-lab" ? deployment.configuration?.run_id ?? null : null,
+    sourceCommit: deployment.mode === "lan-lab"
+      ? deployment.configuration?.source_commit ?? null
+      : null,
+    startedAtUtc,
+    endedAtUtc,
+  };
 }
 
 function Detail({ label, value }: { label: string; value: string }) {

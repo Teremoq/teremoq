@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  configuredLanLoadLevel,
   lanLabRequestDecision,
   parseLanLabConfiguration,
   parseLanLabConfigurationJson,
@@ -15,6 +16,8 @@ const validConfiguration = {
   fingerprint_sha256: fingerprint,
   prefix_length: 24,
   namespace: "teremoq/live",
+  run_id: "lan-run-01",
+  source_commit: "1".repeat(40),
 } as const;
 
 describe("modo LAN del player", () => {
@@ -189,6 +192,8 @@ describe("modo LAN del player", () => {
       { ...validConfiguration, namespace: "teremoq/../live" },
       { ...validConfiguration, namespace: "teremoq/live?track=0" },
       { ...validConfiguration, namespace: `teremoq/${"a".repeat(249)}` },
+      { ...validConfiguration, run_id: "../run" },
+      { ...validConfiguration, source_commit: "A".repeat(40) },
     ]) {
       expect(() => parseLanLabConfiguration(value)).toThrow();
     }
@@ -216,7 +221,19 @@ describe("modo LAN del player", () => {
       expect(lanLabRequestDecision("127.0.0.1:3000", path, "GET")).toBe("not-found");
     }
     expect(lanLabRequestDecision("127.0.0.1:3000", "/", "GET")).toBe("allow");
+    expect(lanLabRequestDecision("127.0.0.1:3000", "/lan-load", "GET")).toBe("allow");
     expect(lanLabRequestDecision("localhost:3000", "/_next/static/app.js", "GET")).toBe("allow");
+    expect(lanLabRequestDecision("localhost:3000", "/unknown", "GET")).toBe("not-found");
+  });
+
+  it("sólo traduce los niveles ligeros 5/10/25 del launcher", () => {
+    expect(configuredLanLoadLevel({ TEREMOQ_LAN_LAB_LEVEL: "1" })).toBeNull();
+    expect(configuredLanLoadLevel({ TEREMOQ_LAN_LAB_LEVEL: "5" })).toBe(5);
+    expect(configuredLanLoadLevel({ TEREMOQ_LAN_LAB_LEVEL: "10" })).toBe(10);
+    expect(configuredLanLoadLevel({ TEREMOQ_LAN_LAB_LEVEL: "25" })).toBe(25);
+    for (const value of ["0", "2", "6", "26", "025", "5.0", "five", ""]) {
+      expect(configuredLanLoadLevel({ TEREMOQ_LAN_LAB_LEVEL: value })).toBeNull();
+    }
   });
 
   it("rechaza host remoto y métodos mutables aunque el bind se configure mal", () => {

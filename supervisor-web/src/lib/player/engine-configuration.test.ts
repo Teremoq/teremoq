@@ -23,6 +23,8 @@ describe("bootstrap del player LAN", () => {
         fingerprint_sha256: fingerprint,
         prefix_length: 24,
         namespace: "teremoq/site-7/live",
+        run_id: "lan-engine-test",
+        source_commit: "1".repeat(40),
       }),
     });
 

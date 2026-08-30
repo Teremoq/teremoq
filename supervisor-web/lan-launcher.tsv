@@ -1,0 +1,9 @@
+schema_version	1
+launcher_relative_path	teremoq-lan-platform.ps1
+launcher_sha256	3d42eef0e1ed20531b9bb97d8a0d4187765dc6a4476700d992dca11cb76f0762
+actions	start,status,stop,collect
+levels	1,5,10,25
+max_clients	25
+network_contract	outbound_udp_14433_only
+loopback_http_only	true
+source_commit	<required-by-package-lan>

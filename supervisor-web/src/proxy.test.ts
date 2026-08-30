@@ -35,8 +35,12 @@ describe("frontera HTTP del paquete LAN", () => {
     process.env.TEREMOQ_LAN_LAB = "1";
     expect(proxy(request("http://127.0.0.1:3000/")).status).toBe(200);
     expect(proxy(request("http://localhost:3000/")).status).toBe(200);
+    expect(proxy(request("http://localhost:3000/lan-load")).status).toBe(200);
+    expect(proxy(request("http://localhost:3000/_next/static/app.js")).status).toBe(200);
+    expect(proxy(request("http://localhost:3000/desconocido")).status).toBe(404);
     expect(proxy(request("http://192.168.1.50:3000/")).status).toBe(421);
     expect(proxy(request("http://127.0.0.1:3000/", "POST")).status).toBe(405);
+    expect(proxy(request("http://127.0.0.1:3000/lan-load", "DELETE")).status).toBe(405);
   });
 });
 

@@ -88,9 +88,9 @@ En PowerShell del ordenador cliente, prepara el artefacto y arráncalo así:
 ```powershell
 npm ci
 npm run build:lan
-npm run package:lan -- --output C:\teremoq-lan-lab
+npm run package:lan -- --output C:\teremoq-lan-lab --source-commit <40 hex minúsculas>
 Set-Location C:\teremoq-lan-lab
-$env:TEREMOQ_LAN_LAB_CONFIG='{"schema_version":1,"relay_url":"https://192.168.10.20:14433/watch","fingerprint_sha256":"<64 hex minúsculas>","prefix_length":24,"namespace":"teremoq/live"}'
+$env:TEREMOQ_LAN_LAB_CONFIG='{"schema_version":1,"relay_url":"https://192.168.10.20:14433/watch","fingerprint_sha256":"<64 hex minúsculas>","prefix_length":24,"namespace":"teremoq/live","run_id":"lan-manual-01","source_commit":"<40 hex minúsculas>"}'
 node start.mjs
 ```
 
@@ -111,7 +111,7 @@ ordenador. El proxy rechaza cualquier `Host` no local, método mutable y acceso 
 error. La configuración se hereda localmente al arrancar, se valida de nuevo en
 servidor y cliente y no dispone de endpoint HTTP propio.
 
-El JSON admite exactamente cinco campos, sin extensiones. La URL debe usar
+El JSON admite exactamente siete campos, sin extensiones. La URL debe usar
 `https`, una IPv4 RFC1918 literal y canónica, puerto frontal `14433` y path
 exacto `/watch`, sin credenciales, query ni fragment. `prefix_length` es un
 entero entre 8 y 30; la dirección se rechaza si es la red o broadcast calculada
@@ -126,6 +126,60 @@ trazado por Next.js —incluidas sólo sus dependencias runtime seleccionadas—
 estáticos y el launcher; no copia el checkout ni el `node_modules` completo.
 Exige un directorio nuevo, limita el resultado a 128 MiB y genera
 `MANIFEST.sha256.json` ordenado para verificar contenido y tamaño.
+
+### Launcher cerrado para Platform y carga progresiva
+
+El paquete contiene `lan-launcher.tsv`, `teremoq-lan-platform.ps1` y un
+validador cerrado de evidencia. `package:lan` exige `--source-commit` y enlaza
+ese commit tanto al TSV de nueve claves como al manifest, que también conserva
+la versión de `package.json`. Un SHA ausente, no canónico o distinto del
+`VERSION.tsv` exterior se rechaza.
+
+Platform coloca junto al directorio del player `VERSION.tsv` y
+`LAN-CONFIG.json`, ambos públicos, regulares y sin symlinks. `VERSION.tsv`
+contiene exactamente `schema_version`, `package_version`, `run_id`,
+`source_commit`, `server_ipv4`, `moq_url`, `player_manifest_sha256`,
+`launcher_contract_sha256`, `lan_config_sha256`, `player_evidence` y
+`load_launcher_status`. Al arrancar, los dos últimos estados son
+`not_measured` y `ready`. No existe URL de publicación o descarga remota.
+
+`LAN-CONFIG.json` mide como máximo 512 bytes y contiene únicamente
+`schema_version`, `relay_url`, `fingerprint_sha256`, `prefix_length`,
+`namespace`, `run_id` y `source_commit`. El launcher valida su hash, la URL RFC1918 exacta
+`https://<IPv4>:14433/watch`, el pin del certificado y el namespace; después
+serializa el objeto canónicamente sólo para el hijo Node. Rechaza una variable
+heredada distinta. Antes de arrancar exige que TCP `127.0.0.1:3000` esté libre,
+verifica Node y espera readiness local durante un máximo de 15 segundos. Stop
+cruza PID, ejecutable, línea de comando y hora de inicio para impedir PID reuse.
+
+Comandos exactos de Platform para el player real y las tres cargas:
+
+```powershell
+& .\teremoq-lan-platform.ps1 -Action start -RunId lan-1 -Level 1 -VersionPath ..\VERSION.tsv -FingerprintPath ..\fingerprint.sha256 -EvidenceDirectory C:\teremoq-evidence\lan-1
+& .\teremoq-lan-platform.ps1 -Action start -RunId lan-5 -Level 5 -VersionPath ..\VERSION.tsv -FingerprintPath ..\fingerprint.sha256 -EvidenceDirectory C:\teremoq-evidence\lan-5
+& .\teremoq-lan-platform.ps1 -Action start -RunId lan-10 -Level 10 -VersionPath ..\VERSION.tsv -FingerprintPath ..\fingerprint.sha256 -EvidenceDirectory C:\teremoq-evidence\lan-10
+& .\teremoq-lan-platform.ps1 -Action start -RunId lan-25 -Level 25 -VersionPath ..\VERSION.tsv -FingerprintPath ..\fingerprint.sha256 -EvidenceDirectory C:\teremoq-evidence\lan-25
+```
+
+El nivel 1 sirve `/`; 5, 10 y 25 sirven `/lan-load` y arrancan exactamente esa
+cardinalidad al visitar la ruta local. Son sesiones MoQT desde una única IP
+permitida por el banco y TLS fingerprint-pinned; el navegador no presenta
+identidad cliente mTLS. Consumen Track 1 LQ sin canvas ni WebCodecs. Cada sesión
+tiene seis reintentos como máximo durante 30 segundos, ocho segundos de límite
+para handshake/suscripción y cleanup cancelable.
+
+Tras tráfico real, se pulsa **Detener y limpiar** y luego **Exportar JSON
+local**. La descarga se mueve, sin renombrarla, al `EvidenceDirectory` y se
+ejecuta `-Action collect`. Es una
+`local-browser-observation-user-exported`: el launcher valida esquema,
+cardinalidad, duración mínima de 600 segundos, identidad pública, timestamps UTC,
+relaciones y SHA-256, pero devuelve
+`not_attested_user_export`; el hash detecta cambios, no demuestra autenticidad.
+
+No se infieren espectadores autorizados, subscribers de red,
+ingest-to-publish, pérdida/jitter QUIC ni recuperación Wi-Fi. Permanecen
+`not_measured` o `not_available`. G2G sólo es `measured` si el player decodificó
+el timecode visual; con cero muestras queda `null/not_available`.
 
 El paquete LAN no consulta snapshots, playback, operaciones ni el endpoint de
 certificado del Gateway. Por ello la entrada SRT, salud global de Tracks,
