@@ -56,6 +56,11 @@
   color: var(--text);
 }
 
+.environment[data-lan="true"] {
+  border-color: color-mix(in srgb, var(--warning) 55%, #314251);
+  color: var(--warning);
+}
+
 .operationsLink {
   padding: 8px 10px;
   border: 1px solid color-mix(in srgb, var(--signal) 35%, #314251);
@@ -123,6 +128,10 @@
 
   .environment {
     display: none;
+  }
+
+  .environment[data-lan="true"] {
+    display: inline-flex;
   }
 
   .intro {

@@ -99,6 +99,21 @@ describe("BoundedReconnect", () => {
     expect(called).toBe(false);
     expect(clock.timerCount).toBe(0);
   });
+
+  it("permite recovery manual con un presupuesto nuevo y sin conservar timers", () => {
+    const clock = new TestClock();
+    const reconnect = new BoundedReconnect(clock);
+    let calls = 0;
+    reconnect.schedule(() => { calls += 1; });
+    reconnect.cancel();
+
+    reconnect.markHealthy();
+    expect(reconnect.schedule(() => { calls += 1; }).status).toBe("scheduled");
+    clock.advance(10_000);
+
+    expect(calls).toBe(1);
+    expect(clock.timerCount).toBe(0);
+  });
 });
 
 describe("ActivityWatchdog", () => {

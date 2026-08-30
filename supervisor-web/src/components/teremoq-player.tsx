@@ -20,6 +20,10 @@ import {
   visualTimecodeRegion,
 } from "@/lib/player/visual-timecode";
 import styles from "./teremoq-player.module.css";
+import {
+  playerDataPolicy,
+  type PlayerDeployment,
+} from "@/lib/lan-lab/config";
 
 const INPUT_LATENCY_SAMPLES = 512;
 const EMPTY_LATENCY: LatencyPercentiles = {
@@ -28,21 +32,28 @@ const EMPTY_LATENCY: LatencyPercentiles = {
   p95Ms: null,
   p99Ms: null,
 };
+const LAN_TRACKS = ["VIDEO HQ", "VIDEO LQ", "AUDIO CRÍTICO", "TELEMETRÍA"] as const;
 
 type Capability = {
   label: string;
   supported: boolean;
 };
 
-export function TeremoqPlayer() {
+export function TeremoqPlayer({ deployment }: { deployment: PlayerDeployment }) {
+  const lanLab = deployment.mode === "lan-lab";
+  const policy = playerDataPolicy(deployment);
+  const configurationAvailable =
+    deployment.mode === "loopback" || deployment.configurationStatus === "available";
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const inputFrameRef = useRef<HTMLIFrameElement>(null);
   const engineRef = useRef<TeremoqPlayerEngine | null>(null);
   const uiGenerationRef = useRef(0);
-  const [snapshot, setSnapshot] = useState(initialPlayerSnapshot);
+  const [snapshot, setSnapshot] = useState(() => initialPlayerSnapshot(deployment));
   const [selectedVideoTrack, setSelectedVideoTrack] = useState<VideoTrackId>(0);
   const [inputPreviewUrl, setInputPreviewUrl] = useState<string | null>(null);
-  const [inputMessage, setInputMessage] = useState("Leyendo configuración del observador");
+  const [inputMessage, setInputMessage] = useState(
+    lanLab ? "Preview de entrada no disponible en el paquete LAN" : "Leyendo configuración del observador",
+  );
   const [inputFrameReady, setInputFrameReady] = useState(false);
   const [inputMediaPlaying, setInputMediaPlaying] = useState(false);
   const [inputLatencyWindow] = useState(() => new LatencyWindow(INPUT_LATENCY_SAMPLES));
@@ -64,12 +75,14 @@ export function TeremoqPlayer() {
     capabilities.length > 0 && capabilities.every(({ supported }) => supported);
   const active = snapshot.running;
   const playing = snapshot.running && snapshot.frames > 0;
-  const effectivePhase: PlayerPhase = browserMounted && !compatible
+  const effectivePhase: PlayerPhase = !configurationAvailable || (browserMounted && !compatible)
     ? "unavailable"
     : snapshot.phase;
-  const effectiveReason: PlayerReason = browserMounted && !compatible
-    ? "browser-unsupported"
-    : snapshot.reason;
+  const effectiveReason: PlayerReason = !configurationAvailable
+    ? "configuration-invalid"
+    : browserMounted && !compatible
+      ? "browser-unsupported"
+      : snapshot.reason;
   const activeTracks =
     gatewaySnapshot?.tracks.filter((track) => track.status === "active").length ?? 0;
 
@@ -77,6 +90,19 @@ export function TeremoqPlayer() {
     let stopped = false;
     let timer: number | null = null;
     const controller = new AbortController();
+
+    const cleanup = () => {
+      stopped = true;
+      uiGenerationRef.current += 1;
+      controller.abort();
+      if (timer !== null) window.clearTimeout(timer);
+      engineRef.current?.stop();
+      engineRef.current = null;
+    };
+
+    if (!policy.loadGatewayPlayback || !policy.pollGatewaySnapshot) {
+      return cleanup;
+    }
 
     void loadPlaybackConfiguration(controller.signal)
       .then((configuration) => {
@@ -107,14 +133,8 @@ export function TeremoqPlayer() {
     };
     void refreshSnapshot();
 
-    return () => {
-      stopped = true;
-      uiGenerationRef.current += 1;
-      controller.abort();
-      if (timer !== null) window.clearTimeout(timer);
-      engineRef.current?.stop();
-    };
-  }, []);
+    return cleanup;
+  }, [policy.loadGatewayPlayback, policy.pollGatewaySnapshot]);
 
   useEffect(() => {
     if (!inputFrameReady || !inputPreviewUrl) return;
@@ -186,7 +206,7 @@ export function TeremoqPlayer() {
 
   const startSession = async (trackId: VideoTrackId) => {
     const canvas = canvasRef.current;
-    if (!canvas || !compatible) return;
+    if (!canvas || !compatible || !configurationAvailable) return;
     const generation = ++uiGenerationRef.current;
     engineRef.current?.stop();
     const engine = new TeremoqPlayerEngine(
@@ -195,6 +215,7 @@ export function TeremoqPlayer() {
         if (uiGenerationRef.current === generation) setSnapshot(nextSnapshot);
       },
       trackId,
+      deployment,
     );
     engineRef.current = engine;
     try {
@@ -221,7 +242,7 @@ export function TeremoqPlayer() {
     uiGenerationRef.current += 1;
     engineRef.current?.stop();
     engineRef.current = null;
-    setSnapshot(initialPlayerSnapshot());
+    setSnapshot(initialPlayerSnapshot(deployment));
     setSelectedVideoTrack(trackId);
     if (reconnect) void startSession(trackId);
   };
@@ -235,12 +256,16 @@ export function TeremoqPlayer() {
             <h2>Señales publicadas por el Gateway</h2>
           </div>
           <strong data-complete={activeTracks === 4}>
-            {gatewaySnapshot ? `${activeTracks} / 4 ACTIVAS` : "LEYENDO GATEWAY…"}
+            {gatewaySnapshot
+              ? `${activeTracks} / 4 ACTIVAS`
+              : lanLab
+                ? "SALUD NO MEDIDA"
+                : "LEYENDO GATEWAY…"}
           </strong>
         </div>
 
         <div className={styles.trackMatrix}>
-          {gatewaySnapshot?.tracks.map((track) => (
+          {gatewaySnapshot ? gatewaySnapshot.tracks.map((track) => (
             <div key={track.id} data-active={track.status === "active"}>
               <div className={styles.trackCardHeader}>
                 <span className={styles.trackIdentity}>TRACK {track.id}</span>
@@ -253,13 +278,32 @@ export function TeremoqPlayer() {
                 <span>{track.objects.toLocaleString("es-ES")} OBJ</span>
               </div>
             </div>
-          )) ?? <span className={styles.checking}>Leyendo Tracks…</span>}
+          )) : lanLab ? LAN_TRACKS.map((label, trackId) => (
+            <div key={label} data-active="false">
+              <div className={styles.trackCardHeader}>
+                <span className={styles.trackIdentity}>TRACK {trackId}</span>
+                <span className={styles.trackStatus}>NO MEDIDA</span>
+              </div>
+              <strong>{label}</strong>
+              <div className={styles.trackCardFooter}>
+                <span>SIN DATO</span>
+                <span>{trackId === selectedVideoTrack ? "PLAYER SELECCIONADO" : "NO MEDIDO"}</span>
+                <span>OBJ —</span>
+              </div>
+            </div>
+          )) : <span className={styles.checking}>Leyendo Tracks…</span>}
         </div>
 
         <div className={styles.telemetryPanel} data-live={snapshot.telemetry !== null}>
           <div>
             <span>TRACK 3 · TELEMETRÍA</span>
-            <strong>{snapshot.telemetry ? "DATOS EN VIVO" : "ESPERANDO SUSCRIPCIÓN"}</strong>
+            <strong>
+              {snapshot.telemetry
+                ? "DATOS EN VIVO"
+                : lanLab
+                  ? "NO MEDIDA"
+                  : "ESPERANDO SUSCRIPCIÓN"}
+            </strong>
           </div>
           <TelemetryValue label="Vehículo" value={snapshot.telemetry?.vehicle ?? "—"} />
           <TelemetryValue
@@ -310,7 +354,13 @@ export function TeremoqPlayer() {
           {inputMediaPlaying && <span className={styles.onAir}>LIVE · SRT INPUT</span>}
           {(!inputPreviewUrl || !inputFrameReady) && (
             <div className={styles.emptyState}>
-              <strong>{gatewaySnapshot?.inputActive ? "Señal detectada" : "Entrada pendiente"}</strong>
+              <strong>
+                {lanLab
+                  ? "Entrada no disponible"
+                  : gatewaySnapshot?.inputActive
+                    ? "Señal detectada"
+                    : "Entrada pendiente"}
+              </strong>
               <span>{inputMessage}</span>
             </div>
           )}
@@ -318,7 +368,15 @@ export function TeremoqPlayer() {
         <div className={`${styles.metrics} ${styles.outputMetrics}`}>
           <Metric
             label="Estado"
-            value={inputMediaPlaying ? "WebRTC activo" : gatewaySnapshot?.inputActive ? "SRT activo" : "Esperando"}
+            value={
+              lanLab
+                ? "No disponible"
+                : inputMediaPlaying
+                  ? "WebRTC activo"
+                  : gatewaySnapshot?.inputActive
+                    ? "SRT activo"
+                    : "Esperando"
+            }
             accent={inputMediaPlaying}
           />
           <Metric
@@ -338,10 +396,9 @@ export function TeremoqPlayer() {
           />
         </div>
         <p className={styles.tapNote}>
-          Tap prescindible · {formatLocation(gatewaySnapshot)} · {gatewaySnapshot ? formatBytes(gatewaySnapshot.sourceBytes) : "sin datos"}
-          {inputSourceLatency.samples > 0
-            ? ` · timecode visual ±10 ms · n=${inputSourceLatency.samples.toLocaleString("es-ES")}`
-            : " · timecode no detectado"}
+          {lanLab
+            ? "Fuente local de configuración · métricas Gateway no medidas"
+            : `Tap prescindible · ${formatLocation(gatewaySnapshot)} · ${gatewaySnapshot ? formatBytes(gatewaySnapshot.sourceBytes) : "sin datos"}${inputSourceLatency.samples > 0 ? ` · timecode visual ±10 ms · n=${inputSourceLatency.samples.toLocaleString("es-ES")}` : " · timecode no detectado"}`}
         </p>
       </div>
 
@@ -438,6 +495,12 @@ export function TeremoqPlayer() {
           <Detail label="Decoder queue" value={String(snapshot.decoderQueue)} />
           <Detail label="Descartes cliente" value={String(snapshot.dropped)} />
           <Detail label="Motivo" value={reasonLabel(effectiveReason)} />
+          {lanLab && (
+            <Detail
+              label="Configuración"
+              value={configurationAvailable ? "LOCAL · VALIDADA" : "LOCAL · NO DISPONIBLE"}
+            />
+          )}
           <Detail label="Reintento" value={snapshot.reconnectAttempt === 0 ? "—" : String(snapshot.reconnectAttempt)} />
           <Detail
             label="Cola Gateway"
@@ -482,21 +545,31 @@ export function TeremoqPlayer() {
         >
           <span className={styles.stateDot} />
           <div>
-            <strong>{compatible ? phaseLabel(snapshot.phase) : "No disponible"}</strong>
-            <p>{compatible ? snapshot.message : "El player requiere WebTransport y WebCodecs."}</p>
+            <strong>
+              {configurationAvailable && compatible ? phaseLabel(snapshot.phase) : "No disponible"}
+            </strong>
+            <p>
+              {!configurationAvailable
+                ? "Configuración LAN local ausente o inválida."
+                : compatible
+                  ? snapshot.message
+                  : "El player requiere WebTransport y WebCodecs."}
+            </p>
           </div>
         </div>
 
         <button
           type="button"
           data-testid="connect-player"
-          disabled={!compatible}
+          disabled={!compatible || !configurationAvailable}
           onClick={() => void toggleSession()}
         >
           {active ? "Detener sesión" : `Conectar Track ${selectedVideoTrack}`}
         </button>
         <p className={styles.note}>
-          G2G solo aparece al validar el timecode visual del fixture. En otras fuentes permanece no disponible.
+          {lanLab
+            ? "Recuperación manual disponible tras agotar el backoff: vuelve a conectar sin recargar ni crear reintentos ilimitados."
+            : "G2G solo aparece al validar el timecode visual del fixture. En otras fuentes permanece no disponible."}
         </p>
       </aside>
     </section>

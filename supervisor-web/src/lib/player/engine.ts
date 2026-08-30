@@ -21,6 +21,10 @@ import { parseVehicleTelemetry, type VehicleTelemetry } from "./telemetry";
 import { BoundedReconnect } from "./reconnect";
 import { AsyncByteReader, MoqProtocolError } from "../moqt/binary";
 import { ActivityWatchdog } from "./activity-watchdog";
+import {
+  parseLanLabConfiguration,
+  type PlayerDeployment,
+} from "../lan-lab/config";
 
 const UI_SNAPSHOT_INTERVAL_MS = 250;
 const PRESENTATION_LATENCY_SAMPLES = 512;
@@ -136,6 +140,7 @@ export class TeremoqPlayerEngine {
   readonly #onSnapshot: (snapshot: PlayerSnapshot) => void;
   readonly #trackId: VideoTrackId;
   readonly #trackName: CatalogVideoTrackName;
+  readonly #deployment: PlayerDeployment;
   readonly #reconnect = new BoundedReconnect();
   readonly #watchdog: ActivityWatchdog;
   #snapshot = { ...INITIAL_SNAPSHOT };
@@ -155,10 +160,12 @@ export class TeremoqPlayerEngine {
     canvas: HTMLCanvasElement,
     onSnapshot: (snapshot: PlayerSnapshot) => void,
     trackId: VideoTrackId = 0,
+    deployment: PlayerDeployment = loopbackDeployment(),
   ) {
     this.#onSnapshot = onSnapshot;
     this.#trackId = trackId;
     this.#trackName = trackId === 0 ? "0-video-hq" : "1-video-lq";
+    this.#deployment = deployment;
     this.#decoder = new CanvasVideoDecoder(canvas, (event) => this.#handleDecoderEvent(event));
     this.#watchdog = new ActivityWatchdog({
       onVideoStale: () => {
@@ -171,7 +178,7 @@ export class TeremoqPlayerEngine {
       },
       onPeerSilent: () => this.#recoverConnection(new PeerSilentError(), this.#generation),
     });
-    this.#snapshot = { ...INITIAL_SNAPSHOT };
+    this.#snapshot = initialPlayerSnapshot(deployment);
     this.#onSnapshot({ ...this.#snapshot });
   }
 
@@ -215,15 +222,13 @@ export class TeremoqPlayerEngine {
     const generation = ++this.#generation;
     const controller = new AbortController();
     this.#generationController = controller;
-    const playback = await loadPlaybackConfiguration(controller.signal);
+    const connection = await resolvePlayerConnection(this.#deployment, controller.signal);
     if (this.#stopped || generation !== this.#generation) return;
-    this.#namespace = playback.namespace;
+    this.#namespace = [...connection.namespace];
     this.#update({ message: "Abriendo transporte autenticado" });
-    const fingerprint = await loadFingerprint(controller.signal);
-    if (this.#stopped || generation !== this.#generation) return;
     const session = await MoqSession.connect(
-      playback.relayUrl,
-      fingerprint,
+      connection.relayUrl,
+      connection.fingerprint,
       (event) => this.#handleSessionEvent(event, generation),
       controller.signal,
     );
@@ -541,8 +546,11 @@ export class TeremoqPlayerEngine {
   }
 }
 
-export function initialPlayerSnapshot() {
-  return { ...INITIAL_SNAPSHOT };
+export function initialPlayerSnapshot(deployment: PlayerDeployment = loopbackDeployment()) {
+  return {
+    ...INITIAL_SNAPSHOT,
+    relayLabel: deployment.mode === "lan-lab" ? "Relay privado LAN" : "Relay local del Gateway",
+  };
 }
 
 class TrustConfigurationError extends Error {
@@ -578,6 +586,56 @@ async function loadFingerprint(signal: AbortSignal) {
       cause instanceof Error ? cause.message : "fingerprint inválido",
     );
   }
+}
+
+export async function resolvePlayerConnection(
+  deployment: PlayerDeployment,
+  signal: AbortSignal,
+) {
+  if (signal.aborted) throw abortError();
+  if (deployment.mode === "loopback") {
+    const playback = await loadPlaybackConfiguration(signal);
+    const fingerprint = await loadFingerprint(signal);
+    return {
+      relayUrl: playback.relayUrl,
+      namespace: playback.namespace,
+      fingerprint,
+    };
+  }
+  if (deployment.configuration === null) {
+    throw new PlaybackConfigurationError("configuración LAN no disponible");
+  }
+  let configuration;
+  try {
+    configuration = parseLanLabConfiguration(deployment.configuration);
+  } catch {
+    throw new PlaybackConfigurationError("configuración LAN inválida");
+  }
+  let fingerprint: Uint8Array;
+  try {
+    fingerprint = decodeSha256Hex(configuration.fingerprint_sha256);
+  } catch {
+    throw new TrustConfigurationError("fingerprint LAN inválido");
+  }
+  return {
+    relayUrl: configuration.relay_url,
+    namespace: configuration.namespace.split("/"),
+    fingerprint,
+  };
+}
+
+function loopbackDeployment(): PlayerDeployment {
+  return {
+    mode: "loopback",
+    environmentLabel: "LAB LOOPBACK",
+    configurationSource: "gateway-read-only",
+    metricsStatus: "available",
+    operationsAvailable: true,
+  };
+}
+
+function abortError() {
+  return new DOMException("operación cancelada", "AbortError");
 }
 
 function classifyFailure(cause: unknown):

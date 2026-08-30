@@ -75,6 +75,71 @@ El servidor Next.js presenta MediaMTX bajo `/input/` en el mismo origen para
 que el supervisor pueda garantizar reproducción automática muda y mantener
 los endpoints WHEP relativos dentro del proxy local.
 
+## Paquete cliente LAN de laboratorio
+
+El modo normal sigue siendo `LAB LOOPBACK`: `npm run dev` y `npm start`
+conservan las APIs `/gateway`, el observador `/input/` y `/operations` read-only.
+El cliente LAN es un opt-in separado para una prueba real desde Chrome/Edge en
+otro ordenador. No es una configuración de producción ni expone el dashboard
+del Gateway.
+
+En PowerShell del ordenador cliente, prepara el artefacto y arráncalo así:
+
+```powershell
+npm ci
+npm run build:lan
+npm run package:lan -- --output C:\teremoq-lan-lab
+Set-Location C:\teremoq-lan-lab
+$env:TEREMOQ_LAN_LAB_CONFIG='{"schema_version":1,"relay_url":"https://192.168.10.20:14433/watch","fingerprint_sha256":"<64 hex minúsculas>","prefix_length":24,"namespace":"teremoq/live"}'
+node start.mjs
+```
+
+Para arrancar directamente desde el checkout tras `npm run build:lan`, también
+se puede definir la misma variable y ejecutar:
+
+```powershell
+npm run start:lan
+```
+
+`build:lan` es el único build que activa la ruta dinámica LAN y genera el output
+standalone mínimo de Next.js. El `npm run build` normal no llama a `connection()`
+ni altera `/`: conserva el supervisor `LAB LOOPBACK`. El launcher del artefacto
+activa `TEREMOQ_LAN_LAB=1` dentro del proceso hijo y fija el servidor
+exclusivamente a `127.0.0.1`; abre `http://127.0.0.1:3000/` en ese mismo
+ordenador. El proxy rechaza cualquier `Host` no local, método mutable y acceso a
+`/gateway`, `/input` u `/operations`, incluso si alguien cambia el bind por
+error. La configuración se hereda localmente al arrancar, se valida de nuevo en
+servidor y cliente y no dispone de endpoint HTTP propio.
+
+El JSON admite exactamente cinco campos, sin extensiones. La URL debe usar
+`https`, una IPv4 RFC1918 literal y canónica, puerto frontal `14433` y path
+exacto `/watch`, sin credenciales, query ni fragment. `prefix_length` es un
+entero entre 8 y 30; la dirección se rechaza si es la red o broadcast calculada
+para ese prefijo o si la subred sale del bloque RFC1918. `namespace` refleja el
+namespace MoQT configurado realmente en el Gateway, usa segmentos ASCII de
+letras, dígitos, `-`, `_` o `.`, y no puede superar 256 bytes. El fingerprint es
+obligatorio y corresponde al SHA-256 DER esperado; el player continúa usando
+`serverCertificateHashes` y no incluye opción para desactivar TLS o trust.
+
+`package:lan` no consulta Git ni depende de `origin/main`. Copia el standalone
+trazado por Next.js —incluidas sólo sus dependencias runtime seleccionadas—, los
+estáticos y el launcher; no copia el checkout ni el `node_modules` completo.
+Exige un directorio nuevo, limita el resultado a 128 MiB y genera
+`MANIFEST.sha256.json` ordenado para verificar contenido y tamaño.
+
+El paquete LAN no consulta snapshots, playback, operaciones ni el endpoint de
+certificado del Gateway. Por ello la entrada SRT, salud global de Tracks,
+colas y métricas de ingesta aparecen como **no disponibles/no medidas**, nunca
+como cero. La telemetría recibida dentro de la sesión MoQT y las métricas
+locales de decode/canvas sí se muestran cuando existen.
+
+Una interrupción breve de Wi-Fi conserva el backoff existente de seis intentos
+y 30 segundos. Cuando se agota, el operador puede pulsar de nuevo **Conectar**
+para crear una generación limpia; no hay reintento infinito. Exponer el relay
+LAN frontal en UDP/14433, encaminarlo hacia el relay backend ya existente en
+`127.0.0.1:4433` y preparar el certificado/fingerprint pertenecen al banco E2E;
+este paquete no abre puertos ni configura ese forwarding.
+
 ## Flujo implementado
 
 ```text

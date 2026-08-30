@@ -136,6 +136,23 @@ describe("dashboard de operaciones", () => {
     }
   });
 
+  it("deshabilita también la proyección local cuando el paquete está en LAN", async () => {
+    const previousLan = process.env.TEREMOQ_LAN_LAB;
+    const previousSimulation = process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION;
+    process.env.TEREMOQ_LAN_LAB = "1";
+    process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION = "task-09";
+    try {
+      const response = await getControlPlaneProjection();
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ status: "not-configured" });
+    } finally {
+      if (previousLan === undefined) delete process.env.TEREMOQ_LAN_LAB;
+      else process.env.TEREMOQ_LAN_LAB = previousLan;
+      if (previousSimulation === undefined) delete process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION;
+      else process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION = previousSimulation;
+    }
+  });
+
   it("sirve sólo la proyección redactada del artefacto Task 09 aceptado con opt-in", async () => {
     const previous = process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION;
     process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION = "task-09";

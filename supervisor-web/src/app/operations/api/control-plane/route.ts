@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { readUtf8FileLimited } from "../../../../lib/operations/bounded-file";
 import { parseTask09Report } from "../../../../lib/operations/control-plane-adapter";
+import { isLanLabEnabled } from "../../../../lib/lan-lab/config";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,6 +15,9 @@ const TASK_09_REPORT = path.resolve(
 );
 
 export async function GET() {
+  if (isLanLabEnabled(process.env)) {
+    return safeJson({ status: "not-configured" }, 404);
+  }
   if (process.env.TEREMOQ_OPERATIONS_LOCAL_SIMULATION !== "task-09") {
     return safeJson({ status: "not-configured" }, 503);
   }
