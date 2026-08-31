@@ -229,6 +229,10 @@ if ($trustedExplorerMissingContext.traversal_outcome -ne 'terminated_after_explo
     -not (Test-TeremoqCaptureContextEvidence -Context $trustedExplorerMissingContext)) {
     throw 'trusted explorer-root missing termination was not accepted'
 }
+$desktopHelper = Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName 'powershell.exe' -PowerShellEdition 'Desktop' -ParentProcessNames @('explorer.exe') -ObservedEnvKeys @()
+if (-not $desktopHelper) { throw 'Desktop explorer-root helper did not accept the canonical chain' }
+$coreHelper = Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName 'powershell.exe' -PowerShellEdition 'Core' -ParentProcessNames @('explorer.exe') -ObservedEnvKeys @()
+if ($coreHelper) { throw 'Core explorer-root helper was accepted' }
 $unknownMissingRecords = @{
     221 = (New-TeremoqMockProcess -ProcessId 221 -Name 'powershell.exe' -ParentProcessId 220)
     220 = (New-TeremoqMockProcess -ProcessId 220 -Name 'unknownshell.exe' -ParentProcessId 219 -CreationDate '20260831095900.000000+120')
@@ -287,6 +291,18 @@ $specialOutcomeWslContext = [ordered]@{
     powershell_version_major = 5
 }
 if (Test-TeremoqCaptureContextEvidence -Context $specialOutcomeWslContext) { throw 'WSL-tagged explorer-root missing outcome was accepted' }
+$specialOutcomeCoreContext = [ordered]@{
+    schema_version = 2
+    current_process_name = 'powershell.exe'
+    parent_process_names = @('explorer.exe')
+    parent_process_count = 1
+    traversal_depth_limit = 16
+    traversal_outcome = 'terminated_after_explorer_root_missing'
+    wsl_environment_keys_present = @()
+    powershell_edition = 'Core'
+    powershell_version_major = 7
+}
+if (Test-TeremoqCaptureContextEvidence -Context $specialOutcomeCoreContext) { throw 'Core explorer-root missing outcome was accepted' }
 $unstableExplorerCurrent = [ordered]@{
     ProcessId = [int64]251
     ParentProcessId = [int64]250

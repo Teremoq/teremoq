@@ -411,6 +411,24 @@ class LabRuntimePolicyTest(unittest.TestCase):
                         SERVER_IP, CLIENT_IP, 24, PROFILE,
                         MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK,
                     )
+        invalid = windows_preflight("server")
+        invalid["capture_context"] = {
+            "schema_version": 2,
+            "current_process_name": "powershell.exe",
+            "parent_process_names": ["explorer.exe"],
+            "parent_process_count": 1,
+            "traversal_depth_limit": 16,
+            "traversal_outcome": "terminated_after_explorer_root_missing",
+            "wsl_environment_keys_present": [],
+            "powershell_edition": "Core",
+            "powershell_version_major": 7,
+        }
+        with self.assertRaisesRegex(ValueError, "trusted explorer root termination"):
+            RUNTIME.parse_windows_preflight(
+                json.dumps(invalid).encode(), "server", RUN_ID, SOURCE_COMMIT,
+                SERVER_IP, CLIENT_IP, 24, PROFILE,
+                MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK,
+            )
 
     def test_capture_context_rejects_wsl_interop_and_incomplete_walks(self) -> None:
         document = windows_preflight("server")

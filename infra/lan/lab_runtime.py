@@ -313,7 +313,8 @@ def validate_capture_context(context: object, label: str) -> None:
     if len(set(wsl_environment_keys_present)) != len(wsl_environment_keys_present):
         fail(f"{label} WSL environment key evidence contains duplicates")
     if traversal_outcome == "terminated_after_explorer_root_missing":
-        if current_process_name != "powershell.exe" or normalized_parents != ["explorer.exe"] or wsl_environment_keys_present:
+        if current_process_name != "powershell.exe" or powershell_edition != "Desktop" or \
+           normalized_parents != ["explorer.exe"] or wsl_environment_keys_present:
             fail(f"{label} capture context does not prove the trusted explorer root termination")
     if any(entry in blocked_ancestors for entry in normalized_parents) or wsl_environment_keys_present:
         fail(f"{label} capture path is not native Windows PowerShell")

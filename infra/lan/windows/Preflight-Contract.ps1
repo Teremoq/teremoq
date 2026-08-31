@@ -328,10 +328,12 @@ function Resolve-TeremoqStableProcessIdentity {
 function Test-TeremoqTrustedExplorerRootTermination {
     param(
         [Parameter(Mandatory = $true)][string]$CurrentProcessName,
+        [Parameter(Mandatory = $true)][string]$PowerShellEdition,
         [string[]]$ParentProcessNames = @(),
         [string[]]$ObservedEnvKeys = @()
     )
     return $CurrentProcessName -ceq 'powershell.exe' -and
+        $PowerShellEdition -ceq 'Desktop' -and
         $ParentProcessNames.Count -eq 1 -and
         $ParentProcessNames[0] -ceq 'explorer.exe' -and
         $ObservedEnvKeys.Count -eq 0
@@ -372,7 +374,7 @@ function New-TeremoqCaptureContext {
             $resolvedParent = Resolve-TeremoqStableProcessIdentity -ProcessId $parentId -InitialResult $parentFirstResult -ResolveProcess $ResolveProcess -MissingOutcome 'parent_process_missing' -UnstableOutcome 'parent_process_unstable'
             if ($resolvedParent.Outcome -ne 'ok') {
                 if ($resolvedParent.Outcome -eq 'parent_process_missing' -and
-                    (Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName $currentProcessName -ParentProcessNames @($parentNames) -ObservedEnvKeys @($presentEnvKeys))) {
+                    (Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName $currentProcessName -PowerShellEdition ([string]$PSVersionTable.PSEdition) -ParentProcessNames @($parentNames) -ObservedEnvKeys @($presentEnvKeys))) {
                     $traversalOutcome = 'terminated_after_explorer_root_missing'
                 } else {
                     $traversalOutcome = [string]$resolvedParent.Outcome
@@ -457,7 +459,7 @@ function Test-TeremoqCaptureContextEvidence {
     }
     if (@($Context.wsl_environment_keys_present | Select-Object -Unique).Count -ne $Context.wsl_environment_keys_present.Count) { return $false }
     if ($Context.traversal_outcome -ceq 'terminated_after_explorer_root_missing' -and
-        -not (Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName $Context.current_process_name -ParentProcessNames $normalizedParents -ObservedEnvKeys $Context.wsl_environment_keys_present)) {
+        -not (Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName $Context.current_process_name -PowerShellEdition $Context.powershell_edition -ParentProcessNames $normalizedParents -ObservedEnvKeys $Context.wsl_environment_keys_present)) {
         return $false
     }
     return @($normalizedParents | Where-Object { $_ -in $blockedAncestorNames }).Count -eq 0 -and $Context.wsl_environment_keys_present.Count -eq 0
