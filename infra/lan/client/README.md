@@ -107,9 +107,11 @@ outbound traffic.
 Native PowerShell preflight output is the only accepted evidence source on this
 host. Running the preflight via WSL `powershell.exe` interop is not a valid
 collection path because nested native stdout can be incomplete. The preflight
-JSON includes a closed `capture_context` evidence block and activation rejects
-WSL interop, truncated ancestry, PID cycles/reuse or any other ambiguous
-capture path even when the file hash otherwise matches.
+JSON includes a closed `capture_context` evidence block. The file hash binds
+the exact bytes, but trust still depends on native PowerShell execution and
+CIM-derived ancestry rather than any external CLI-supplied context. Activation
+rejects WSL interop, truncated ancestry, PID cycles/reuse or any other
+ambiguous capture path even when the file hash otherwise matches.
 
 The ready package is accepted only when the exact nine-key launcher contract,
 its `source_commit`, launcher SHA-256 and the closed standalone manifest all

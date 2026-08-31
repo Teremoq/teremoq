@@ -112,11 +112,13 @@ evidence capture, so WSL-driven captures are documentation-only and are not
 accepted as real preflight evidence. Copy/import the resulting JSON files only
 after the native PowerShell run completes. The JSON now carries a closed
 `capture_context` block with PowerShell process ancestry and WSL environment
-indicators plus a derived traversal outcome. Activation validates that evidence
-and rejects WSL interop, truncated CIM ancestry, PID cycles/reuse, depth-limit
-captures or any other ambiguous capture path even if the rest of the JSON and
-hash are well formed. Wi-Fi band acceptance is equally strict: only the
-canonical 5 GHz value is accepted when the band field is present.
+indicators plus a derived traversal outcome. The file hash binds exact bytes,
+but trust still comes from native PowerShell execution plus CIM-derived process
+ancestry, not from any external CLI-supplied context. Activation rejects WSL
+interop, truncated CIM ancestry, PID cycles/reuse, depth-limit captures or any
+other ambiguous capture path even if the JSON/hash pair is otherwise well
+formed. Wi-Fi band acceptance is equally strict: only the exact canonical
+`5 GHz` value passes when the band field is present.
 
 ## 2. Mirrored WSL plan
 

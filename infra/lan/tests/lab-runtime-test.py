@@ -401,9 +401,34 @@ class LabRuntimePolicyTest(unittest.TestCase):
             RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
                                             SERVER_IP, CLIENT_IP, 24, PROFILE,
                                             MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
+        document = windows_preflight("server")
+        document["capture_context"]["schema_version"] = 2.0  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "schema version"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
+        document = windows_preflight("client")
+        document["capture_context"]["current_process_name"] = "PowerShell.exe"  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "does not describe native Windows PowerShell"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
+        document = windows_preflight("server")
+        document["capture_context"]["parent_process_names"] = ["C:/Windows/System32/wslhost.exe"]  # type: ignore[index]
+        document["capture_context"]["parent_process_count"] = 1  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "parent process entry is invalid"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
+        document = windows_preflight("client")
+        document["capture_context"]["powershell_version_major"] = "5"  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "PowerShell major version"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
 
     def test_ambiguous_or_noncanonical_wifi_band_blocks_activation(self) -> None:
-        for band_value in ("2.4 GHz / 5 GHz", "not 5 GHz", "5 GHz preferred"):
+        for band_value in ("2.4 GHz / 5 GHz", "not 5 GHz", "5 GHz preferred", "5 ghz", "5     GHz"):
             with self.subTest(band_value=band_value):
                 document = windows_preflight("server")
                 record = next(item for item in document["checks"] if item["check"] == "wifi_band")  # type: ignore[union-attr]
@@ -412,6 +437,13 @@ class LabRuntimePolicyTest(unittest.TestCase):
                     RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
                                                     SERVER_IP, CLIENT_IP, 24, PROFILE,
                                                     MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
+        document = windows_preflight("client")
+        record = next(item for item in document["checks"] if item["check"] == "wifi_5ghz")  # type: ignore[union-attr]
+        record.update(status="pass", value="fallback-radio=802.11ac")
+        with self.assertRaisesRegex(ValueError, "exact 5 GHz"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ function Get-TeremoqWlanObservation {
             if ($current.BandCount -gt 1) {
                 $current.Ambiguous = $true
             } else {
-                $current.Band = $Matches[2].Trim()
+                $current.Band = $Matches[2]
             }
             continue
         }
@@ -53,34 +53,24 @@ function Get-TeremoqWlanObservation {
             if ($current.RadioCount -gt 1) {
                 $current.Ambiguous = $true
             } else {
-                $current.Radio = $Matches[2].Trim()
+                $current.Radio = $Matches[2]
             }
         }
     }
     if ($null -ne $current) { $blocks.Add([pscustomobject]$current) }
     $matches = @($blocks | Where-Object { $_.Name -ceq $AdapterName })
     if ($matches.Count -ne 1 -or $matches[0].Ambiguous) {
-        return [pscustomobject]@{ Band = 'unavailable'; Radio = 'unavailable'; Is5GHz = $false }
+        return [pscustomobject]@{ Band = 'unavailable'; Radio = 'unavailable'; IsCanonical5GHz = $false; FallbackRadioQualified = $false }
     }
     $band = [string]$matches[0].Band
     $radio = [string]$matches[0].Radio
-    $normalizedBand = if ([string]::IsNullOrWhiteSpace($band) -or $band -eq 'unavailable') {
-        'unavailable'
-    } else {
-        [regex]::Replace($band.Trim(), '\s+', ' ').ToLowerInvariant()
+    $fallbackRadioQualified = $matches[0].BandCount -eq 0 -and $matches[0].RadioCount -eq 1 -and $radio -in @('802.11a', '802.11ac')
+    return [pscustomobject]@{
+        Band = $band
+        Radio = $radio
+        IsCanonical5GHz = $band -ceq '5 GHz'
+        FallbackRadioQualified = $fallbackRadioQualified
     }
-    $normalizedRadio = if ([string]::IsNullOrWhiteSpace($radio) -or $radio -eq 'unavailable') {
-        'unavailable'
-    } else {
-        [regex]::Replace($radio.Trim(), '\s+', ' ').ToLowerInvariant()
-    }
-    $is5GHz = $false
-    if ($normalizedBand -ceq '5 ghz') {
-        $is5GHz = $true
-    } elseif ($matches[0].BandCount -eq 0 -and $matches[0].RadioCount -eq 1 -and $normalizedRadio -in @('802.11a', '802.11ac')) {
-        $is5GHz = $true
-    }
-    return [pscustomobject]@{ Band = $band; Radio = $radio; Is5GHz = $is5GHz }
 }
 
 function Convert-TeremoqPhaseOffsetMilliseconds {
@@ -159,19 +149,47 @@ function Get-TeremoqDockerPublicationConflicts {
 
 function Get-TeremoqProcessQueryResult {
     param([Parameter(Mandatory = $true)][int]$ProcessId)
+    $requestedProcessId = [int64]$ProcessId
     try {
         $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
     } catch {
-        return [pscustomobject]@{ Status = 'cim_query_failed'; Process = $null }
+        return [ordered]@{ Status = 'cim_query_failed'; RequestedProcessId = $requestedProcessId; Process = $null }
     }
     if ($null -eq $process -or [string]::IsNullOrWhiteSpace([string]$process.Name)) {
-        return [pscustomobject]@{ Status = 'process_missing'; Process = $null }
+        return [ordered]@{ Status = 'process_missing'; RequestedProcessId = $requestedProcessId; Process = $null }
     }
-    return [pscustomobject]@{ Status = 'ok'; Process = $process }
+    $name = [string]$process.Name
+    $creationDate = [string]$process.CreationDate
+    if ($process.ProcessId -is [bool] -or $process.ParentProcessId -is [bool] -or
+        $process.ProcessId -isnot [ValueType] -or $process.ParentProcessId -isnot [ValueType] -or
+        [Type]::GetTypeCode($process.ProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
+        [Type]::GetTypeCode($process.ParentProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
+        [int64]$process.ProcessId -ne $requestedProcessId -or $name -isnot [string] -or
+        [string]::IsNullOrWhiteSpace($name) -or $name.Trim() -cne $name -or
+        $name -cmatch '[\\/:]' -or $name.ToLowerInvariant() -cnotmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$' -or
+        $creationDate -isnot [string] -or $creationDate -cnotmatch '^\d{14}\.\d{6}[+-]\d{3}$') {
+        return [ordered]@{ Status = 'cim_query_failed'; RequestedProcessId = $requestedProcessId; Process = $null }
+    }
+    try {
+        [void][System.Management.ManagementDateTimeConverter]::ToDateTime($creationDate)
+    } catch {
+        return [ordered]@{ Status = 'cim_query_failed'; RequestedProcessId = $requestedProcessId; Process = $null }
+    }
+    return [ordered]@{
+        Status = 'ok'
+        RequestedProcessId = $requestedProcessId
+        Process = [ordered]@{
+            ProcessId = [int64]$process.ProcessId
+            ParentProcessId = [int64]$process.ParentProcessId
+            Name = $name.ToLowerInvariant()
+            CreationDate = $creationDate
+        }
+    }
 }
 
 function New-TeremoqCaptureContext {
     param(
+        [Parameter(Mandatory = $true)][int]$CurrentProcessId,
         [Parameter(Mandatory = $true)]$CurrentResult,
         [Parameter(Mandatory = $true)][scriptblock]$ResolveProcess,
         [Parameter()][int]$DepthLimit = 16,
@@ -187,31 +205,47 @@ function New-TeremoqCaptureContext {
     $currentProcessName = 'unavailable'
     $parentNames = New-Object System.Collections.Generic.List[string]
     $traversalOutcome = 'current_process_query_failed'
-    $seen = New-Object 'System.Collections.Generic.HashSet[int]'
-    if ($null -eq $CurrentResult -or $CurrentResult.Status -isnot [string]) {
+    $seen = New-Object 'System.Collections.Generic.Dictionary[long,string]'
+    $allowedStatuses = @('ok', 'cim_query_failed', 'process_missing')
+    if ($CurrentResult -isnot [System.Collections.IDictionary] -or
+        @($CurrentResult.Keys).Count -ne 3 -or
+        @($CurrentResult.Keys | Where-Object { @('Status', 'RequestedProcessId', 'Process') -notcontains $_ }).Count -ne 0 -or
+        $CurrentResult.Status -isnot [string] -or $CurrentResult.Status -notin $allowedStatuses -or
+        $CurrentResult.RequestedProcessId -is [bool] -or $CurrentResult.RequestedProcessId -isnot [ValueType] -or
+        [Type]::GetTypeCode($CurrentResult.RequestedProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
+        [int64]$CurrentResult.RequestedProcessId -ne [int64]$CurrentProcessId) {
         $traversalOutcome = 'cim_query_failed'
     } elseif ($CurrentResult.Status -eq 'process_missing') {
         $traversalOutcome = 'current_process_missing'
-    } elseif ($CurrentResult.Status -eq 'ok' -and $null -ne $CurrentResult.Process) {
+    } elseif ($CurrentResult.Status -eq 'ok' -and $null -ne $CurrentResult.Process -and
+        $CurrentResult.Process -is [System.Collections.IDictionary] -and
+        @($CurrentResult.Process.Keys).Count -eq 4 -and
+        @($CurrentResult.Process.Keys | Where-Object { @('ProcessId', 'ParentProcessId', 'Name', 'CreationDate') -notcontains $_ }).Count -eq 0 -and
+        $CurrentResult.Process.ProcessId -isnot [bool] -and $CurrentResult.Process.ProcessId -is [ValueType] -and
+        $CurrentResult.Process.ParentProcessId -isnot [bool] -and $CurrentResult.Process.ParentProcessId -is [ValueType] -and
+        [Type]::GetTypeCode($CurrentResult.Process.ProcessId.GetType()) -in @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -and
+        [Type]::GetTypeCode($CurrentResult.Process.ParentProcessId.GetType()) -in @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -and
+        [int64]$CurrentResult.Process.ProcessId -eq [int64]$CurrentProcessId -and
+        $CurrentResult.Process.Name -is [string] -and $CurrentResult.Process.Name -cmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$' -and
+        $CurrentResult.Process.CreationDate -is [string] -and $CurrentResult.Process.CreationDate -cmatch '^\d{14}\.\d{6}[+-]\d{3}$') {
         $walker = $CurrentResult.Process
-        $currentProcessName = ([string]$walker.Name).ToLowerInvariant()
+        $currentProcessName = [string]$walker.Name
+        $seen[[int64]$walker.ProcessId] = [string]$walker.CreationDate
         $traversalOutcome = 'depth_limit_reached'
         for ($depth = 0; $depth -lt $DepthLimit; $depth += 1) {
-            $parentId = 0
-            if (-not [int]::TryParse([string]$walker.ParentProcessId, [ref]$parentId)) {
-                $traversalOutcome = 'cim_query_failed'
-                break
-            }
+            $parentId = [int64]$walker.ParentProcessId
             if ($parentId -le 0) {
                 $traversalOutcome = 'terminated_parent_pid_nonpositive'
                 break
             }
-            if (-not $seen.Add($parentId)) {
-                $traversalOutcome = 'cycle_or_pid_reuse_detected'
-                break
-            }
             $parentResult = & $ResolveProcess $parentId
-            if ($null -eq $parentResult -or $parentResult.Status -isnot [string]) {
+            if ($parentResult -isnot [System.Collections.IDictionary] -or
+                @($parentResult.Keys).Count -ne 3 -or
+                @($parentResult.Keys | Where-Object { @('Status', 'RequestedProcessId', 'Process') -notcontains $_ }).Count -ne 0 -or
+                $parentResult.Status -isnot [string] -or $parentResult.Status -notin $allowedStatuses -or
+                $parentResult.RequestedProcessId -is [bool] -or $parentResult.RequestedProcessId -isnot [ValueType] -or
+                [Type]::GetTypeCode($parentResult.RequestedProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
+                [int64]$parentResult.RequestedProcessId -ne $parentId) {
                 $traversalOutcome = 'cim_query_failed'
                 break
             }
@@ -219,15 +253,27 @@ function New-TeremoqCaptureContext {
                 $traversalOutcome = 'cim_query_failed'
                 break
             }
-            if ($parentResult.Status -eq 'process_missing' -or $null -eq $parentResult.Process) {
+            if ($parentResult.Status -eq 'process_missing' -or $null -eq $parentResult.Process -or
+                $parentResult.Process -isnot [System.Collections.IDictionary] -or
+                @($parentResult.Process.Keys).Count -ne 4 -or
+                @($parentResult.Process.Keys | Where-Object { @('ProcessId', 'ParentProcessId', 'Name', 'CreationDate') -notcontains $_ }).Count -ne 0 -or
+                $parentResult.Process.ProcessId -is [bool] -or $parentResult.Process.ProcessId -isnot [ValueType] -or
+                $parentResult.Process.ParentProcessId -is [bool] -or $parentResult.Process.ParentProcessId -isnot [ValueType] -or
+                [Type]::GetTypeCode($parentResult.Process.ProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
+                [Type]::GetTypeCode($parentResult.Process.ParentProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
+                [int64]$parentResult.Process.ProcessId -ne $parentId -or
+                $parentResult.Process.Name -isnot [string] -or $parentResult.Process.Name -cnotmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$' -or
+                $parentResult.Process.CreationDate -isnot [string] -or $parentResult.Process.CreationDate -cnotmatch '^\d{14}\.\d{6}[+-]\d{3}$') {
                 $traversalOutcome = 'parent_process_missing'
                 break
             }
-            $parentName = ([string]$parentResult.Process.Name).ToLowerInvariant()
-            if ([string]::IsNullOrWhiteSpace($parentName)) {
-                $traversalOutcome = 'parent_process_missing'
+            $parentCreationDate = [string]$parentResult.Process.CreationDate
+            if ($seen.ContainsKey($parentId)) {
+                $traversalOutcome = 'cycle_or_pid_reuse_detected'
                 break
             }
+            $seen[$parentId] = $parentCreationDate
+            $parentName = [string]$parentResult.Process.Name
             $parentNames.Add($parentName)
             $walker = $parentResult.Process
         }
@@ -249,7 +295,7 @@ function New-TeremoqCaptureContext {
 
 function Get-TeremoqCaptureContext {
     $currentResult = Get-TeremoqProcessQueryResult -ProcessId $PID
-    return New-TeremoqCaptureContext -CurrentResult $currentResult -ResolveProcess {
+    return New-TeremoqCaptureContext -CurrentProcessId $PID -CurrentResult $currentResult -ResolveProcess {
         param($ProcessId)
         Get-TeremoqProcessQueryResult -ProcessId $ProcessId
     }
@@ -262,25 +308,32 @@ function Test-TeremoqCaptureContextEvidence {
     if ($keys.Count -ne 9 -or @($keys | Where-Object { @('schema_version', 'current_process_name', 'parent_process_names', 'parent_process_count', 'traversal_depth_limit', 'traversal_outcome', 'wsl_environment_keys_present', 'powershell_edition', 'powershell_version_major') -notcontains $_ }).Count -ne 0) {
         return $false
     }
-    if ($Context.schema_version -ne 2 -or $Context.current_process_name -isnot [string] -or
-        $Context.current_process_name -notin @('powershell.exe', 'pwsh.exe') -or
+    if ($Context.schema_version -is [bool] -or $Context.schema_version -isnot [ValueType] -or
+        [Type]::GetTypeCode($Context.schema_version.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
+        [int64]$Context.schema_version -ne 2 -or $Context.current_process_name -isnot [string] -or
+        $Context.current_process_name -notin @('powershell.exe', 'pwsh.exe') -or $Context.current_process_name -cnotmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$' -or
         $Context.parent_process_names -isnot [System.Array] -or $Context.parent_process_names.Count -lt 1 -or $Context.parent_process_names.Count -gt 16 -or
-        $Context.parent_process_count -isnot [int] -or $Context.parent_process_count -ne $Context.parent_process_names.Count -or
-        $Context.traversal_depth_limit -isnot [int] -or $Context.traversal_depth_limit -ne 16 -or
+        $Context.parent_process_count -is [bool] -or $Context.parent_process_count -isnot [ValueType] -or
+        [Type]::GetTypeCode($Context.parent_process_count.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
+        [int64]$Context.parent_process_count -ne $Context.parent_process_names.Count -or
+        $Context.traversal_depth_limit -is [bool] -or $Context.traversal_depth_limit -isnot [ValueType] -or
+        [Type]::GetTypeCode($Context.traversal_depth_limit.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
+        [int64]$Context.traversal_depth_limit -ne 16 -or
         $Context.traversal_outcome -isnot [string] -or $Context.traversal_outcome -ne 'terminated_parent_pid_nonpositive' -or
         $Context.wsl_environment_keys_present -isnot [System.Array] -or $Context.wsl_environment_keys_present.Count -gt 3 -or
         $Context.powershell_edition -isnot [string] -or $Context.powershell_edition -notin @('Desktop', 'Core') -or
-        $Context.powershell_version_major -isnot [int] -or $Context.powershell_version_major -lt 5 -or $Context.powershell_version_major -gt 9) {
+        $Context.powershell_version_major -is [bool] -or $Context.powershell_version_major -isnot [ValueType] -or
+        [Type]::GetTypeCode($Context.powershell_version_major.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
+        [int64]$Context.powershell_version_major -lt 5 -or [int64]$Context.powershell_version_major -gt 9) {
         return $false
     }
     $allowedEnvKeys = @('WSLENV', 'WSL_INTEROP', 'WSL_DISTRO_NAME')
     $blockedAncestorNames = @('bash.exe', 'sh.exe', 'dash.exe', 'wsl.exe', 'wslhost.exe', 'ubuntu.exe', 'debian.exe', 'kali.exe', 'arch.exe')
     $normalizedParents = @()
     foreach ($name in $Context.parent_process_names) {
-        if ($name -isnot [string] -or [string]::IsNullOrWhiteSpace($name) -or $name.Length -gt 128) { return $false }
-        $normalized = $name.ToLowerInvariant()
-        if ($normalizedParents -contains $normalized) { return $false }
-        $normalizedParents += $normalized
+        if ($name -isnot [string] -or $name.Length -gt 128 -or $name.Trim() -cne $name -or $name -cnotmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$') { return $false }
+        if ($normalizedParents -contains $name) { return $false }
+        $normalizedParents += $name
     }
     foreach ($key in $Context.wsl_environment_keys_present) {
         if ($key -isnot [string] -or $key -notin $allowedEnvKeys) { return $false }

@@ -57,6 +57,7 @@ PROXY_ATTESTATION_KEYS = {
 }
 LEGACY_UDP_PORTS = (4433, 9000)
 LEGACY_TCP_PORTS = (4433, 5678, 6379, 11434)
+PROCESS_BASENAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,123}\.exe$")
 
 
 def fail(message: str) -> "NoReturn":
@@ -267,7 +268,7 @@ def parse_check_int_value(value: str, label: str, minimum: int, maximum: int) ->
 def validate_capture_context(context: object, label: str) -> None:
     if not isinstance(context, dict) or set(context) != CAPTURE_CONTEXT_KEYS:
         fail(f"{label} capture context schema is not closed")
-    if context["schema_version"] != 2:
+    if not isinstance(context["schema_version"], int) or isinstance(context["schema_version"], bool) or context["schema_version"] != 2:
         fail(f"{label} capture context schema version is unsupported")
     current_process_name = context["current_process_name"]
     parent_process_names = context["parent_process_names"]
@@ -277,7 +278,9 @@ def validate_capture_context(context: object, label: str) -> None:
     wsl_environment_keys_present = context["wsl_environment_keys_present"]
     powershell_edition = context["powershell_edition"]
     powershell_version_major = context["powershell_version_major"]
-    if current_process_name not in {"powershell.exe", "pwsh.exe"} or powershell_edition not in {"Desktop", "Core"}:
+    if not isinstance(current_process_name, str) or current_process_name not in {"powershell.exe", "pwsh.exe"} or \
+       current_process_name.strip() != current_process_name or PROCESS_BASENAME_RE.fullmatch(current_process_name) is None or \
+       powershell_edition not in {"Desktop", "Core"}:
         fail(f"{label} capture context does not describe native Windows PowerShell")
     if not isinstance(powershell_version_major, int) or isinstance(powershell_version_major, bool) or not 5 <= powershell_version_major <= 9:
         fail(f"{label} PowerShell major version is outside policy")
@@ -285,9 +288,9 @@ def validate_capture_context(context: object, label: str) -> None:
         fail(f"{label} parent process chain is outside policy")
     if not isinstance(parent_process_count, int) or isinstance(parent_process_count, bool) or parent_process_count != len(parent_process_names):
         fail(f"{label} parent process chain cardinality is inconsistent")
-    if traversal_depth_limit != 16:
+    if not isinstance(traversal_depth_limit, int) or isinstance(traversal_depth_limit, bool) or traversal_depth_limit != 16:
         fail(f"{label} capture context depth limit is not exact")
-    if traversal_outcome != "terminated_parent_pid_nonpositive":
+    if not isinstance(traversal_outcome, str) or traversal_outcome != "terminated_parent_pid_nonpositive":
         fail(f"{label} capture context does not prove parent-chain termination")
     if not isinstance(wsl_environment_keys_present, list) or len(wsl_environment_keys_present) > 3:
         fail(f"{label} WSL environment evidence is outside policy")
@@ -295,12 +298,12 @@ def validate_capture_context(context: object, label: str) -> None:
     allowed_env_keys = {"WSLENV", "WSL_INTEROP", "WSL_DISTRO_NAME"}
     normalized_parents: list[str] = []
     for entry in parent_process_names:
-        if not isinstance(entry, str) or not entry or len(entry) > 128:
+        if not isinstance(entry, str) or not entry or len(entry) > 128 or entry.strip() != entry or \
+           PROCESS_BASENAME_RE.fullmatch(entry) is None:
             fail(f"{label} parent process entry is invalid")
-        lowered = entry.lower()
-        if lowered in normalized_parents:
+        if entry in normalized_parents:
             fail(f"{label} parent process chain contains duplicates")
-        normalized_parents.append(lowered)
+        normalized_parents.append(entry)
     for entry in wsl_environment_keys_present:
         if not isinstance(entry, str) or entry not in allowed_env_keys:
             fail(f"{label} WSL environment key evidence is invalid")
@@ -362,7 +365,9 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
        parse_check_int_value(checks["free_disk_mib"]["value"], f"{label} free disk", 1, 1073741824) < minimum_disk_mib:
         fail(f"{label} measured capacity is below policy")
     if role == "server":
-        if checks["wifi_adapter"]["status"] != "pass" or checks["wifi_band"]["status"] != "pass":
+        if checks["wifi_adapter"]["status"] != "pass" or checks["wifi_band"] != {
+            "check": "wifi_band", "status": "pass", "value": "5 GHz", "evidence_quality": "real"
+        }:
             fail("Windows server preflight did not prove the exact Wi-Fi interface and 5 GHz band")
         if checks["docker_publication_inventory"] != {
             "check": "docker_publication_inventory",
@@ -372,8 +377,11 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
         }:
             fail("Windows server Docker publication inventory is not exact")
         validate_listener_checks(checks, label, (*LEGACY_UDP_PORTS, 14433, 19000), LEGACY_TCP_PORTS)
-    elif checks["player_loopback_tcp_3000"]["status"] != "pass" or checks["player_loopback_tcp_3000"]["value"] != "free":
-        fail("Windows client preflight reports loopback TCP/3000 occupied")
+    else:
+        if checks["wifi_5ghz"] != {"check": "wifi_5ghz", "status": "pass", "value": "5 GHz", "evidence_quality": "real"}:
+            fail("Windows client preflight did not prove the exact 5 GHz Wi-Fi band")
+        if checks["player_loopback_tcp_3000"]["status"] != "pass" or checks["player_loopback_tcp_3000"]["value"] != "free":
+            fail("Windows client preflight reports loopback TCP/3000 occupied")
     return checks
 
 

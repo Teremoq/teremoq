@@ -86,10 +86,10 @@ if ($address) {
     Add-Check 'wifi_link_speed' $(if ($wifi) { 'observed' } else { 'blocked' }) $(if ($wifi) { $wifi.LinkSpeed } else { 'unavailable' }) $(if ($wifi) { 'real' } else { 'unavailable' })
 
     $wlanText = (@(& "$env:SystemRoot\System32\netsh.exe" wlan show interfaces 2>$null) -join "`n")
-    $wifiObservation = if ($wifi) { Get-TeremoqWlanObservation -Text $wlanText -AdapterName $wifi.Name } else { [pscustomobject]@{ Band = 'unavailable'; Radio = 'unavailable'; Is5GHz = $false } }
-    $wifiBandValue = if ($wifiObservation.Band -ne 'unavailable') { $wifiObservation.Band } elseif ($wifiObservation.Radio -ne 'unavailable') { "fallback-radio=$($wifiObservation.Radio)" } else { 'unavailable' }
+    $wifiObservation = if ($wifi) { Get-TeremoqWlanObservation -Text $wlanText -AdapterName $wifi.Name } else { [pscustomobject]@{ Band = 'unavailable'; Radio = 'unavailable'; IsCanonical5GHz = $false; FallbackRadioQualified = $false } }
+    $wifiBandValue = if ($wifiObservation.Band -ne 'unavailable') { $wifiObservation.Band } elseif ($wifiObservation.FallbackRadioQualified) { "fallback-radio=$($wifiObservation.Radio)" } else { 'unavailable' }
     Add-Check 'wifi_radio' 'observed' $wifiObservation.Radio $(if ($wifiObservation.Radio -eq 'unavailable') { 'unavailable' } else { 'real' })
-    Add-Check 'wifi_band' $(if ($wifiObservation.Is5GHz) { 'pass' } else { 'blocked' }) $wifiBandValue $(if ($wifiBandValue -eq 'unavailable') { 'unavailable' } else { 'real' })
+    Add-Check 'wifi_band' $(if ($wifiObservation.IsCanonical5GHz) { 'pass' } else { 'blocked' }) $wifiBandValue $(if ($wifiBandValue -eq 'unavailable') { 'unavailable' } else { 'real' })
 
     $interfaceMatches = @(Get-NetIPInterface -InterfaceIndex $address.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
     $interface = if ($interfaceMatches.Count -eq 1) { $interfaceMatches[0] } else { $null }
