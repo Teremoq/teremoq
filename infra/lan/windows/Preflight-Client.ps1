@@ -101,12 +101,8 @@ if ($address) {
     Add-Check 'wifi_5ghz' 'blocked' 'unavailable' 'unavailable'
 }
 
-$wslIPv4 = (@(& "$env:SystemRoot\System32\wsl.exe" -e sh -lc "ip -o -4 addr show scope global 2>/dev/null | awk 'NR==1 {print `$4}'" 2>$null) -join "`n").Trim()
-$wslMode = 'unavailable'
-if ($wslIPv4 -match '^\d+\.\d+\.\d+\.\d+/\d+$') {
-    $wslAddressText = $wslIPv4.Split('/')[0]
-    if ($wslAddressText -eq $ClientIPv4) { $wslMode = 'mirrored' } else { $wslMode = 'nat' }
-}
+$wslObservation = Invoke-TeremoqClientWslIpv4ModeQuery -ClientIPv4 $ClientIPv4
+$wslMode = [string]$wslObservation.Mode
 Add-Check 'wsl_ipv4_mode' $(if ($wslMode -eq $ExpectedWslMode) { 'pass' } else { 'blocked' }) $wslMode $(if ($wslMode -eq 'unavailable') { 'unavailable' } else { 'real' })
 
 $browserFound = $false

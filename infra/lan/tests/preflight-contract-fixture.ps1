@@ -143,6 +143,48 @@ try {
 } catch {
     if ($_.Exception.Message -notmatch '128') { throw }
 }
+if (-not (Test-TeremoqAllowedWslMountWarningLine -Line 'WSL: Failed to mount F:\, see dmesg for more details.')) {
+    throw 'canonical WSL mount warning was rejected'
+}
+if (Test-TeremoqAllowedWslMountWarningLine -Line 'WSL: Failed to mount F:\Users\, see dmesg for more details.') {
+    throw 'non-canonical WSL mount path was accepted'
+}
+$wslNatWithAllowedWarning = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "172.23.80.2/20`n" -Stderr "WSL: Failed to mount F:\, see dmesg for more details.`r`n"
+if ($wslNatWithAllowedWarning.Mode -ne 'nat' -or $wslNatWithAllowedWarning.WarningCount -ne 1 -or $wslNatWithAllowedWarning.StderrClassification -ne 'allowed-mount-warning-redacted') {
+    throw 'allowed WSL mount warning did not preserve NAT classification'
+}
+$wslMirrored = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "192.168.77.20/24`n" -Stderr ''
+if ($wslMirrored.Mode -ne 'mirrored' -or $wslMirrored.WarningCount -ne 0 -or $wslMirrored.StderrClassification -ne 'none') {
+    throw 'exact mirrored WSL classification failed'
+}
+$wslUnknownWarning = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "172.23.80.2/20`n" -Stderr "WSL: something unexpected"
+if ($wslUnknownWarning.Mode -ne 'unavailable' -or $wslUnknownWarning.StderrClassification -ne 'stderr-invalid') {
+    throw 'unknown WSL stderr was accepted'
+}
+$wslNonZero = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 1 -Stdout "172.23.80.2/20`n" -Stderr ''
+if ($wslNonZero.Mode -ne 'unavailable' -or $wslNonZero.StderrClassification -ne 'exit-nonzero') {
+    throw 'non-zero WSL exit code was accepted'
+}
+$wslEmpty = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout '' -Stderr ''
+if ($wslEmpty.Mode -ne 'unavailable' -or $wslEmpty.StderrClassification -ne 'stdout-invalid') {
+    throw 'empty WSL stdout was accepted'
+}
+$wslMultiple = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "172.23.80.2/20`n192.168.77.20/24`n" -Stderr ''
+if ($wslMultiple.Mode -ne 'unavailable' -or $wslMultiple.StderrClassification -ne 'stdout-invalid') {
+    throw 'multiple WSL stdout lines were accepted'
+}
+$wslMalformed = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "172.23.80.2`n" -Stderr ''
+if ($wslMalformed.Mode -ne 'unavailable' -or $wslMalformed.StderrClassification -ne 'stdout-invalid') {
+    throw 'malformed WSL stdout was accepted'
+}
+$wslOversized = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout ('1' * 257) -Stderr ''
+if ($wslOversized.Mode -ne 'unavailable' -or $wslOversized.StderrClassification -ne 'oversized') {
+    throw 'oversized WSL stdout was accepted'
+}
+$wslInjectedWarning = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "172.23.80.2/20`n" -Stderr "WSL: Failed to mount F:\..\secret, see dmesg for more details."
+if ($wslInjectedWarning.Mode -ne 'unavailable' -or $wslInjectedWarning.StderrClassification -ne 'stderr-invalid') {
+    throw 'injected WSL warning path was accepted'
+}
 function Get-CimInstance {
     param(
         [Parameter(Position = 0)][string]$ClassName,

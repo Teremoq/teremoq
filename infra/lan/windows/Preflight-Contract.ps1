@@ -103,6 +103,129 @@ function Convert-TeremoqPhaseOffsetMilliseconds {
     return [math]::Round($value * 1000.0, 3)
 }
 
+function Read-TeremoqBoundedUtf8File {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][int]$MaxBytes
+    )
+    if ($MaxBytes -lt 1 -or $MaxBytes -gt 65536) { throw 'bounded UTF-8 file limit is outside 1..65536 bytes' }
+    $encoding = New-Object System.Text.UTF8Encoding($false, $true)
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+    try {
+        $buffer = New-Object byte[] ($MaxBytes + 1)
+        $read = $stream.Read($buffer, 0, $buffer.Length)
+        if ($read -gt $MaxBytes) { throw "bounded UTF-8 file exceeds ${MaxBytes} bytes" }
+        return $encoding.GetString($buffer, 0, $read)
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Test-TeremoqAllowedWslMountWarningLine {
+    param([Parameter(Mandatory = $true)][string]$Line)
+    return $Line -cmatch '^WSL: Failed to mount [A-Z]:\\, see dmesg for more details\.$'
+}
+
+function Test-TeremoqCanonicalGlobalIPv4 {
+    param([Parameter(Mandatory = $true)][string]$Value)
+    $parsed = $null
+    if (-not [Net.IPAddress]::TryParse($Value, [ref]$parsed) -or
+        $parsed.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
+        $parsed.IPAddressToString -cne $Value) {
+        return $false
+    }
+    $bytes = $parsed.GetAddressBytes()
+    if ($bytes[0] -eq 0 -or $Value -eq '255.255.255.255' -or $parsed.IsIPv6Multicast -or [Net.IPAddress]::IsLoopback($parsed)) {
+        return $false
+    }
+    return $true
+}
+
+function Get-TeremoqWslIpv4ModeFromCommandResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientIPv4,
+        [Parameter(Mandatory = $true)][int]$ExitCode,
+        [string]$Stdout = '',
+        [string]$Stderr = ''
+    )
+    if ($Stdout.Length -gt 256 -or $Stderr.Length -gt 4096) {
+        return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'oversized' }
+    }
+    if ($ExitCode -ne 0) {
+        return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'exit-nonzero' }
+    }
+    $stdoutMatch = [regex]::Match($Stdout, '^(?<cidr>(?<ip>\d{1,3}(?:\.\d{1,3}){3})/(?<prefix>\d|[12]\d|3[0-2]))(?:\r?\n)?$')
+    if (-not $stdoutMatch.Success) {
+        return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'stdout-invalid' }
+    }
+    $wslIpv4 = $stdoutMatch.Groups['ip'].Value
+    if (-not (Test-TeremoqCanonicalGlobalIPv4 -Value $wslIpv4)) {
+        return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'stdout-invalid' }
+    }
+    $warningCount = 0
+    if (-not [string]::IsNullOrEmpty($Stderr)) {
+        $stderrLines = @($Stderr -split "`r?`n")
+        if ($stderrLines.Count -gt 8) {
+            return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'stderr-invalid' }
+        }
+        foreach ($stderrLine in $stderrLines) {
+            if ([string]::IsNullOrEmpty($stderrLine)) { continue }
+            if (-not (Test-TeremoqAllowedWslMountWarningLine -Line $stderrLine)) {
+                return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'stderr-invalid' }
+            }
+            $warningCount += 1
+        }
+        if ($warningCount -eq 0) {
+            return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'stderr-invalid' }
+        }
+    }
+    return [pscustomobject]@{
+        Mode = $(if ($wslIpv4 -ceq $ClientIPv4) { 'mirrored' } else { 'nat' })
+        WarningCount = $warningCount
+        StderrClassification = $(if ($warningCount -gt 0) { 'allowed-mount-warning-redacted' } else { 'none' })
+    }
+}
+
+function Invoke-TeremoqClientWslIpv4ModeQuery {
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientIPv4,
+        [Parameter()][int]$TimeoutMilliseconds = 15000
+    )
+    if ($TimeoutMilliseconds -lt 1000 -or $TimeoutMilliseconds -gt 60000) {
+        throw 'WSL IPv4 query timeout is outside 1000..60000 ms'
+    }
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        try {
+            $process = Start-Process -FilePath "$env:SystemRoot\System32\wsl.exe" `
+                -ArgumentList @('-e', 'sh', '-lc', "ip -o -4 addr show scope global 2>/dev/null | awk 'NR==1 {print `$4}'") `
+                -PassThru `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath `
+                -ErrorAction Stop
+        } catch {
+            return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'launch-failed' }
+        }
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            try { $process.Kill() } catch {}
+            return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'timeout' }
+        }
+        $process.WaitForExit()
+        $stdout = Read-TeremoqBoundedUtf8File -Path $stdoutPath -MaxBytes 256
+        $stderr = Read-TeremoqBoundedUtf8File -Path $stderrPath -MaxBytes 4096
+        return Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 $ClientIPv4 -ExitCode $process.ExitCode -Stdout $stdout -Stderr $stderr
+    } catch {
+        return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'unavailable' }
+    } finally {
+        foreach ($temporaryPath in @($stdoutPath, $stderrPath)) {
+            if ($temporaryPath -and (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
+                Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 function Test-TeremoqDockerHostLiteral {
     param([Parameter(Mandatory = $true)][string]$Value)
     if ($Value -in @('localhost', '*', '::')) { return $true }
