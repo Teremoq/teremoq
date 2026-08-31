@@ -111,7 +111,9 @@ JSON includes a closed `capture_context` evidence block. The file hash binds
 the exact bytes, but trust still depends on native PowerShell execution and
 CIM-derived ancestry rather than any external CLI-supplied context. Activation
 rejects WSL interop, truncated ancestry, PID cycles/reuse or any other
-ambiguous capture path even when the file hash otherwise matches.
+ambiguous capture path even when the file hash otherwise matches. The producer
+re-reads each queried PID and rejects any parent that appears newer than its
+observed child or changes identity across the stability check.
 
 The ready package is accepted only when the exact nine-key launcher contract,
 its `source_commit`, launcher SHA-256 and the closed standalone manifest all

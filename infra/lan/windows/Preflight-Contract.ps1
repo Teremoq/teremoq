@@ -187,6 +187,104 @@ function Get-TeremoqProcessQueryResult {
     }
 }
 
+function Test-TeremoqIntegralScalar {
+    param([Parameter(Mandatory = $true)]$Value)
+    if ($Value -is [bool] -or $Value -isnot [ValueType]) { return $false }
+    return [Type]::GetTypeCode($Value.GetType()) -in @(
+        [TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16,
+        [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64
+    )
+}
+
+function Convert-TeremoqDmtfUtc {
+    param([Parameter(Mandatory = $true)][string]$Value)
+    if ($Value -cnotmatch '^\d{14}\.\d{6}[+-]\d{3}$') { return $null }
+    try {
+        return [System.Management.ManagementDateTimeConverter]::ToDateTime($Value).ToUniversalTime()
+    } catch {
+        return $null
+    }
+}
+
+function Get-TeremoqValidatedProcessIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Result,
+        [Parameter(Mandatory = $true)][int64]$ExpectedProcessId
+    )
+    $allowedStatuses = @('ok', 'cim_query_failed', 'process_missing')
+    if ($Result -isnot [System.Collections.IDictionary] -or
+        @($Result.Keys).Count -ne 3 -or
+        @($Result.Keys | Where-Object { @('Status', 'RequestedProcessId', 'Process') -notcontains $_ }).Count -ne 0 -or
+        $Result.Status -isnot [string] -or $Result.Status -notin $allowedStatuses -or
+        -not (Test-TeremoqIntegralScalar -Value $Result.RequestedProcessId) -or
+        [int64]$Result.RequestedProcessId -ne $ExpectedProcessId) {
+        return [ordered]@{ Outcome = 'cim_query_failed'; Identity = $null }
+    }
+    if ($Result.Status -eq 'cim_query_failed') {
+        if ($null -ne $Result.Process) { return [ordered]@{ Outcome = 'cim_query_failed'; Identity = $null } }
+        return [ordered]@{ Outcome = 'cim_query_failed'; Identity = $null }
+    }
+    if ($Result.Status -eq 'process_missing') {
+        if ($null -ne $Result.Process) { return [ordered]@{ Outcome = 'cim_query_failed'; Identity = $null } }
+        return [ordered]@{ Outcome = 'process_missing'; Identity = $null }
+    }
+    if ($null -eq $Result.Process -or $Result.Process -isnot [System.Collections.IDictionary] -or
+        @($Result.Process.Keys).Count -ne 4 -or
+        @($Result.Process.Keys | Where-Object { @('ProcessId', 'ParentProcessId', 'Name', 'CreationDate') -notcontains $_ }).Count -ne 0 -or
+        -not (Test-TeremoqIntegralScalar -Value $Result.Process.ProcessId) -or
+        -not (Test-TeremoqIntegralScalar -Value $Result.Process.ParentProcessId) -or
+        [int64]$Result.Process.ProcessId -ne $ExpectedProcessId -or
+        $Result.Process.Name -isnot [string] -or $Result.Process.Name -cnotmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$' -or
+        $Result.Process.CreationDate -isnot [string]) {
+        return [ordered]@{ Outcome = 'cim_query_failed'; Identity = $null }
+    }
+    $creationUtc = Convert-TeremoqDmtfUtc -Value $Result.Process.CreationDate
+    if ($null -eq $creationUtc) {
+        return [ordered]@{ Outcome = 'cim_query_failed'; Identity = $null }
+    }
+    return [ordered]@{
+        Outcome = 'ok'
+        Identity = [ordered]@{
+            ProcessId = [int64]$Result.Process.ProcessId
+            ParentProcessId = [int64]$Result.Process.ParentProcessId
+            Name = [string]$Result.Process.Name
+            CreationDate = [string]$Result.Process.CreationDate
+            CreationDateUtc = $creationUtc
+        }
+    }
+}
+
+function Resolve-TeremoqStableProcessIdentity {
+    param(
+        [Parameter(Mandatory = $true)][int64]$ProcessId,
+        [Parameter(Mandatory = $true)]$InitialResult,
+        [Parameter(Mandatory = $true)][scriptblock]$ResolveProcess,
+        [Parameter(Mandatory = $true)][string]$MissingOutcome,
+        [Parameter(Mandatory = $true)][string]$UnstableOutcome
+    )
+    $initial = Get-TeremoqValidatedProcessIdentity -Result $InitialResult -ExpectedProcessId $ProcessId
+    if ($initial.Outcome -eq 'process_missing') {
+        return [ordered]@{ Outcome = $MissingOutcome; Identity = $null }
+    }
+    if ($initial.Outcome -ne 'ok') {
+        return [ordered]@{ Outcome = 'cim_query_failed'; Identity = $null }
+    }
+    $requery = Get-TeremoqValidatedProcessIdentity -Result (& $ResolveProcess $ProcessId) -ExpectedProcessId $ProcessId
+    if ($requery.Outcome -ne 'ok') {
+        return [ordered]@{ Outcome = $UnstableOutcome; Identity = $null }
+    }
+    $left = $initial.Identity
+    $right = $requery.Identity
+    if ($left.ProcessId -ne $right.ProcessId -or
+        $left.ParentProcessId -ne $right.ParentProcessId -or
+        $left.Name -cne $right.Name -or
+        $left.CreationDate -cne $right.CreationDate -or
+        $left.CreationDateUtc -ne $right.CreationDateUtc) {
+        return [ordered]@{ Outcome = $UnstableOutcome; Identity = $null }
+    }
+    return [ordered]@{ Outcome = 'ok'; Identity = $left }
+}
+
 function New-TeremoqCaptureContext {
     param(
         [Parameter(Mandatory = $true)][int]$CurrentProcessId,
@@ -206,29 +304,9 @@ function New-TeremoqCaptureContext {
     $parentNames = New-Object System.Collections.Generic.List[string]
     $traversalOutcome = 'current_process_query_failed'
     $seen = New-Object 'System.Collections.Generic.Dictionary[long,string]'
-    $allowedStatuses = @('ok', 'cim_query_failed', 'process_missing')
-    if ($CurrentResult -isnot [System.Collections.IDictionary] -or
-        @($CurrentResult.Keys).Count -ne 3 -or
-        @($CurrentResult.Keys | Where-Object { @('Status', 'RequestedProcessId', 'Process') -notcontains $_ }).Count -ne 0 -or
-        $CurrentResult.Status -isnot [string] -or $CurrentResult.Status -notin $allowedStatuses -or
-        $CurrentResult.RequestedProcessId -is [bool] -or $CurrentResult.RequestedProcessId -isnot [ValueType] -or
-        [Type]::GetTypeCode($CurrentResult.RequestedProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
-        [int64]$CurrentResult.RequestedProcessId -ne [int64]$CurrentProcessId) {
-        $traversalOutcome = 'cim_query_failed'
-    } elseif ($CurrentResult.Status -eq 'process_missing') {
-        $traversalOutcome = 'current_process_missing'
-    } elseif ($CurrentResult.Status -eq 'ok' -and $null -ne $CurrentResult.Process -and
-        $CurrentResult.Process -is [System.Collections.IDictionary] -and
-        @($CurrentResult.Process.Keys).Count -eq 4 -and
-        @($CurrentResult.Process.Keys | Where-Object { @('ProcessId', 'ParentProcessId', 'Name', 'CreationDate') -notcontains $_ }).Count -eq 0 -and
-        $CurrentResult.Process.ProcessId -isnot [bool] -and $CurrentResult.Process.ProcessId -is [ValueType] -and
-        $CurrentResult.Process.ParentProcessId -isnot [bool] -and $CurrentResult.Process.ParentProcessId -is [ValueType] -and
-        [Type]::GetTypeCode($CurrentResult.Process.ProcessId.GetType()) -in @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -and
-        [Type]::GetTypeCode($CurrentResult.Process.ParentProcessId.GetType()) -in @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -and
-        [int64]$CurrentResult.Process.ProcessId -eq [int64]$CurrentProcessId -and
-        $CurrentResult.Process.Name -is [string] -and $CurrentResult.Process.Name -cmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$' -and
-        $CurrentResult.Process.CreationDate -is [string] -and $CurrentResult.Process.CreationDate -cmatch '^\d{14}\.\d{6}[+-]\d{3}$') {
-        $walker = $CurrentResult.Process
+    $resolvedCurrent = Resolve-TeremoqStableProcessIdentity -ProcessId ([int64]$CurrentProcessId) -InitialResult $CurrentResult -ResolveProcess $ResolveProcess -MissingOutcome 'current_process_missing' -UnstableOutcome 'current_process_unstable'
+    if ($resolvedCurrent.Outcome -eq 'ok') {
+        $walker = $resolvedCurrent.Identity
         $currentProcessName = [string]$walker.Name
         $seen[[int64]$walker.ProcessId] = [string]$walker.CreationDate
         $traversalOutcome = 'depth_limit_reached'
@@ -238,47 +316,29 @@ function New-TeremoqCaptureContext {
                 $traversalOutcome = 'terminated_parent_pid_nonpositive'
                 break
             }
-            $parentResult = & $ResolveProcess $parentId
-            if ($parentResult -isnot [System.Collections.IDictionary] -or
-                @($parentResult.Keys).Count -ne 3 -or
-                @($parentResult.Keys | Where-Object { @('Status', 'RequestedProcessId', 'Process') -notcontains $_ }).Count -ne 0 -or
-                $parentResult.Status -isnot [string] -or $parentResult.Status -notin $allowedStatuses -or
-                $parentResult.RequestedProcessId -is [bool] -or $parentResult.RequestedProcessId -isnot [ValueType] -or
-                [Type]::GetTypeCode($parentResult.RequestedProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
-                [int64]$parentResult.RequestedProcessId -ne $parentId) {
-                $traversalOutcome = 'cim_query_failed'
+            $parentFirstResult = & $ResolveProcess $parentId
+            $resolvedParent = Resolve-TeremoqStableProcessIdentity -ProcessId $parentId -InitialResult $parentFirstResult -ResolveProcess $ResolveProcess -MissingOutcome 'parent_process_missing' -UnstableOutcome 'parent_process_unstable'
+            if ($resolvedParent.Outcome -ne 'ok') {
+                $traversalOutcome = [string]$resolvedParent.Outcome
                 break
             }
-            if ($parentResult.Status -eq 'cim_query_failed') {
-                $traversalOutcome = 'cim_query_failed'
+            $parentIdentity = $resolvedParent.Identity
+            if ($parentIdentity.CreationDateUtc -gt $walker.CreationDateUtc) {
+                $traversalOutcome = 'parent_process_newer_than_child'
                 break
             }
-            if ($parentResult.Status -eq 'process_missing' -or $null -eq $parentResult.Process -or
-                $parentResult.Process -isnot [System.Collections.IDictionary] -or
-                @($parentResult.Process.Keys).Count -ne 4 -or
-                @($parentResult.Process.Keys | Where-Object { @('ProcessId', 'ParentProcessId', 'Name', 'CreationDate') -notcontains $_ }).Count -ne 0 -or
-                $parentResult.Process.ProcessId -is [bool] -or $parentResult.Process.ProcessId -isnot [ValueType] -or
-                $parentResult.Process.ParentProcessId -is [bool] -or $parentResult.Process.ParentProcessId -isnot [ValueType] -or
-                [Type]::GetTypeCode($parentResult.Process.ProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
-                [Type]::GetTypeCode($parentResult.Process.ParentProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
-                [int64]$parentResult.Process.ProcessId -ne $parentId -or
-                $parentResult.Process.Name -isnot [string] -or $parentResult.Process.Name -cnotmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$' -or
-                $parentResult.Process.CreationDate -isnot [string] -or $parentResult.Process.CreationDate -cnotmatch '^\d{14}\.\d{6}[+-]\d{3}$') {
-                $traversalOutcome = 'parent_process_missing'
-                break
-            }
-            $parentCreationDate = [string]$parentResult.Process.CreationDate
+            $parentCreationDate = [string]$parentIdentity.CreationDate
             if ($seen.ContainsKey($parentId)) {
                 $traversalOutcome = 'cycle_or_pid_reuse_detected'
                 break
             }
             $seen[$parentId] = $parentCreationDate
-            $parentName = [string]$parentResult.Process.Name
+            $parentName = [string]$parentIdentity.Name
             $parentNames.Add($parentName)
-            $walker = $parentResult.Process
+            $walker = $parentIdentity
         }
     } else {
-        $traversalOutcome = 'cim_query_failed'
+        $traversalOutcome = [string]$resolvedCurrent.Outcome
     }
     return [ordered]@{
         schema_version = 2

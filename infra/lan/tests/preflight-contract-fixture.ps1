@@ -231,6 +231,16 @@ $stringPidContext = New-TeremoqCaptureContext -CurrentProcessId 601 -CurrentResu
 if ($stringPidContext.traversal_outcome -ne 'cim_query_failed' -or (Test-TeremoqCaptureContextEvidence -Context $stringPidContext)) {
     throw 'string ProcessId was accepted'
 }
+$impossibleDateProcess = [ordered]@{
+    ProcessId = [int64]602
+    ParentProcessId = [int64]0
+    Name = 'powershell.exe'
+    CreationDate = '20261331100000.000000+120'
+}
+$impossibleDateContext = New-TeremoqCaptureContext -CurrentProcessId 602 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]602; Process = $impossibleDateProcess }) -ResolveProcess ({ param($ProcessId) [ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null } }.GetNewClosure()) -ObservedEnvKeys @()
+if ($impossibleDateContext.traversal_outcome -ne 'cim_query_failed' -or (Test-TeremoqCaptureContextEvidence -Context $impossibleDateContext)) {
+    throw 'regex-valid impossible DMTF date was accepted'
+}
 $unknownStatusContext = New-TeremoqCaptureContext -CurrentProcessId 701 -CurrentResult ([ordered]@{
     Status = 'unexpected'
     RequestedProcessId = [int64]701
@@ -252,6 +262,9 @@ $mismatchedRequestedParentCurrent = [ordered]@{
 }
 $mismatchedRequestedParent = New-TeremoqCaptureContext -CurrentProcessId 801 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]801; Process = $mismatchedRequestedParentCurrent }) -ResolveProcess ({
     param($ProcessId)
+    if ([int]$ProcessId -eq 801) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]801; Process = $mismatchedRequestedParentCurrent })
+    }
     return ([ordered]@{
         Status = 'ok'
         RequestedProcessId = [int64]999
@@ -266,23 +279,85 @@ $mismatchedRequestedParent = New-TeremoqCaptureContext -CurrentProcessId 801 -Cu
 if ($mismatchedRequestedParent.traversal_outcome -ne 'cim_query_failed' -or (Test-TeremoqCaptureContextEvidence -Context $mismatchedRequestedParent)) {
     throw 'mismatched requested parent PID was accepted'
 }
-$pidReuseCurrent = [ordered]@{
+$parentNewerCurrent = [ordered]@{
     ProcessId = [int64]901
     ParentProcessId = [int64]900
     Name = 'powershell.exe'
     CreationDate = '20260831100000.000000+120'
 }
-$pidReuseContext = New-TeremoqCaptureContext -CurrentProcessId 901 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]901; Process = $pidReuseCurrent }) -ResolveProcess ({
+$parentNewerContext = New-TeremoqCaptureContext -CurrentProcessId 901 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]901; Process = $parentNewerCurrent }) -ResolveProcess ({
     param($ProcessId)
+    if ([int]$ProcessId -eq 901) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]901; Process = $parentNewerCurrent })
+    }
     if ([int]$ProcessId -eq 900) {
         return ([ordered]@{
             Status = 'ok'
             RequestedProcessId = [int64]900
             Process = [ordered]@{
                 ProcessId = [int64]900
-                ParentProcessId = [int64]901
+                ParentProcessId = [int64]0
                 Name = 'windowsterminal.exe'
                 CreationDate = '20260831100100.000000+120'
+            }
+        })
+    }
+    return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($parentNewerContext.traversal_outcome -ne 'parent_process_newer_than_child' -or (Test-TeremoqCaptureContextEvidence -Context $parentNewerContext)) {
+    throw 'newer parent creation date was accepted'
+}
+$pidReuseCurrent = [ordered]@{
+    ProcessId = [int64]921
+    ParentProcessId = [int64]920
+    Name = 'powershell.exe'
+    CreationDate = '20260831100000.000000+120'
+}
+$pidReuseContext = New-TeremoqCaptureContext -CurrentProcessId 921 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]921; Process = $pidReuseCurrent }) -ResolveProcess ({
+    param($ProcessId)
+    if ([int]$ProcessId -eq 920) {
+        return ([ordered]@{
+            Status = 'ok'
+            RequestedProcessId = [int64]920
+            Process = [ordered]@{
+                ProcessId = [int64]920
+                ParentProcessId = [int64]921
+                Name = 'windowsterminal.exe'
+                CreationDate = '20260831100000.000000+120'
+            }
+        })
+    }
+    if ([int]$ProcessId -eq 921) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]921; Process = $pidReuseCurrent })
+    }
+    return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($pidReuseContext.traversal_outcome -ne 'cycle_or_pid_reuse_detected' -or (Test-TeremoqCaptureContextEvidence -Context $pidReuseContext)) {
+    throw 'PID reuse/cycle was accepted'
+}
+$unstableCreationCurrent = [ordered]@{
+    ProcessId = [int64]931
+    ParentProcessId = [int64]930
+    Name = 'powershell.exe'
+    CreationDate = '20260831100000.000000+120'
+}
+$unstableCreationState = [pscustomobject]@{ Count = 0 }
+$unstableCreationContext = New-TeremoqCaptureContext -CurrentProcessId 931 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]931; Process = $unstableCreationCurrent }) -ResolveProcess ({
+    param($ProcessId)
+    if ([int]$ProcessId -eq 931) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]931; Process = $unstableCreationCurrent })
+    }
+    if ([int]$ProcessId -eq 930) {
+        $unstableCreationState.Count += 1
+        $creationDate = if ($unstableCreationState.Count -eq 1) { '20260831095900.000000+120' } else { '20260831100100.000000+120' }
+        return ([ordered]@{
+            Status = 'ok'
+            RequestedProcessId = [int64]930
+            Process = [ordered]@{
+                ProcessId = [int64]930
+                ParentProcessId = [int64]0
+                Name = 'windowsterminal.exe'
+                CreationDate = $creationDate
             }
         })
     }
@@ -300,8 +375,103 @@ $pidReuseContext = New-TeremoqCaptureContext -CurrentProcessId 901 -CurrentResul
     }
     return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
 }.GetNewClosure()) -ObservedEnvKeys @()
-if ($pidReuseContext.traversal_outcome -ne 'cycle_or_pid_reuse_detected' -or (Test-TeremoqCaptureContextEvidence -Context $pidReuseContext)) {
-    throw 'PID reuse/cycle was accepted'
+if ($unstableCreationContext.traversal_outcome -ne 'parent_process_unstable' -or (Test-TeremoqCaptureContextEvidence -Context $unstableCreationContext)) {
+    throw 'parent CreationDate change between queries was accepted'
+}
+$unstableParentPidCurrent = [ordered]@{
+    ProcessId = [int64]941
+    ParentProcessId = [int64]940
+    Name = 'powershell.exe'
+    CreationDate = '20260831100000.000000+120'
+}
+$unstableParentPidState = [pscustomobject]@{ Count = 0 }
+$unstableParentPidContext = New-TeremoqCaptureContext -CurrentProcessId 941 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]941; Process = $unstableParentPidCurrent }) -ResolveProcess ({
+    param($ProcessId)
+    if ([int]$ProcessId -eq 941) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]941; Process = $unstableParentPidCurrent })
+    }
+    if ([int]$ProcessId -eq 940) {
+        $unstableParentPidState.Count += 1
+        $parentProcessId = if ($unstableParentPidState.Count -eq 1) { [int64]0 } else { [int64]1 }
+        return ([ordered]@{
+            Status = 'ok'
+            RequestedProcessId = [int64]940
+            Process = [ordered]@{
+                ProcessId = [int64]940
+                ParentProcessId = $parentProcessId
+                Name = 'windowsterminal.exe'
+                CreationDate = '20260831095900.000000+120'
+            }
+        })
+    }
+    return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($unstableParentPidContext.traversal_outcome -ne 'parent_process_unstable' -or (Test-TeremoqCaptureContextEvidence -Context $unstableParentPidContext)) {
+    throw 'parent ParentProcessId change between queries was accepted'
+}
+$unstableNameCurrent = [ordered]@{
+    ProcessId = [int64]951
+    ParentProcessId = [int64]950
+    Name = 'powershell.exe'
+    CreationDate = '20260831100000.000000+120'
+}
+$unstableNameState = [pscustomobject]@{ Count = 0 }
+$unstableNameContext = New-TeremoqCaptureContext -CurrentProcessId 951 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]951; Process = $unstableNameCurrent }) -ResolveProcess ({
+    param($ProcessId)
+    if ([int]$ProcessId -eq 951) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]951; Process = $unstableNameCurrent })
+    }
+    if ([int]$ProcessId -eq 950) {
+        $unstableNameState.Count += 1
+        $name = if ($unstableNameState.Count -eq 1) { 'windowsterminal.exe' } else { 'explorer.exe' }
+        return ([ordered]@{
+            Status = 'ok'
+            RequestedProcessId = [int64]950
+            Process = [ordered]@{
+                ProcessId = [int64]950
+                ParentProcessId = [int64]0
+                Name = $name
+                CreationDate = '20260831095900.000000+120'
+            }
+        })
+    }
+    return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($unstableNameContext.traversal_outcome -ne 'parent_process_unstable' -or (Test-TeremoqCaptureContextEvidence -Context $unstableNameContext)) {
+    throw 'parent name change between queries was accepted'
+}
+$nonOkRequeryCurrent = [ordered]@{
+    ProcessId = [int64]961
+    ParentProcessId = [int64]960
+    Name = 'powershell.exe'
+    CreationDate = '20260831100000.000000+120'
+}
+$nonOkRequeryState = [pscustomobject]@{ Count = 0 }
+$nonOkRequeryContext = New-TeremoqCaptureContext -CurrentProcessId 961 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]961; Process = $nonOkRequeryCurrent }) -ResolveProcess ({
+    param($ProcessId)
+    if ([int]$ProcessId -eq 961) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]961; Process = $nonOkRequeryCurrent })
+    }
+    if ([int]$ProcessId -eq 960) {
+        $nonOkRequeryState.Count += 1
+        if ($nonOkRequeryState.Count -eq 1) {
+            return ([ordered]@{
+                Status = 'ok'
+                RequestedProcessId = [int64]960
+                Process = [ordered]@{
+                    ProcessId = [int64]960
+                    ParentProcessId = [int64]0
+                    Name = 'windowsterminal.exe'
+                    CreationDate = '20260831095900.000000+120'
+                }
+            })
+        }
+        return ([ordered]@{ Status = 'cim_query_failed'; RequestedProcessId = [int64]960; Process = $null })
+    }
+    return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($nonOkRequeryContext.traversal_outcome -ne 'parent_process_unstable' -or (Test-TeremoqCaptureContextEvidence -Context $nonOkRequeryContext)) {
+    throw 'non-ok parent requery was accepted'
 }
 $interopContext = [ordered]@{
     schema_version = 2

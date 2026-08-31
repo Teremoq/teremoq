@@ -118,7 +118,12 @@ ancestry, not from any external CLI-supplied context. Activation rejects WSL
 interop, truncated CIM ancestry, PID cycles/reuse, depth-limit captures or any
 other ambiguous capture path even if the JSON/hash pair is otherwise well
 formed. Wi-Fi band acceptance is equally strict: only the exact canonical
-`5 GHz` value passes when the band field is present.
+`5 GHz` value passes when the band field is present. Internally, every queried
+PID is re-read and must keep the same `ProcessId`, `ParentProcessId`, basename
+and `CreationDate` before the ancestry walk advances; a parent whose
+`CreationDate` is later than the observed child is rejected. Equality is
+conservatively accepted because DMTF/host timestamp resolution can collapse
+closely created native processes.
 
 ## 2. Mirrored WSL plan
 
