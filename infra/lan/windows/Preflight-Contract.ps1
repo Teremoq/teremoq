@@ -22,6 +22,21 @@ function Get-TeremoqWlanObservation {
         [Parameter(Mandatory = $true)][string]$Text,
         [Parameter(Mandatory = $true)][string]$AdapterName
     )
+    function Normalize-TeremoqWifiBandCandidate {
+        param([Parameter(Mandatory = $true)][string]$Value)
+        if ($Value.Length -gt 64) { return $null }
+        $builder = New-Object System.Text.StringBuilder
+        foreach ($character in $Value.ToCharArray()) {
+            if ([System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($character) -eq [System.Globalization.UnicodeCategory]::SpaceSeparator) {
+                [void]$builder.Append(' ')
+            } else {
+                [void]$builder.Append($character)
+            }
+        }
+        $normalized = $builder.ToString().Trim()
+        if ($normalized.Length -gt 64) { return $null }
+        return $normalized
+    }
     if ($Text.Length -gt 32768) { throw 'netsh wlan output exceeds 32768 bytes' }
     $blocks = New-Object System.Collections.Generic.List[object]
     $current = $null
@@ -64,11 +79,12 @@ function Get-TeremoqWlanObservation {
     }
     $band = [string]$matches[0].Band
     $radio = [string]$matches[0].Radio
+    $normalizedBand = if ($band -ne 'unavailable') { Normalize-TeremoqWifiBandCandidate -Value $band } else { $null }
     $fallbackRadioQualified = $matches[0].BandCount -eq 0 -and $matches[0].RadioCount -eq 1 -and $radio -in @('802.11a', '802.11ac')
     return [pscustomobject]@{
-        Band = $band
+        Band = $(if ($normalizedBand -ceq '5 GHz') { '5 GHz' } else { $band })
         Radio = $radio
-        IsCanonical5GHz = $band -ceq '5 GHz'
+        IsCanonical5GHz = $normalizedBand -ceq '5 GHz'
         FallbackRadioQualified = $fallbackRadioQualified
     }
 }
@@ -147,19 +163,48 @@ function Get-TeremoqDockerPublicationConflicts {
     return @($conflicts)
 }
 
+function Get-TeremoqDockerPsFormat {
+    return "{{.Names}}" + [string][char]9 + "{{.Ports}}"
+}
+
+function Convert-TeremoqProcessCreationDateToCanonicalDmtf {
+    param([Parameter(Mandatory = $true)]$Value)
+    if ($Value -is [datetime]) {
+        try {
+            return [System.Management.ManagementDateTimeConverter]::ToDmtfDateTime([datetime]$Value)
+        } catch {
+            return $null
+        }
+    }
+    if ($Value -isnot [string] -or $Value -cnotmatch '^\d{14}\.\d{6}[+-]\d{3}$') { return $null }
+    try {
+        [void][System.Management.ManagementDateTimeConverter]::ToDateTime($Value)
+        return $Value
+    } catch {
+        return $null
+    }
+}
+
 function Get-TeremoqProcessQueryResult {
     param([Parameter(Mandatory = $true)][int]$ProcessId)
     $requestedProcessId = [int64]$ProcessId
     try {
-        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+        $processes = @(Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop)
     } catch {
         return [ordered]@{ Status = 'cim_query_failed'; RequestedProcessId = $requestedProcessId; Process = $null }
     }
+    if ($processes.Count -eq 0) {
+        return [ordered]@{ Status = 'process_missing'; RequestedProcessId = $requestedProcessId; Process = $null }
+    }
+    if ($processes.Count -ne 1) {
+        return [ordered]@{ Status = 'cim_query_failed'; RequestedProcessId = $requestedProcessId; Process = $null }
+    }
+    $process = $processes[0]
     if ($null -eq $process -or [string]::IsNullOrWhiteSpace([string]$process.Name)) {
         return [ordered]@{ Status = 'process_missing'; RequestedProcessId = $requestedProcessId; Process = $null }
     }
     $name = [string]$process.Name
-    $creationDate = [string]$process.CreationDate
+    $creationDate = Convert-TeremoqProcessCreationDateToCanonicalDmtf -Value $process.CreationDate
     if ($process.ProcessId -is [bool] -or $process.ParentProcessId -is [bool] -or
         $process.ProcessId -isnot [ValueType] -or $process.ParentProcessId -isnot [ValueType] -or
         [Type]::GetTypeCode($process.ProcessId.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
@@ -168,11 +213,6 @@ function Get-TeremoqProcessQueryResult {
         [string]::IsNullOrWhiteSpace($name) -or $name.Trim() -cne $name -or
         $name -cmatch '[\\/:]' -or $name.ToLowerInvariant() -cnotmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$' -or
         $creationDate -isnot [string] -or $creationDate -cnotmatch '^\d{14}\.\d{6}[+-]\d{3}$') {
-        return [ordered]@{ Status = 'cim_query_failed'; RequestedProcessId = $requestedProcessId; Process = $null }
-    }
-    try {
-        [void][System.Management.ManagementDateTimeConverter]::ToDateTime($creationDate)
-    } catch {
         return [ordered]@{ Status = 'cim_query_failed'; RequestedProcessId = $requestedProcessId; Process = $null }
     }
     return [ordered]@{

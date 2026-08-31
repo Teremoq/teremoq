@@ -136,7 +136,7 @@ $docker = (@(& docker.exe version --format '{{.Server.Version}}' 2>$null) -join 
 $dockerVersionExit = $LASTEXITCODE
 Add-Check 'docker_server' 'observed' $(if ($dockerVersionExit -eq 0 -and $docker) { $docker } else { 'unavailable' }) $(if ($dockerVersionExit -eq 0 -and $docker) { 'real' } else { 'unavailable' })
 try {
-    $dockerRows = @(& docker.exe ps --format '{{.Names}}`t{{.Ports}}' 2>$null)
+    $dockerRows = @(& docker.exe ps --format (Get-TeremoqDockerPsFormat) 2>$null)
     if ($LASTEXITCODE -ne 0) { throw 'docker ps failed' }
     $dockerConflicts = Get-TeremoqDockerPublicationConflicts -Rows $dockerRows
     Add-Check 'docker_publication_inventory' 'pass' 'bounded-scan' 'real'

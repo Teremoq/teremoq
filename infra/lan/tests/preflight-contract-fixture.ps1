@@ -26,6 +26,8 @@ Nombre                 : Wi-Fi
 Tipo de radio          : 802.11ac
 Banda                  : 5 GHz
 "@
+$nbsp = [string][char]0x00A0
+$spanishNbspTrailing = "Nombre                 : Wi-Fi`nTipo de radio          : 802.11ac`nBanda                  : 5${nbsp}GHz  "
 $fallback = @"
 Name                   : Wi-Fi
 Radio type             : 802.11ac
@@ -81,6 +83,8 @@ $obs = Get-TeremoqWlanObservation -Text $englishExtraWhitespace -AdapterName 'Wi
 if ($obs.IsCanonical5GHz -or $obs.Band -ne '5     GHz') { throw 'Band with internal extra whitespace was accepted' }
 $obs = Get-TeremoqWlanObservation -Text $spanish -AdapterName 'Wi-Fi'
 if (-not $obs.IsCanonical5GHz -or $obs.Band -ne '5 GHz' -or $obs.Radio -ne '802.11ac' -or $obs.FallbackRadioQualified) { throw 'Spanish WLAN parsing failed' }
+$obs = Get-TeremoqWlanObservation -Text $spanishNbspTrailing -AdapterName 'Wi-Fi'
+if (-not $obs.IsCanonical5GHz -or $obs.Band -ne '5 GHz' -or $obs.Radio -ne '802.11ac' -or $obs.FallbackRadioQualified) { throw 'Spanish WLAN NBSP/trailing parsing failed' }
 $obs = Get-TeremoqWlanObservation -Text $fallback -AdapterName 'Wi-Fi'
 if ($obs.IsCanonical5GHz -or -not $obs.FallbackRadioQualified -or $obs.Band -ne 'unavailable' -or $obs.Radio -ne '802.11ac') { throw 'WLAN radio fallback classification failed' }
 $obs = Get-TeremoqWlanObservation -Text $duplicateBand -AdapterName 'Wi-Fi'
@@ -119,6 +123,12 @@ $ipv6 = @(Get-TeremoqDockerPublicationConflicts -Rows @("legacy-ollama`t[::]:114
 if ($ipv6.Count -ne 1 -or $ipv6[0] -ne 'service=legacy-ollama;port=11434/tcp') { throw 'IPv6 publication parsing failed' }
 $wildcard = @(Get-TeremoqDockerPublicationConflicts -Rows @("legacy-relay`t0.0.0.0:4433->4433/udp"))
 if ($wildcard.Count -ne 1 -or $wildcard[0] -ne 'service=legacy-relay;port=4433/udp') { throw 'wildcard publication parsing failed' }
+$dockerFormat = Get-TeremoqDockerPsFormat
+if ($dockerFormat -ne "{{.Names}}`t{{.Ports}}" -or @($dockerFormat.ToCharArray() | Where-Object { $_ -eq [char]9 }).Count -ne 1) {
+    throw 'Docker ps format did not emit one literal TAB separator'
+}
+$emptyPorts = @(Get-TeremoqDockerPublicationConflicts -Rows @("teremoq-supervisor-web-dev`t", "tramiteplus-redis-1`t6379/tcp"))
+if ($emptyPorts.Count -ne 0) { throw 'empty Docker port field or internal-only EXPOSE was treated as a host publication' }
 try {
     Get-TeremoqDockerPublicationConflicts -Rows @("bad`t0.0.0.0:6379-6380->6379/tcp") > $null
     throw 'malformed publication token was accepted'
@@ -132,6 +142,28 @@ try {
     throw 'Docker publication cardinality limit was not enforced'
 } catch {
     if ($_.Exception.Message -notmatch '128') { throw }
+}
+function Get-CimInstance {
+    param(
+        [Parameter(Position = 0)][string]$ClassName,
+        [string]$Filter,
+        [Parameter(ValueFromRemainingArguments = $true)]$Remaining
+    )
+    if ($ClassName -ne 'Win32_Process' -or $Filter -ne 'ProcessId=777') { throw 'unexpected CIM query' }
+    return [pscustomobject]@{
+        ProcessId = [int64]777
+        ParentProcessId = [int64]0
+        Name = 'powershell.exe'
+        CreationDate = [datetime]'2026-08-31T10:00:00+02:00'
+    }
+}
+try {
+    $cimDateTimeResult = Get-TeremoqProcessQueryResult -ProcessId 777
+    if ($cimDateTimeResult.Status -ne 'ok' -or $cimDateTimeResult.Process.CreationDate -cnotmatch '^\d{14}\.\d{6}[+-]\d{3}$') {
+        throw 'CIM DateTime CreationDate was not normalized to canonical DMTF'
+    }
+} finally {
+    Remove-Item Function:\Get-CimInstance -ErrorAction SilentlyContinue
 }
 
 function New-TeremoqMockProcess {
