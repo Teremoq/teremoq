@@ -372,6 +372,46 @@ class LabRuntimePolicyTest(unittest.TestCase):
                                             SERVER_IP, CLIENT_IP, 24, PROFILE,
                                             MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
 
+    def test_capture_context_accepts_only_trusted_explorer_root_missing_termination(self) -> None:
+        document = windows_preflight("server")
+        document["capture_context"] = capture_context(
+            parent_process_names=["explorer.exe"],
+            parent_process_count=1,
+            traversal_outcome="terminated_after_explorer_root_missing",
+        )
+        parsed = RUNTIME.parse_windows_preflight(
+            json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
+            SERVER_IP, CLIENT_IP, 24, PROFILE,
+            MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK,
+        )
+        self.assertEqual(parsed["capture_origin"]["status"], "pass")
+
+        for current_process_name, parent_names, env_keys, error in (
+            ("pwsh.exe", ["explorer.exe"], [], "trusted explorer root termination"),
+            ("powershell.exe", ["unknownshell.exe"], [], "trusted explorer root termination"),
+            ("powershell.exe", ["explorer.exe", "cmd.exe"], [], "trusted explorer root termination"),
+            ("powershell.exe", ["explorer.exe"], ["WSL_INTEROP"], "trusted explorer root termination"),
+        ):
+            with self.subTest(current_process_name=current_process_name, parent_names=parent_names, env_keys=env_keys):
+                invalid = windows_preflight("server")
+                invalid["capture_context"] = {
+                    "schema_version": 2,
+                    "current_process_name": current_process_name,
+                    "parent_process_names": parent_names,
+                    "parent_process_count": len(parent_names),
+                    "traversal_depth_limit": 16,
+                    "traversal_outcome": "terminated_after_explorer_root_missing",
+                    "wsl_environment_keys_present": env_keys,
+                    "powershell_edition": "Desktop",
+                    "powershell_version_major": 5,
+                }
+                with self.assertRaisesRegex(ValueError, error):
+                    RUNTIME.parse_windows_preflight(
+                        json.dumps(invalid).encode(), "server", RUN_ID, SOURCE_COMMIT,
+                        SERVER_IP, CLIENT_IP, 24, PROFILE,
+                        MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK,
+                    )
+
     def test_capture_context_rejects_wsl_interop_and_incomplete_walks(self) -> None:
         document = windows_preflight("server")
         document["capture_context"] = capture_context(interoperability=True)
@@ -426,6 +466,16 @@ class LabRuntimePolicyTest(unittest.TestCase):
             RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
                                             SERVER_IP, CLIENT_IP, 24, PROFILE,
                                             MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
+        document = windows_preflight("server")
+        document["capture_context"] = capture_context(
+            parent_process_names=["unknownshell.exe"],
+            parent_process_count=1,
+            traversal_outcome="parent_process_missing",
+        )
+        with self.assertRaisesRegex(ValueError, "does not prove parent-chain termination"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
 
     def test_ambiguous_or_noncanonical_wifi_band_blocks_activation(self) -> None:
         for band_value in ("2.4 GHz / 5 GHz", "not 5 GHz", "5 GHz preferred", "5 ghz", "5     GHz"):

@@ -325,6 +325,18 @@ function Resolve-TeremoqStableProcessIdentity {
     return [ordered]@{ Outcome = 'ok'; Identity = $left }
 }
 
+function Test-TeremoqTrustedExplorerRootTermination {
+    param(
+        [Parameter(Mandatory = $true)][string]$CurrentProcessName,
+        [string[]]$ParentProcessNames = @(),
+        [string[]]$ObservedEnvKeys = @()
+    )
+    return $CurrentProcessName -ceq 'powershell.exe' -and
+        $ParentProcessNames.Count -eq 1 -and
+        $ParentProcessNames[0] -ceq 'explorer.exe' -and
+        $ObservedEnvKeys.Count -eq 0
+}
+
 function New-TeremoqCaptureContext {
     param(
         [Parameter(Mandatory = $true)][int]$CurrentProcessId,
@@ -359,7 +371,12 @@ function New-TeremoqCaptureContext {
             $parentFirstResult = & $ResolveProcess $parentId
             $resolvedParent = Resolve-TeremoqStableProcessIdentity -ProcessId $parentId -InitialResult $parentFirstResult -ResolveProcess $ResolveProcess -MissingOutcome 'parent_process_missing' -UnstableOutcome 'parent_process_unstable'
             if ($resolvedParent.Outcome -ne 'ok') {
-                $traversalOutcome = [string]$resolvedParent.Outcome
+                if ($resolvedParent.Outcome -eq 'parent_process_missing' -and
+                    (Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName $currentProcessName -ParentProcessNames @($parentNames) -ObservedEnvKeys @($presentEnvKeys))) {
+                    $traversalOutcome = 'terminated_after_explorer_root_missing'
+                } else {
+                    $traversalOutcome = [string]$resolvedParent.Outcome
+                }
                 break
             }
             $parentIdentity = $resolvedParent.Identity
@@ -419,7 +436,7 @@ function Test-TeremoqCaptureContextEvidence {
         $Context.traversal_depth_limit -is [bool] -or $Context.traversal_depth_limit -isnot [ValueType] -or
         [Type]::GetTypeCode($Context.traversal_depth_limit.GetType()) -notin @([TypeCode]::Byte, [TypeCode]::SByte, [TypeCode]::Int16, [TypeCode]::UInt16, [TypeCode]::Int32, [TypeCode]::UInt32, [TypeCode]::Int64, [TypeCode]::UInt64) -or
         [int64]$Context.traversal_depth_limit -ne 16 -or
-        $Context.traversal_outcome -isnot [string] -or $Context.traversal_outcome -ne 'terminated_parent_pid_nonpositive' -or
+        $Context.traversal_outcome -isnot [string] -or $Context.traversal_outcome -notin @('terminated_parent_pid_nonpositive', 'terminated_after_explorer_root_missing') -or
         $Context.wsl_environment_keys_present -isnot [System.Array] -or $Context.wsl_environment_keys_present.Count -gt 3 -or
         $Context.powershell_edition -isnot [string] -or $Context.powershell_edition -notin @('Desktop', 'Core') -or
         $Context.powershell_version_major -is [bool] -or $Context.powershell_version_major -isnot [ValueType] -or
@@ -439,5 +456,9 @@ function Test-TeremoqCaptureContextEvidence {
         if ($key -isnot [string] -or $key -notin $allowedEnvKeys) { return $false }
     }
     if (@($Context.wsl_environment_keys_present | Select-Object -Unique).Count -ne $Context.wsl_environment_keys_present.Count) { return $false }
+    if ($Context.traversal_outcome -ceq 'terminated_after_explorer_root_missing' -and
+        -not (Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName $Context.current_process_name -ParentProcessNames $normalizedParents -ObservedEnvKeys $Context.wsl_environment_keys_present)) {
+        return $false
+    }
     return @($normalizedParents | Where-Object { $_ -in $blockedAncestorNames }).Count -eq 0 -and $Context.wsl_environment_keys_present.Count -eq 0
 }

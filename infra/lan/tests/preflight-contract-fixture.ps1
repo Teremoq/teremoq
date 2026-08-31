@@ -211,6 +211,113 @@ $missingParentContext = New-TeremoqCaptureContext -CurrentProcessId 201 -Current
 if ($missingParentContext.traversal_outcome -ne 'parent_process_missing' -or (Test-TeremoqCaptureContextEvidence -Context $missingParentContext)) {
     throw 'positive parent PID without CIM result was accepted'
 }
+$trustedExplorerMissingRecords = @{
+    211 = (New-TeremoqMockProcess -ProcessId 211 -Name 'powershell.exe' -ParentProcessId 210)
+    210 = (New-TeremoqMockProcess -ProcessId 210 -Name 'explorer.exe' -ParentProcessId 209 -CreationDate '20260831095900.000000+120')
+}
+$trustedExplorerMissingContext = New-TeremoqCaptureContext -CurrentProcessId 211 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]211; Process = $trustedExplorerMissingRecords[211] }) -ResolveProcess ({
+    param($ProcessId)
+    if ($trustedExplorerMissingRecords.ContainsKey([int]$ProcessId)) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64][int]$ProcessId; Process = $trustedExplorerMissingRecords[[int]$ProcessId] })
+    }
+    return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($trustedExplorerMissingContext.traversal_outcome -ne 'terminated_after_explorer_root_missing' -or
+    $trustedExplorerMissingContext.parent_process_count -ne 1 -or
+    $trustedExplorerMissingContext.parent_process_names.Count -ne 1 -or
+    $trustedExplorerMissingContext.parent_process_names[0] -cne 'explorer.exe' -or
+    -not (Test-TeremoqCaptureContextEvidence -Context $trustedExplorerMissingContext)) {
+    throw 'trusted explorer-root missing termination was not accepted'
+}
+$unknownMissingRecords = @{
+    221 = (New-TeremoqMockProcess -ProcessId 221 -Name 'powershell.exe' -ParentProcessId 220)
+    220 = (New-TeremoqMockProcess -ProcessId 220 -Name 'unknownshell.exe' -ParentProcessId 219 -CreationDate '20260831095900.000000+120')
+}
+$unknownMissingContext = New-TeremoqCaptureContext -CurrentProcessId 221 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]221; Process = $unknownMissingRecords[221] }) -ResolveProcess ({
+    param($ProcessId)
+    if ($unknownMissingRecords.ContainsKey([int]$ProcessId)) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64][int]$ProcessId; Process = $unknownMissingRecords[[int]$ProcessId] })
+    }
+    return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($unknownMissingContext.traversal_outcome -ne 'parent_process_missing' -or (Test-TeremoqCaptureContextEvidence -Context $unknownMissingContext)) {
+    throw 'unknown parent root missing was accepted'
+}
+$immediateMissingCurrent = [ordered]@{
+    ProcessId = [int64]231
+    ParentProcessId = [int64]230
+    Name = 'powershell.exe'
+    CreationDate = '20260831100000.000000+120'
+}
+$immediateMissingContext = New-TeremoqCaptureContext -CurrentProcessId 231 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]231; Process = $immediateMissingCurrent }) -ResolveProcess ({
+    param($ProcessId)
+    if ([int]$ProcessId -eq 231) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]231; Process = $immediateMissingCurrent })
+    }
+    return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($immediateMissingContext.traversal_outcome -ne 'parent_process_missing' -or (Test-TeremoqCaptureContextEvidence -Context $immediateMissingContext)) {
+    throw 'immediate missing parent was accepted'
+}
+$currentMissingContext = New-TeremoqCaptureContext -CurrentProcessId 241 -CurrentResult ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64]241; Process = $null }) -ResolveProcess ({ param($ProcessId) [ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null } }.GetNewClosure()) -ObservedEnvKeys @()
+if ($currentMissingContext.traversal_outcome -ne 'current_process_missing' -or (Test-TeremoqCaptureContextEvidence -Context $currentMissingContext)) {
+    throw 'missing current process was accepted'
+}
+$extraNameContext = [ordered]@{
+    schema_version = 2
+    current_process_name = 'powershell.exe'
+    parent_process_names = @('explorer.exe', 'cmd.exe')
+    parent_process_count = 2
+    traversal_depth_limit = 16
+    traversal_outcome = 'terminated_after_explorer_root_missing'
+    wsl_environment_keys_present = @()
+    powershell_edition = 'Desktop'
+    powershell_version_major = 5
+}
+if (Test-TeremoqCaptureContextEvidence -Context $extraNameContext) { throw 'explorer-root missing outcome accepted an extra ancestor name' }
+$specialOutcomeWslContext = [ordered]@{
+    schema_version = 2
+    current_process_name = 'powershell.exe'
+    parent_process_names = @('explorer.exe')
+    parent_process_count = 1
+    traversal_depth_limit = 16
+    traversal_outcome = 'terminated_after_explorer_root_missing'
+    wsl_environment_keys_present = @('WSL_INTEROP')
+    powershell_edition = 'Desktop'
+    powershell_version_major = 5
+}
+if (Test-TeremoqCaptureContextEvidence -Context $specialOutcomeWslContext) { throw 'WSL-tagged explorer-root missing outcome was accepted' }
+$unstableExplorerCurrent = [ordered]@{
+    ProcessId = [int64]251
+    ParentProcessId = [int64]250
+    Name = 'powershell.exe'
+    CreationDate = '20260831100000.000000+120'
+}
+$unstableExplorerState = [pscustomobject]@{ Count = 0 }
+$unstableExplorerContext = New-TeremoqCaptureContext -CurrentProcessId 251 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]251; Process = $unstableExplorerCurrent }) -ResolveProcess ({
+    param($ProcessId)
+    if ([int]$ProcessId -eq 251) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]251; Process = $unstableExplorerCurrent })
+    }
+    if ([int]$ProcessId -eq 250) {
+        $unstableExplorerState.Count += 1
+        $creationDate = if ($unstableExplorerState.Count -eq 1) { '20260831095900.000000+120' } else { '20260831100100.000000+120' }
+        return ([ordered]@{
+            Status = 'ok'
+            RequestedProcessId = [int64]250
+            Process = [ordered]@{
+                ProcessId = [int64]250
+                ParentProcessId = [int64]249
+                Name = 'explorer.exe'
+                CreationDate = $creationDate
+            }
+        })
+    }
+    return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($unstableExplorerContext.traversal_outcome -ne 'parent_process_unstable' -or (Test-TeremoqCaptureContextEvidence -Context $unstableExplorerContext)) {
+    throw 'unstable explorer root was accepted'
+}
 $cycleRecords = @{
     301 = (New-TeremoqMockProcess -ProcessId 301 -Name 'powershell.exe' -ParentProcessId 300)
     300 = (New-TeremoqMockProcess -ProcessId 300 -Name 'windowsterminal.exe' -ParentProcessId 299)

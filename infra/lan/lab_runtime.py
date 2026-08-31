@@ -290,7 +290,10 @@ def validate_capture_context(context: object, label: str) -> None:
         fail(f"{label} parent process chain cardinality is inconsistent")
     if not isinstance(traversal_depth_limit, int) or isinstance(traversal_depth_limit, bool) or traversal_depth_limit != 16:
         fail(f"{label} capture context depth limit is not exact")
-    if not isinstance(traversal_outcome, str) or traversal_outcome != "terminated_parent_pid_nonpositive":
+    if not isinstance(traversal_outcome, str) or traversal_outcome not in {
+        "terminated_parent_pid_nonpositive",
+        "terminated_after_explorer_root_missing",
+    }:
         fail(f"{label} capture context does not prove parent-chain termination")
     if not isinstance(wsl_environment_keys_present, list) or len(wsl_environment_keys_present) > 3:
         fail(f"{label} WSL environment evidence is outside policy")
@@ -309,6 +312,9 @@ def validate_capture_context(context: object, label: str) -> None:
             fail(f"{label} WSL environment key evidence is invalid")
     if len(set(wsl_environment_keys_present)) != len(wsl_environment_keys_present):
         fail(f"{label} WSL environment key evidence contains duplicates")
+    if traversal_outcome == "terminated_after_explorer_root_missing":
+        if current_process_name != "powershell.exe" or normalized_parents != ["explorer.exe"] or wsl_environment_keys_present:
+            fail(f"{label} capture context does not prove the trusted explorer root termination")
     if any(entry in blocked_ancestors for entry in normalized_parents) or wsl_environment_keys_present:
         fail(f"{label} capture path is not native Windows PowerShell")
 
