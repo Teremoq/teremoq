@@ -37,7 +37,11 @@ WINDOWS_PREFLIGHT_KEYS = {
     "schema_version", "report_kind", "run_id", "source_commit", "role", "server_ipv4",
     "client_ipv4", "prefix_length", "network_profile", "expected_wsl_mode",
     "maximum_clock_offset_ms", "minimum_mtu", "minimum_cpu_cores", "minimum_memory_mib",
-    "minimum_disk_mib", "checks",
+    "minimum_disk_mib", "capture_context", "checks",
+}
+CAPTURE_CONTEXT_KEYS = {
+    "schema_version", "current_process_name", "parent_process_names", "wsl_environment_keys_present",
+    "powershell_edition", "powershell_version_major",
 }
 FIREWALL_ATTESTATION_KEYS = {
     "schema_version", "run_id", "source_commit", "server_ipv4", "client_ipv4",
@@ -212,7 +216,7 @@ def validate_checks(document: dict[str, object], expected_names: set[str], label
 
 SERVER_WINDOWS_CHECKS = {
     "windows_caption", "windows_version", "configured_private_ip_present", "network_profile",
-    "wifi_adapter", "wifi_link_speed", "wifi_radio", "wifi_band", "wsl_mode", "expected_wsl_mode_gate",
+    "capture_origin", "wifi_adapter", "wifi_link_speed", "wifi_radio", "wifi_band", "wsl_mode", "expected_wsl_mode_gate",
     "clock_offset", "mtu", "logical_cpu", "physical_memory_mib", "free_disk_mib",
     "browser_msedge.exe", "browser_chrome.exe", "docker_server", "docker_publication_inventory",
     "wslconfig_present", "preflight_gate",
@@ -220,7 +224,7 @@ SERVER_WINDOWS_CHECKS = {
     *(f"listener_tcp_{port}" for port in LEGACY_TCP_PORTS),
 }
 CLIENT_WINDOWS_CHECKS = {
-    "windows_caption", "windows_version", "client_private_ip_present", "network_profile", "mtu",
+    "windows_caption", "windows_version", "capture_origin", "client_private_ip_present", "network_profile", "mtu",
     "wifi_radio", "wifi_5ghz", "wsl_ipv4_mode", "browser_edge", "browser_chrome", "browser_gate",
     "node_runtime_22_x", "player_loopback_tcp_3000", "clock_offset", "logical_cpu",
     "physical_memory_mib", "free_disk_mib", "icmp_echo_loss_percent_approximation",
@@ -259,6 +263,43 @@ def parse_check_int_value(value: str, label: str, minimum: int, maximum: int) ->
     return parse_exact_int(int(value), label, minimum, maximum)
 
 
+def validate_capture_context(context: object, label: str) -> None:
+    if not isinstance(context, dict) or set(context) != CAPTURE_CONTEXT_KEYS:
+        fail(f"{label} capture context schema is not closed")
+    if context["schema_version"] != 1:
+        fail(f"{label} capture context schema version is unsupported")
+    current_process_name = context["current_process_name"]
+    parent_process_names = context["parent_process_names"]
+    wsl_environment_keys_present = context["wsl_environment_keys_present"]
+    powershell_edition = context["powershell_edition"]
+    powershell_version_major = context["powershell_version_major"]
+    if current_process_name not in {"powershell.exe", "pwsh.exe"} or powershell_edition not in {"Desktop", "Core"}:
+        fail(f"{label} capture context does not describe native Windows PowerShell")
+    if not isinstance(powershell_version_major, int) or isinstance(powershell_version_major, bool) or not 5 <= powershell_version_major <= 9:
+        fail(f"{label} PowerShell major version is outside policy")
+    if not isinstance(parent_process_names, list) or not 1 <= len(parent_process_names) <= 8:
+        fail(f"{label} parent process chain is outside policy")
+    if not isinstance(wsl_environment_keys_present, list) or len(wsl_environment_keys_present) > 3:
+        fail(f"{label} WSL environment evidence is outside policy")
+    blocked_ancestors = {"bash.exe", "sh.exe", "dash.exe", "wsl.exe", "wslhost.exe", "ubuntu.exe", "debian.exe", "kali.exe", "arch.exe"}
+    allowed_env_keys = {"WSLENV", "WSL_INTEROP", "WSL_DISTRO_NAME"}
+    normalized_parents: list[str] = []
+    for entry in parent_process_names:
+        if not isinstance(entry, str) or not entry or len(entry) > 128:
+            fail(f"{label} parent process entry is invalid")
+        lowered = entry.lower()
+        if lowered in normalized_parents:
+            fail(f"{label} parent process chain contains duplicates")
+        normalized_parents.append(lowered)
+    for entry in wsl_environment_keys_present:
+        if not isinstance(entry, str) or entry not in allowed_env_keys:
+            fail(f"{label} WSL environment key evidence is invalid")
+    if len(set(wsl_environment_keys_present)) != len(wsl_environment_keys_present):
+        fail(f"{label} WSL environment key evidence contains duplicates")
+    if any(entry in blocked_ancestors for entry in normalized_parents) or wsl_environment_keys_present:
+        fail(f"{label} capture path is not native Windows PowerShell")
+
+
 def validate_listener_checks(checks: dict[str, dict[str, str]], label: str, udp_ports: tuple[int, ...], tcp_ports: tuple[int, ...]) -> None:
     for protocol, ports in (("udp", udp_ports), ("tcp", tcp_ports)):
         for port in ports:
@@ -283,7 +324,15 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
     }
     if any(document.get(key) != value for key, value in expected.items()):
         fail(f"{label} run/IP/profile/WSL/commit binding mismatch")
+    validate_capture_context(document["capture_context"], label)
     checks = validate_checks(document, SERVER_WINDOWS_CHECKS if role == "server" else CLIENT_WINDOWS_CHECKS, label)
+    if checks["capture_origin"] != {
+        "check": "capture_origin",
+        "status": "pass",
+        "value": "native_windows_powershell",
+        "evidence_quality": "real",
+    }:
+        fail(f"{label} capture origin check is not exact")
     if checks["network_profile"] != {"check": "network_profile", "status": "pass", "value": network_profile, "evidence_quality": "real"}:
         fail(f"{label} current network profile mismatch")
     mode_key = "expected_wsl_mode_gate" if role == "server" else "wsl_ipv4_mode"

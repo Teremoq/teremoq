@@ -110,7 +110,10 @@ Run both Windows preflights in native PowerShell. On this host, `powershell.exe`
 launched from WSL interop does not provide trustworthy nested native stdout for
 evidence capture, so WSL-driven captures are documentation-only and are not
 accepted as real preflight evidence. Copy/import the resulting JSON files only
-after the native PowerShell run completes.
+after the native PowerShell run completes. The JSON now carries a closed
+`capture_context` block with PowerShell process ancestry and WSL environment
+indicators; activation validates that evidence and rejects WSL interop or any
+ambiguous capture path even if the rest of the JSON and hash are well formed.
 
 ## 2. Mirrored WSL plan
 

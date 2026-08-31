@@ -100,10 +100,10 @@ def parse_rows(text: str) -> list[str]:
             if published is None:
                 fail(f"Docker publication token is malformed on row {line_number}")
             validate_host_literal(published.group("host"))
-            parse_port(published.group("host_port"), "host port")
-            container_port = str(parse_port(published.group("container"), "container port"))
-            conflict = f"{container_port}/{published.group('protocol')}"
-            if (container_port, published.group("protocol")) not in CONFLICTS:
+            host_port = str(parse_port(published.group("host_port"), "host port"))
+            parse_port(published.group("container"), "container port")
+            conflict = f"{host_port}/{published.group('protocol')}"
+            if (host_port, published.group("protocol")) not in CONFLICTS:
                 continue
             record = f"service={service};port={conflict}"
             if record not in seen:

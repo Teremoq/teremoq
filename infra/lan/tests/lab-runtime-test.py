@@ -39,10 +39,22 @@ def check(name: str, value: str = "measured", status: str = "observed", quality:
     return {"check": name, "status": status, "value": value, "evidence_quality": quality}
 
 
+def capture_context(interoperability: bool = False) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "current_process_name": "powershell.exe",
+        "parent_process_names": ["wslhost.exe", "bash.exe"] if interoperability else ["windowsterminal.exe", "explorer.exe"],
+        "wsl_environment_keys_present": ["WSL_INTEROP"] if interoperability else [],
+        "powershell_edition": "Desktop",
+        "powershell_version_major": 5,
+    }
+
+
 def windows_preflight(role: str) -> dict[str, object]:
     names = RUNTIME.SERVER_WINDOWS_CHECKS if role == "server" else RUNTIME.CLIENT_WINDOWS_CHECKS
     checks = {name: check(name) for name in names}
     checks["preflight_gate"] = check("preflight_gate", "ready", "pass")
+    checks["capture_origin"] = check("capture_origin", "native_windows_powershell", "pass")
     checks["network_profile"] = check("network_profile", PROFILE, "pass")
     checks["clock_offset"] = check("clock_offset", "0.079", "pass")
     checks["mtu"] = check("mtu", "1500", "pass")
@@ -72,6 +84,7 @@ def windows_preflight(role: str) -> dict[str, object]:
         "minimum_cpu_cores": SERVER_MIN_CPU if role == "server" else CLIENT_MIN_CPU,
         "minimum_memory_mib": SERVER_MIN_MEMORY if role == "server" else CLIENT_MIN_MEMORY,
         "minimum_disk_mib": SERVER_MIN_DISK if role == "server" else CLIENT_MIN_DISK,
+        "capture_context": capture_context(),
         "checks": list(checks.values()),
     }
 
@@ -342,6 +355,20 @@ class LabRuntimePolicyTest(unittest.TestCase):
         record = next(item for item in document["checks"] if item["check"] == "clock_offset")  # type: ignore[union-attr]
         record.update(value="25.001")
         with self.assertRaisesRegex(ValueError, "clock offset exceeds policy"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
+
+    def test_capture_context_rejects_wsl_interop_and_duplicates(self) -> None:
+        document = windows_preflight("server")
+        document["capture_context"] = capture_context(interoperability=True)
+        with self.assertRaisesRegex(ValueError, "capture path is not native Windows PowerShell"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
+        document = windows_preflight("client")
+        document["capture_context"]["parent_process_names"] = ["windowsterminal.exe", "windowsterminal.exe"]  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "duplicates"):
             RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
                                             SERVER_IP, CLIENT_IP, 24, PROFILE,
                                             MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)

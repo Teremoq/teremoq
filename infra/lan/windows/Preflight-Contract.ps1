@@ -28,28 +28,45 @@ function Get-TeremoqWlanObservation {
     foreach ($line in ($Text -split "`r?`n")) {
         if ($line -match '(?im)^\s*(Name|Nombre)\s*:\s*([^\r\n]+)\s*$') {
             if ($null -ne $current) { $blocks.Add([pscustomobject]$current) }
-            $current = [ordered]@{ Name = $Matches[2].Trim(); Band = 'unavailable'; Radio = 'unavailable' }
+            $current = [ordered]@{
+                Name = $Matches[2].Trim()
+                Band = 'unavailable'
+                Radio = 'unavailable'
+                BandCount = 0
+                RadioCount = 0
+                Ambiguous = $false
+            }
             continue
         }
         if ($null -eq $current) { continue }
         if ($line -match '(?im)^\s*(Band|Banda)\s*:\s*([^\r\n]+)\s*$') {
-            $current.Band = $Matches[2].Trim()
+            $current.BandCount += 1
+            if ($current.BandCount -gt 1) {
+                $current.Ambiguous = $true
+            } else {
+                $current.Band = $Matches[2].Trim()
+            }
             continue
         }
         if ($line -match '(?im)^\s*(Radio type|Tipo de radio)\s*:\s*([^\r\n]+)\s*$') {
-            $current.Radio = $Matches[2].Trim()
+            $current.RadioCount += 1
+            if ($current.RadioCount -gt 1) {
+                $current.Ambiguous = $true
+            } else {
+                $current.Radio = $Matches[2].Trim()
+            }
         }
     }
     if ($null -ne $current) { $blocks.Add([pscustomobject]$current) }
     $matches = @($blocks | Where-Object { $_.Name -ceq $AdapterName })
-    if ($matches.Count -ne 1) {
+    if ($matches.Count -ne 1 -or $matches[0].Ambiguous) {
         return [pscustomobject]@{ Band = 'unavailable'; Radio = 'unavailable'; Is5GHz = $false }
     }
     $band = [string]$matches[0].Band
     $radio = [string]$matches[0].Radio
     $is5GHz = $false
     if ($band -match '(?i)\b5\s*GHz\b') { $is5GHz = $true }
-    elseif ($band -eq 'unavailable' -and $radio -match '(?i)\b802\.11(a|ac)\b') { $is5GHz = $true }
+    elseif ($matches[0].BandCount -eq 0 -and $matches[0].RadioCount -eq 1 -and $radio -match '(?i)\b802\.11(a|ac)\b') { $is5GHz = $true }
     return [pscustomobject]@{ Band = $band; Radio = $radio; Is5GHz = $is5GHz }
 }
 
@@ -116,7 +133,7 @@ function Get-TeremoqDockerPublicationConflicts {
             if ($hostPort -lt 1 -or $hostPort -gt 65535 -or $containerPort -lt 1 -or $containerPort -gt 65535) {
                 throw 'Docker publication port is outside 1..65535'
             }
-            $conflict = "$containerPort/$($Matches['protocol'])"
+            $conflict = "$hostPort/$($Matches['protocol'])"
             if ($conflict -notin @('4433/tcp', '5678/tcp', '6379/tcp', '11434/tcp', '4433/udp', '9000/udp', '14433/udp', '19000/udp')) {
                 continue
             }
@@ -125,4 +142,62 @@ function Get-TeremoqDockerPublicationConflicts {
         }
     }
     return @($conflicts)
+}
+
+function Get-TeremoqCaptureContext {
+    $allowedEnvKeys = @('WSLENV', 'WSL_INTEROP', 'WSL_DISTRO_NAME')
+    $blockedAncestorNames = @('bash.exe', 'sh.exe', 'dash.exe', 'wsl.exe', 'wslhost.exe', 'ubuntu.exe', 'debian.exe', 'kali.exe', 'arch.exe')
+    $current = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue
+    $currentProcessName = if ($current) { [string]$current.Name } else { 'unavailable' }
+    $parentNames = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object 'System.Collections.Generic.HashSet[int]'
+    $walker = $current
+    for ($depth = 0; $depth -lt 8 -and $null -ne $walker; $depth += 1) {
+        $parentId = [int]$walker.ParentProcessId
+        if ($parentId -le 0 -or -not $seen.Add($parentId)) { break }
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId" -ErrorAction SilentlyContinue
+        if ($null -eq $parent -or [string]::IsNullOrWhiteSpace([string]$parent.Name)) { break }
+        $parentNames.Add(([string]$parent.Name).ToLowerInvariant())
+        $walker = $parent
+    }
+    $presentEnvKeys = @($allowedEnvKeys | Where-Object { -not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($_)) })
+    return [ordered]@{
+        schema_version = 1
+        current_process_name = $currentProcessName.ToLowerInvariant()
+        parent_process_names = @($parentNames)
+        wsl_environment_keys_present = @($presentEnvKeys)
+        powershell_edition = [string]$PSVersionTable.PSEdition
+        powershell_version_major = [int]$PSVersionTable.PSVersion.Major
+    }
+}
+
+function Test-TeremoqCaptureContextEvidence {
+    param([Parameter(Mandatory = $true)]$Context)
+    if ($Context -isnot [System.Collections.IDictionary]) { return $false }
+    $keys = @($Context.Keys)
+    if ($keys.Count -ne 6 -or @($keys | Where-Object { @('schema_version', 'current_process_name', 'parent_process_names', 'wsl_environment_keys_present', 'powershell_edition', 'powershell_version_major') -notcontains $_ }).Count -ne 0) {
+        return $false
+    }
+    if ($Context.schema_version -ne 1 -or $Context.current_process_name -isnot [string] -or
+        $Context.current_process_name -notin @('powershell.exe', 'pwsh.exe') -or
+        $Context.parent_process_names -isnot [System.Array] -or $Context.parent_process_names.Count -lt 1 -or $Context.parent_process_names.Count -gt 8 -or
+        $Context.wsl_environment_keys_present -isnot [System.Array] -or $Context.wsl_environment_keys_present.Count -gt 3 -or
+        $Context.powershell_edition -isnot [string] -or $Context.powershell_edition -notin @('Desktop', 'Core') -or
+        $Context.powershell_version_major -isnot [int] -or $Context.powershell_version_major -lt 5 -or $Context.powershell_version_major -gt 9) {
+        return $false
+    }
+    $allowedEnvKeys = @('WSLENV', 'WSL_INTEROP', 'WSL_DISTRO_NAME')
+    $blockedAncestorNames = @('bash.exe', 'sh.exe', 'dash.exe', 'wsl.exe', 'wslhost.exe', 'ubuntu.exe', 'debian.exe', 'kali.exe', 'arch.exe')
+    $normalizedParents = @()
+    foreach ($name in $Context.parent_process_names) {
+        if ($name -isnot [string] -or [string]::IsNullOrWhiteSpace($name) -or $name.Length -gt 128) { return $false }
+        $normalized = $name.ToLowerInvariant()
+        if ($normalizedParents -contains $normalized) { return $false }
+        $normalizedParents += $normalized
+    }
+    foreach ($key in $Context.wsl_environment_keys_present) {
+        if ($key -isnot [string] -or $key -notin $allowedEnvKeys) { return $false }
+    }
+    if (@($Context.wsl_environment_keys_present | Select-Object -Unique).Count -ne $Context.wsl_environment_keys_present.Count) { return $false }
+    return @($normalizedParents | Where-Object { $_ -in $blockedAncestorNames }).Count -eq 0 -and $Context.wsl_environment_keys_present.Count -eq 0
 }

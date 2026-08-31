@@ -106,7 +106,9 @@ address recorded in `VERSION.tsv`. Windows 10 WSL2 stays NAT and initiates only
 outbound traffic.
 Native PowerShell preflight output is the only accepted evidence source on this
 host. Running the preflight via WSL `powershell.exe` interop is not a valid
-collection path because nested native stdout can be incomplete.
+collection path because nested native stdout can be incomplete. The preflight
+JSON includes a closed `capture_context` evidence block and activation rejects
+WSL interop or ambiguous ancestry even when the file hash otherwise matches.
 
 The ready package is accepted only when the exact nine-key launcher contract,
 its `source_commit`, launcher SHA-256 and the closed standalone manifest all

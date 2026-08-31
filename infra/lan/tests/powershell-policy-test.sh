@@ -24,6 +24,8 @@ grep -Fq '/query /status /verbose' "${ROOT}/windows/Preflight-Lan.ps1"
 grep -Fq '/query /status /verbose' "${ROOT}/windows/Preflight-Client.ps1"
 grep -Fq 'Preflight-Contract.ps1' "${ROOT}/windows/Preflight-Lan.ps1"
 grep -Fq 'Preflight-Contract.ps1' "${ROOT}/windows/Preflight-Client.ps1"
+grep -Fq 'capture_context = $captureContext' "${ROOT}/windows/Preflight-Lan.ps1"
+grep -Fq 'capture_context = $captureContext' "${ROOT}/windows/Preflight-Client.ps1"
 
 context="$(powershell.exe -NoProfile -NonInteractive -Command '
 $profile = Get-NetConnectionProfile | Where-Object {$_.NetworkCategory -in @("Public","Private")} | Select-Object -First 1

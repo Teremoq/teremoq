@@ -23,6 +23,8 @@ Set-StrictMode -Version 3.0
 . (Join-Path $PSScriptRoot 'Preflight-Contract.ps1')
 $checks = New-Object System.Collections.Generic.List[object]
 $script:PreflightBlocked = $false
+$captureContext = Get-TeremoqCaptureContext
+$nativeCapture = Test-TeremoqCaptureContextEvidence -Context $captureContext
 
 function Add-Check([string]$Name, [string]$Status, $Value, [string]$Quality) {
     if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) { $Value = 'unavailable'; $Quality = 'unavailable' }
@@ -65,6 +67,7 @@ foreach ($entry in @(@{ Name = 'ServerIPv4'; Bits = $serverBits }, @{ Name = 'Cl
 $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
 Add-Check 'windows_caption' 'observed' $(if ($os) { $os.Caption } else { 'unavailable' }) $(if ($os) { 'real' } else { 'unavailable' })
 Add-Check 'windows_version' 'observed' $(if ($os) { $os.Version } else { 'unavailable' }) $(if ($os) { 'real' } else { 'unavailable' })
+Add-Check 'capture_origin' $(if ($nativeCapture) { 'pass' } else { 'blocked' }) $(if ($nativeCapture) { 'native_windows_powershell' } else { 'wsl_or_ambiguous_capture' }) 'real'
 $expectedAddress = if ($Role -eq 'Server') { $ServerIPv4 } else { $ClientIPv4 }
 $addressMatches = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $expectedAddress })
 $address = if ($addressMatches.Count -eq 1) { $addressMatches[0] } else { $null }
@@ -174,5 +177,6 @@ Add-Check 'preflight_gate' $(if ($script:PreflightBlocked) { 'blocked' } else { 
     minimum_cpu_cores = $MinimumCpuCores
     minimum_memory_mib = $MinimumMemoryMiB
     minimum_disk_mib = $MinimumDiskMiB
+    capture_context = $captureContext
     checks = @($checks | ForEach-Object { $_ })
 } | ConvertTo-Json -Depth 5
