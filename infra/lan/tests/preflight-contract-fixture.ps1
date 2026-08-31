@@ -36,6 +36,26 @@ Name                   : Wi-Fi
 Radio type             : 802.11ac
 Band                   : 2.4 GHz
 "@
+$combinedBand = @"
+Name                   : Wi-Fi
+Radio type             : 802.11ac
+Band                   : 2.4 GHz / 5 GHz
+"@
+$combinedBandSpanish = @"
+Nombre                 : Wi-Fi
+Tipo de radio          : 802.11ac
+Banda                  : 2.4 GHz / 5 GHz
+"@
+$negatedBand = @"
+Name                   : Wi-Fi
+Radio type             : 802.11ac
+Band                   : not 5 GHz
+"@
+$unknownBandSpanish = @"
+Nombre                 : Wi-Fi
+Tipo de radio          : 802.11ac
+Banda                  : desconocida
+"@
 $duplicateBlock = @"
 Name                   : Wi-Fi
 Band                   : 5 GHz
@@ -55,6 +75,14 @@ $obs = Get-TeremoqWlanObservation -Text $duplicateSpanishRadio -AdapterName 'Wi-
 if ($obs.Is5GHz -or $obs.Band -ne 'unavailable' -or $obs.Radio -ne 'unavailable') { throw 'duplicate radio field was not rejected' }
 $obs = Get-TeremoqWlanObservation -Text $bandWithoutFallback -AdapterName 'Wi-Fi'
 if ($obs.Is5GHz -or $obs.Band -ne '2.4 GHz') { throw 'radio fallback overrode a present non-5 GHz band' }
+$obs = Get-TeremoqWlanObservation -Text $combinedBand -AdapterName 'Wi-Fi'
+if ($obs.Is5GHz -or $obs.Band -ne '2.4 GHz / 5 GHz') { throw 'combined English band value was accepted' }
+$obs = Get-TeremoqWlanObservation -Text $combinedBandSpanish -AdapterName 'Wi-Fi'
+if ($obs.Is5GHz -or $obs.Band -ne '2.4 GHz / 5 GHz') { throw 'combined Spanish band value was accepted' }
+$obs = Get-TeremoqWlanObservation -Text $negatedBand -AdapterName 'Wi-Fi'
+if ($obs.Is5GHz -or $obs.Band -ne 'not 5 GHz') { throw 'negated English band value was accepted' }
+$obs = Get-TeremoqWlanObservation -Text $unknownBandSpanish -AdapterName 'Wi-Fi'
+if ($obs.Is5GHz -or $obs.Band -ne 'desconocida') { throw 'unknown Spanish band value was accepted' }
 $obs = Get-TeremoqWlanObservation -Text $duplicateBlock -AdapterName 'Wi-Fi'
 if ($obs.Is5GHz -or $obs.Band -ne 'unavailable' -or $obs.Radio -ne 'unavailable') { throw 'duplicate adapter block was not rejected' }
 
@@ -92,23 +120,92 @@ try {
     if ($_.Exception.Message -notmatch '128') { throw }
 }
 
-$nativeContext = [ordered]@{
-    schema_version = 1
-    current_process_name = 'powershell.exe'
-    parent_process_names = @('windowsterminal.exe', 'explorer.exe')
-    wsl_environment_keys_present = @()
-    powershell_edition = 'Desktop'
-    powershell_version_major = 5
+function New-TeremoqMockProcess {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int]$ParentProcessId
+    )
+    return [pscustomobject]@{
+        ProcessId = $ProcessId
+        Name = $Name
+        ParentProcessId = $ParentProcessId
+    }
 }
+
+$nativeRecords = @{
+    101 = (New-TeremoqMockProcess -ProcessId 101 -Name 'powershell.exe' -ParentProcessId 100)
+    100 = (New-TeremoqMockProcess -ProcessId 100 -Name 'windowsterminal.exe' -ParentProcessId 99)
+    99 = (New-TeremoqMockProcess -ProcessId 99 -Name 'explorer.exe' -ParentProcessId 0)
+}
+$nativeContext = New-TeremoqCaptureContext -CurrentResult ([pscustomobject]@{ Status = 'ok'; Process = $nativeRecords[101] }) -ResolveProcess ({
+    param($ProcessId)
+    if ($nativeRecords.ContainsKey([int]$ProcessId)) {
+        return [pscustomobject]@{ Status = 'ok'; Process = $nativeRecords[[int]$ProcessId] }
+    }
+    return [pscustomobject]@{ Status = 'process_missing'; Process = $null }
+}.GetNewClosure()) -ObservedEnvKeys @()
 if (-not (Test-TeremoqCaptureContextEvidence -Context $nativeContext)) { throw 'native capture context was rejected' }
+if ($nativeContext.traversal_outcome -ne 'terminated_parent_pid_nonpositive' -or $nativeContext.parent_process_count -ne 2) {
+    throw 'native capture context did not prove termination'
+}
+$missingParentRecords = @{
+    201 = (New-TeremoqMockProcess -ProcessId 201 -Name 'powershell.exe' -ParentProcessId 200)
+    200 = (New-TeremoqMockProcess -ProcessId 200 -Name 'windowsterminal.exe' -ParentProcessId 199)
+}
+$missingParentContext = New-TeremoqCaptureContext -CurrentResult ([pscustomobject]@{ Status = 'ok'; Process = $missingParentRecords[201] }) -ResolveProcess ({
+    param($ProcessId)
+    if ($missingParentRecords.ContainsKey([int]$ProcessId)) {
+        return [pscustomobject]@{ Status = 'ok'; Process = $missingParentRecords[[int]$ProcessId] }
+    }
+    return [pscustomobject]@{ Status = 'process_missing'; Process = $null }
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($missingParentContext.traversal_outcome -ne 'parent_process_missing' -or (Test-TeremoqCaptureContextEvidence -Context $missingParentContext)) {
+    throw 'positive parent PID without CIM result was accepted'
+}
+$cycleRecords = @{
+    301 = (New-TeremoqMockProcess -ProcessId 301 -Name 'powershell.exe' -ParentProcessId 300)
+    300 = (New-TeremoqMockProcess -ProcessId 300 -Name 'windowsterminal.exe' -ParentProcessId 299)
+    299 = (New-TeremoqMockProcess -ProcessId 299 -Name 'explorer.exe' -ParentProcessId 300)
+}
+$cycleContext = New-TeremoqCaptureContext -CurrentResult ([pscustomobject]@{ Status = 'ok'; Process = $cycleRecords[301] }) -ResolveProcess ({
+    param($ProcessId)
+    if ($cycleRecords.ContainsKey([int]$ProcessId)) {
+        return [pscustomobject]@{ Status = 'ok'; Process = $cycleRecords[[int]$ProcessId] }
+    }
+    return [pscustomobject]@{ Status = 'process_missing'; Process = $null }
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($cycleContext.traversal_outcome -ne 'cycle_or_pid_reuse_detected' -or (Test-TeremoqCaptureContextEvidence -Context $cycleContext)) {
+    throw 'cycle/reused PID capture context was accepted'
+}
+$deepRecords = @{ 401 = (New-TeremoqMockProcess -ProcessId 401 -Name 'powershell.exe' -ParentProcessId 400) }
+for ($offset = 0; $offset -lt 16; $offset += 1) {
+    $processId = 400 - $offset
+    $parentId = if ($offset -eq 15) { 1 } else { $processId - 1 }
+    $deepRecords[$processId] = New-TeremoqMockProcess -ProcessId $processId -Name "safe$offset.exe" -ParentProcessId $parentId
+}
+$deepRecords[1] = New-TeremoqMockProcess -ProcessId 1 -Name 'wslhost.exe' -ParentProcessId 0
+$deepContext = New-TeremoqCaptureContext -CurrentResult ([pscustomobject]@{ Status = 'ok'; Process = $deepRecords[401] }) -ResolveProcess ({
+    param($ProcessId)
+    if ($deepRecords.ContainsKey([int]$ProcessId)) {
+        return [pscustomobject]@{ Status = 'ok'; Process = $deepRecords[[int]$ProcessId] }
+    }
+    return [pscustomobject]@{ Status = 'process_missing'; Process = $null }
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($deepContext.traversal_outcome -ne 'depth_limit_reached' -or $deepContext.parent_process_count -ne 16 -or (Test-TeremoqCaptureContextEvidence -Context $deepContext)) {
+    throw 'depth-limited capture context was accepted'
+}
 $interopContext = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     current_process_name = 'powershell.exe'
     parent_process_names = @('wslhost.exe', 'bash.exe')
+    parent_process_count = 2
+    traversal_depth_limit = 16
+    traversal_outcome = 'terminated_parent_pid_nonpositive'
     wsl_environment_keys_present = @('WSL_INTEROP')
     powershell_edition = 'Desktop'
     powershell_version_major = 5
 }
 if (Test-TeremoqCaptureContextEvidence -Context $interopContext) { throw 'WSL interop capture context was accepted' }
 
-Write-Output 'Teremoq LAN PowerShell contract helpers passed EN/ES, Docker and clock parser regressions.'
+Write-Output 'Teremoq LAN PowerShell contract helpers passed WLAN, Docker, clock and capture-context regressions.'

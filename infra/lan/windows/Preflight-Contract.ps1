@@ -64,9 +64,22 @@ function Get-TeremoqWlanObservation {
     }
     $band = [string]$matches[0].Band
     $radio = [string]$matches[0].Radio
+    $normalizedBand = if ([string]::IsNullOrWhiteSpace($band) -or $band -eq 'unavailable') {
+        'unavailable'
+    } else {
+        [regex]::Replace($band.Trim(), '\s+', ' ').ToLowerInvariant()
+    }
+    $normalizedRadio = if ([string]::IsNullOrWhiteSpace($radio) -or $radio -eq 'unavailable') {
+        'unavailable'
+    } else {
+        [regex]::Replace($radio.Trim(), '\s+', ' ').ToLowerInvariant()
+    }
     $is5GHz = $false
-    if ($band -match '(?i)\b5\s*GHz\b') { $is5GHz = $true }
-    elseif ($matches[0].BandCount -eq 0 -and $matches[0].RadioCount -eq 1 -and $radio -match '(?i)\b802\.11(a|ac)\b') { $is5GHz = $true }
+    if ($normalizedBand -ceq '5 ghz') {
+        $is5GHz = $true
+    } elseif ($matches[0].BandCount -eq 0 -and $matches[0].RadioCount -eq 1 -and $normalizedRadio -in @('802.11a', '802.11ac')) {
+        $is5GHz = $true
+    }
     return [pscustomobject]@{ Band = $band; Radio = $radio; Is5GHz = $is5GHz }
 }
 
@@ -144,30 +157,101 @@ function Get-TeremoqDockerPublicationConflicts {
     return @($conflicts)
 }
 
-function Get-TeremoqCaptureContext {
-    $allowedEnvKeys = @('WSLENV', 'WSL_INTEROP', 'WSL_DISTRO_NAME')
-    $blockedAncestorNames = @('bash.exe', 'sh.exe', 'dash.exe', 'wsl.exe', 'wslhost.exe', 'ubuntu.exe', 'debian.exe', 'kali.exe', 'arch.exe')
-    $current = Get-CimInstance Win32_Process -Filter "ProcessId=$PID" -ErrorAction SilentlyContinue
-    $currentProcessName = if ($current) { [string]$current.Name } else { 'unavailable' }
-    $parentNames = New-Object System.Collections.Generic.List[string]
-    $seen = New-Object 'System.Collections.Generic.HashSet[int]'
-    $walker = $current
-    for ($depth = 0; $depth -lt 8 -and $null -ne $walker; $depth += 1) {
-        $parentId = [int]$walker.ParentProcessId
-        if ($parentId -le 0 -or -not $seen.Add($parentId)) { break }
-        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId" -ErrorAction SilentlyContinue
-        if ($null -eq $parent -or [string]::IsNullOrWhiteSpace([string]$parent.Name)) { break }
-        $parentNames.Add(([string]$parent.Name).ToLowerInvariant())
-        $walker = $parent
+function Get-TeremoqProcessQueryResult {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
+    } catch {
+        return [pscustomobject]@{ Status = 'cim_query_failed'; Process = $null }
     }
-    $presentEnvKeys = @($allowedEnvKeys | Where-Object { -not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($_)) })
+    if ($null -eq $process -or [string]::IsNullOrWhiteSpace([string]$process.Name)) {
+        return [pscustomobject]@{ Status = 'process_missing'; Process = $null }
+    }
+    return [pscustomobject]@{ Status = 'ok'; Process = $process }
+}
+
+function New-TeremoqCaptureContext {
+    param(
+        [Parameter(Mandatory = $true)]$CurrentResult,
+        [Parameter(Mandatory = $true)][scriptblock]$ResolveProcess,
+        [Parameter()][int]$DepthLimit = 16,
+        [Parameter()]$ObservedEnvKeys = $null
+    )
+    if ($DepthLimit -lt 8 -or $DepthLimit -gt 32) { throw 'capture context depth limit is outside 8..32' }
+    $allowedEnvKeys = @('WSLENV', 'WSL_INTEROP', 'WSL_DISTRO_NAME')
+    $presentEnvKeys = if ($null -ne $ObservedEnvKeys) {
+        @($ObservedEnvKeys)
+    } else {
+        @($allowedEnvKeys | Where-Object { -not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($_)) })
+    }
+    $currentProcessName = 'unavailable'
+    $parentNames = New-Object System.Collections.Generic.List[string]
+    $traversalOutcome = 'current_process_query_failed'
+    $seen = New-Object 'System.Collections.Generic.HashSet[int]'
+    if ($null -eq $CurrentResult -or $CurrentResult.Status -isnot [string]) {
+        $traversalOutcome = 'cim_query_failed'
+    } elseif ($CurrentResult.Status -eq 'process_missing') {
+        $traversalOutcome = 'current_process_missing'
+    } elseif ($CurrentResult.Status -eq 'ok' -and $null -ne $CurrentResult.Process) {
+        $walker = $CurrentResult.Process
+        $currentProcessName = ([string]$walker.Name).ToLowerInvariant()
+        $traversalOutcome = 'depth_limit_reached'
+        for ($depth = 0; $depth -lt $DepthLimit; $depth += 1) {
+            $parentId = 0
+            if (-not [int]::TryParse([string]$walker.ParentProcessId, [ref]$parentId)) {
+                $traversalOutcome = 'cim_query_failed'
+                break
+            }
+            if ($parentId -le 0) {
+                $traversalOutcome = 'terminated_parent_pid_nonpositive'
+                break
+            }
+            if (-not $seen.Add($parentId)) {
+                $traversalOutcome = 'cycle_or_pid_reuse_detected'
+                break
+            }
+            $parentResult = & $ResolveProcess $parentId
+            if ($null -eq $parentResult -or $parentResult.Status -isnot [string]) {
+                $traversalOutcome = 'cim_query_failed'
+                break
+            }
+            if ($parentResult.Status -eq 'cim_query_failed') {
+                $traversalOutcome = 'cim_query_failed'
+                break
+            }
+            if ($parentResult.Status -eq 'process_missing' -or $null -eq $parentResult.Process) {
+                $traversalOutcome = 'parent_process_missing'
+                break
+            }
+            $parentName = ([string]$parentResult.Process.Name).ToLowerInvariant()
+            if ([string]::IsNullOrWhiteSpace($parentName)) {
+                $traversalOutcome = 'parent_process_missing'
+                break
+            }
+            $parentNames.Add($parentName)
+            $walker = $parentResult.Process
+        }
+    } else {
+        $traversalOutcome = 'cim_query_failed'
+    }
     return [ordered]@{
-        schema_version = 1
-        current_process_name = $currentProcessName.ToLowerInvariant()
+        schema_version = 2
+        current_process_name = $currentProcessName
         parent_process_names = @($parentNames)
+        parent_process_count = $parentNames.Count
+        traversal_depth_limit = $DepthLimit
+        traversal_outcome = $traversalOutcome
         wsl_environment_keys_present = @($presentEnvKeys)
         powershell_edition = [string]$PSVersionTable.PSEdition
         powershell_version_major = [int]$PSVersionTable.PSVersion.Major
+    }
+}
+
+function Get-TeremoqCaptureContext {
+    $currentResult = Get-TeremoqProcessQueryResult -ProcessId $PID
+    return New-TeremoqCaptureContext -CurrentResult $currentResult -ResolveProcess {
+        param($ProcessId)
+        Get-TeremoqProcessQueryResult -ProcessId $ProcessId
     }
 }
 
@@ -175,12 +259,15 @@ function Test-TeremoqCaptureContextEvidence {
     param([Parameter(Mandatory = $true)]$Context)
     if ($Context -isnot [System.Collections.IDictionary]) { return $false }
     $keys = @($Context.Keys)
-    if ($keys.Count -ne 6 -or @($keys | Where-Object { @('schema_version', 'current_process_name', 'parent_process_names', 'wsl_environment_keys_present', 'powershell_edition', 'powershell_version_major') -notcontains $_ }).Count -ne 0) {
+    if ($keys.Count -ne 9 -or @($keys | Where-Object { @('schema_version', 'current_process_name', 'parent_process_names', 'parent_process_count', 'traversal_depth_limit', 'traversal_outcome', 'wsl_environment_keys_present', 'powershell_edition', 'powershell_version_major') -notcontains $_ }).Count -ne 0) {
         return $false
     }
-    if ($Context.schema_version -ne 1 -or $Context.current_process_name -isnot [string] -or
+    if ($Context.schema_version -ne 2 -or $Context.current_process_name -isnot [string] -or
         $Context.current_process_name -notin @('powershell.exe', 'pwsh.exe') -or
-        $Context.parent_process_names -isnot [System.Array] -or $Context.parent_process_names.Count -lt 1 -or $Context.parent_process_names.Count -gt 8 -or
+        $Context.parent_process_names -isnot [System.Array] -or $Context.parent_process_names.Count -lt 1 -or $Context.parent_process_names.Count -gt 16 -or
+        $Context.parent_process_count -isnot [int] -or $Context.parent_process_count -ne $Context.parent_process_names.Count -or
+        $Context.traversal_depth_limit -isnot [int] -or $Context.traversal_depth_limit -ne 16 -or
+        $Context.traversal_outcome -isnot [string] -or $Context.traversal_outcome -ne 'terminated_parent_pid_nonpositive' -or
         $Context.wsl_environment_keys_present -isnot [System.Array] -or $Context.wsl_environment_keys_present.Count -gt 3 -or
         $Context.powershell_edition -isnot [string] -or $Context.powershell_edition -notin @('Desktop', 'Core') -or
         $Context.powershell_version_major -isnot [int] -or $Context.powershell_version_major -lt 5 -or $Context.powershell_version_major -gt 9) {

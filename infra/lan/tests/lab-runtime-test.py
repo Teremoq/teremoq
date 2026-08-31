@@ -39,11 +39,24 @@ def check(name: str, value: str = "measured", status: str = "observed", quality:
     return {"check": name, "status": status, "value": value, "evidence_quality": quality}
 
 
-def capture_context(interoperability: bool = False) -> dict[str, object]:
+def capture_context(
+    interoperability: bool = False,
+    *,
+    parent_process_names: list[str] | None = None,
+    traversal_outcome: str = "terminated_parent_pid_nonpositive",
+    traversal_depth_limit: int = 16,
+    parent_process_count: int | None = None,
+) -> dict[str, object]:
+    names = parent_process_names if parent_process_names is not None else (
+        ["wslhost.exe", "bash.exe"] if interoperability else ["windowsterminal.exe", "explorer.exe"]
+    )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "current_process_name": "powershell.exe",
-        "parent_process_names": ["wslhost.exe", "bash.exe"] if interoperability else ["windowsterminal.exe", "explorer.exe"],
+        "parent_process_names": names,
+        "parent_process_count": len(names) if parent_process_count is None else parent_process_count,
+        "traversal_depth_limit": traversal_depth_limit,
+        "traversal_outcome": traversal_outcome,
         "wsl_environment_keys_present": ["WSL_INTEROP"] if interoperability else [],
         "powershell_edition": "Desktop",
         "powershell_version_major": 5,
@@ -359,7 +372,7 @@ class LabRuntimePolicyTest(unittest.TestCase):
                                             SERVER_IP, CLIENT_IP, 24, PROFILE,
                                             MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
 
-    def test_capture_context_rejects_wsl_interop_and_duplicates(self) -> None:
+    def test_capture_context_rejects_wsl_interop_and_incomplete_walks(self) -> None:
         document = windows_preflight("server")
         document["capture_context"] = capture_context(interoperability=True)
         with self.assertRaisesRegex(ValueError, "capture path is not native Windows PowerShell"):
@@ -372,6 +385,33 @@ class LabRuntimePolicyTest(unittest.TestCase):
             RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
                                             SERVER_IP, CLIENT_IP, 24, PROFILE,
                                             MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
+        document = windows_preflight("server")
+        document["capture_context"] = capture_context(
+            parent_process_names=["windowsterminal.exe"],
+            parent_process_count=1,
+            traversal_outcome="depth_limit_reached",
+        )
+        with self.assertRaisesRegex(ValueError, "does not prove parent-chain termination"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
+        document = windows_preflight("client")
+        document["capture_context"] = capture_context(parent_process_count=3)
+        with self.assertRaisesRegex(ValueError, "cardinality is inconsistent"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
+
+    def test_ambiguous_or_noncanonical_wifi_band_blocks_activation(self) -> None:
+        for band_value in ("2.4 GHz / 5 GHz", "not 5 GHz", "5 GHz preferred"):
+            with self.subTest(band_value=band_value):
+                document = windows_preflight("server")
+                record = next(item for item in document["checks"] if item["check"] == "wifi_band")  # type: ignore[union-attr]
+                record.update(status="observed", value=band_value)
+                with self.assertRaisesRegex(ValueError, "did not prove the exact Wi-Fi interface and 5 GHz band"):
+                    RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
+                                                    SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                                    MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
 
 
 if __name__ == "__main__":

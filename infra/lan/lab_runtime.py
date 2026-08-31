@@ -41,6 +41,7 @@ WINDOWS_PREFLIGHT_KEYS = {
 }
 CAPTURE_CONTEXT_KEYS = {
     "schema_version", "current_process_name", "parent_process_names", "wsl_environment_keys_present",
+    "parent_process_count", "traversal_depth_limit", "traversal_outcome",
     "powershell_edition", "powershell_version_major",
 }
 FIREWALL_ATTESTATION_KEYS = {
@@ -266,10 +267,13 @@ def parse_check_int_value(value: str, label: str, minimum: int, maximum: int) ->
 def validate_capture_context(context: object, label: str) -> None:
     if not isinstance(context, dict) or set(context) != CAPTURE_CONTEXT_KEYS:
         fail(f"{label} capture context schema is not closed")
-    if context["schema_version"] != 1:
+    if context["schema_version"] != 2:
         fail(f"{label} capture context schema version is unsupported")
     current_process_name = context["current_process_name"]
     parent_process_names = context["parent_process_names"]
+    parent_process_count = context["parent_process_count"]
+    traversal_depth_limit = context["traversal_depth_limit"]
+    traversal_outcome = context["traversal_outcome"]
     wsl_environment_keys_present = context["wsl_environment_keys_present"]
     powershell_edition = context["powershell_edition"]
     powershell_version_major = context["powershell_version_major"]
@@ -277,8 +281,14 @@ def validate_capture_context(context: object, label: str) -> None:
         fail(f"{label} capture context does not describe native Windows PowerShell")
     if not isinstance(powershell_version_major, int) or isinstance(powershell_version_major, bool) or not 5 <= powershell_version_major <= 9:
         fail(f"{label} PowerShell major version is outside policy")
-    if not isinstance(parent_process_names, list) or not 1 <= len(parent_process_names) <= 8:
+    if not isinstance(parent_process_names, list) or not 1 <= len(parent_process_names) <= 16:
         fail(f"{label} parent process chain is outside policy")
+    if not isinstance(parent_process_count, int) or isinstance(parent_process_count, bool) or parent_process_count != len(parent_process_names):
+        fail(f"{label} parent process chain cardinality is inconsistent")
+    if traversal_depth_limit != 16:
+        fail(f"{label} capture context depth limit is not exact")
+    if traversal_outcome != "terminated_parent_pid_nonpositive":
+        fail(f"{label} capture context does not prove parent-chain termination")
     if not isinstance(wsl_environment_keys_present, list) or len(wsl_environment_keys_present) > 3:
         fail(f"{label} WSL environment evidence is outside policy")
     blocked_ancestors = {"bash.exe", "sh.exe", "dash.exe", "wsl.exe", "wslhost.exe", "ubuntu.exe", "debian.exe", "kali.exe", "arch.exe"}
