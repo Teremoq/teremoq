@@ -20,7 +20,7 @@ state_dir="/tmp/teremoq-lan-runtime-test-$$-${RANDOM}"
 "${ROOT}/rollback-runtime.sh" --config "${config}" --state-dir "${state_dir}" >/dev/null
 [[ ! -e "${state_dir}" ]]
 ready_config="${scratch}/ready-config.tsv"
-owner_commit=2f8fb1b3219483050bc997bee25a052c2db5f463
+owner_commit=6dadfbd8695bd1d0037568d879563eb83b7567b5
 make_lan_config "${ROOT}/config/lan.example.tsv" "${ready_config}" "${scratch}" "${commit}" ready "${owner_commit}"
 ready_state="/tmp/teremoq-lan-runtime-capability-test-$$-${RANDOM}"
 "${ROOT}/prepare-runtime.sh" --config "${ready_config}" --state-dir "${ready_state}" >/dev/null

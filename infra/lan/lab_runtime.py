@@ -20,7 +20,7 @@ import time
 import urllib.request
 
 from udp_proxy import exact_private_ipv4, read_regular_limited
-from publish_capability import CAPABILITY_NAME, RUST_LAN_CAPABILITY_COMMIT, verify_publish_capability
+from publish_capability import CAPABILITY_NAME, RUST_LAN_CAPABILITY_INTEGRATED_COMMIT, verify_publish_capability
 
 COMPONENTS = ("relay", "gateway", "source")
 PUBLISH_CAPABILITY_ENV = "TEREMOQ_DEV_RELAY_PUBLISH_CAPABILITY_FILE"
@@ -107,7 +107,7 @@ def parse_authorization(path: Path) -> dict[str, str]:
         fail("invalid authorization run ID")
     if len(values["source_commit"]) != 40 or any(c not in "0123456789abcdef" for c in values["source_commit"]):
         fail("invalid authorization commit")
-    if values["owner_integration_commit"] != RUST_LAN_CAPABILITY_COMMIT:
+    if values["owner_integration_commit"] != RUST_LAN_CAPABILITY_INTEGRATED_COMMIT:
         fail("authorization requires the exact reviewed Rust LAN capability commit")
     for key in ("commands_sha256", "publish_capability_metadata_sha256", "wsl_preflight_sha256", "server_preflight_sha256", "client_preflight_sha256", "firewall_attestation_sha256", "proxy_attestation_sha256"):
         if len(values[key]) != 64 or any(c not in "0123456789abcdef" for c in values[key]):
@@ -437,6 +437,8 @@ def parse_commands(
 
 
 def verify_repository(repo_root: Path, source_commit: str, owner_commit: str) -> None:
+    if owner_commit != RUST_LAN_CAPABILITY_INTEGRATED_COMMIT:
+        fail("repository verification requires the exact integrated Rust LAN capability commit")
     if not repo_root.is_absolute() or not (repo_root / ".git").exists() or repo_root.resolve() != repo_root:
         fail("repo root must be the canonical integrated worktree")
     def git(*arguments: str) -> str:

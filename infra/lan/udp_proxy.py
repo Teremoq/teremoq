@@ -25,6 +25,8 @@ import tempfile
 import time
 from dataclasses import dataclass
 
+from publish_capability import RUST_LAN_CAPABILITY_INTEGRATED_COMMIT, RUST_LAN_CAPABILITY_PROVENANCE_COMMIT
+
 FRONTEND_PORT = 14433
 BACKEND = ("127.0.0.1", 4433)
 MAX_CLIENTS = 25
@@ -141,6 +143,8 @@ def load_attestation(path: Path) -> dict[str, str]:
         expected_length = 40 if key.endswith("commit") else 64
         if len(values[key]) != expected_length or any(c not in "0123456789abcdefABCDEF" for c in values[key]):
             fail(f"invalid {key}")
+    if values["relay_san_integration_commit"] != RUST_LAN_CAPABILITY_INTEGRATED_COMMIT:
+        fail("attestation requires the exact integrated Rust LAN capability commit")
     run_id = values["run_id"]
     classic = f"Teremoq-LAN-{run_id}-Defender-QUIC-UDP-{FRONTEND_PORT}"
     hyperv = f"Teremoq-LAN-{run_id}-HyperV-QUIC-UDP-{FRONTEND_PORT}"
@@ -343,6 +347,8 @@ def publish_startup_state(state_dir: Path, pid: int, before_ready: object | None
 
 def main() -> int:
     args = parse_args()
+    if args.owner_commit != RUST_LAN_CAPABILITY_INTEGRATED_COMMIT:
+        fail("proxy owner commit override is forbidden")
     if args.frontend_port != FRONTEND_PORT or args.backend != f"{BACKEND[0]}:{BACKEND[1]}":
         fail("proxy endpoints are fixed to private UDP/14433 -> 127.0.0.1:4433")
     server_ip = exact_private_ipv4(args.frontend_ip, "frontend_ip")

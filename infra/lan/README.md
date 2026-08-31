@@ -44,8 +44,8 @@ owned here and must not be stopped or changed by these scripts.
 
 Activation remains blocked until all of the following are true:
 
-1. exact Rust LAN capability commit
-   `2f8fb1b3219483050bc997bee25a052c2db5f463` and the reviewed Web LAN player
+1. exact integrated Rust LAN capability commit
+   `6dadfbd8695bd1d0037568d879563eb83b7567b5` and the reviewed Web LAN player
    bypass are ancestors of the clean integration HEAD;
 2. the TP-WEB-REALTIME lightweight 1/5/10/25 launcher contract is integrated;
 3. an authorized owner isolates the inherited publications and both preflights
@@ -116,7 +116,10 @@ window. Windows 10 stays WSL NAT.
 
 `prepare-pki-plan.sh` requires the recorded Rust owner integration to be ready.
 It does not misuse the 30-day Smallstep identity profile. Activation separately
-requires the exact Rust commit above to be an ancestor of HEAD. The integrated
+requires the exact integrated Rust commit above to be an ancestor of HEAD. Its
+source provenance is `2f8fb1b3219483050bc997bee25a052c2db5f463`; both commits
+have stable patch-id `5729506f85cb640b0026e4db80e402d496cd8fd8`, but provenance
+is never accepted as an operational ancestry override. The integrated
 loopback relay creates its private runtime identity; then verify it exactly:
 
 ```bash
@@ -243,6 +246,10 @@ non-symlink descriptor, size/cardinality bounded and parsed as a closed schema.
 Authorization cannot replace its result: any `blocked`, `pending`,
 `unavailable`, `unknown`, inherited Docker publication, legacy listener,
 server WSL NAT or firewall-property contradiction blocks activation.
+The operational owner field in config, authorization, proxy attestation and
+capability metadata is closed to `6dadfbd8695bd1d0037568d879563eb83b7567b5`.
+Neither the origin hash, another ancestor nor an environment/manual override is
+accepted. Patch-id is audit evidence only and is not an activation credential.
 
 Stop only the matching run-id lifecycle:
 

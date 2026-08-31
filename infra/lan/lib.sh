@@ -2,6 +2,13 @@
 # SPDX-FileCopyrightText: 2026 Teremoq contributors
 # SPDX-License-Identifier: Apache-2.0
 
+if [[ -v LAN_RUST_CAPABILITY_INTEGRATED_COMMIT || -v LAN_RUST_CAPABILITY_PROVENANCE_COMMIT ]]; then
+    printf 'teremoq LAN: Rust capability commit constants may not be preconfigured or overridden\n' >&2
+    return 2 2>/dev/null || exit 2
+fi
+declare -gr LAN_RUST_CAPABILITY_INTEGRATED_COMMIT=6dadfbd8695bd1d0037568d879563eb83b7567b5
+declare -gr LAN_RUST_CAPABILITY_PROVENANCE_COMMIT=2f8fb1b3219483050bc997bee25a052c2db5f463
+
 lan_die() {
     printf 'teremoq LAN: %s\n' "$*" >&2
     exit 2
@@ -133,8 +140,8 @@ lan_validate_config() {
     [[ "${LAN_CONFIG[relay_san_integration_status]}" =~ ^(pending_owner_integration|ready)$ ]] || \
         lan_die 'invalid relay SAN integration status'
     if [[ "${LAN_CONFIG[relay_san_integration_status]}" == ready ]]; then
-        [[ "${LAN_CONFIG[relay_san_integration_commit]}" == 2f8fb1b3219483050bc997bee25a052c2db5f463 ]] || \
-            lan_die 'ready relay LAN capability integration requires exact reviewed commit 2f8fb1b3219483050bc997bee25a052c2db5f463'
+        [[ "${LAN_CONFIG[relay_san_integration_commit]}" == "${LAN_RUST_CAPABILITY_INTEGRATED_COMMIT}" ]] || \
+            lan_die "ready relay LAN capability integration requires exact integrated commit ${LAN_RUST_CAPABILITY_INTEGRATED_COMMIT}"
     else
         [[ "${LAN_CONFIG[relay_san_integration_commit]}" == unavailable ]] || \
             lan_die 'pending owner integration must not claim a commit'
@@ -157,6 +164,8 @@ lan_validate_config() {
 
 lan_require_clean_integrated_source() {
     local repo="$1" source_commit="$2" owner_commit="$3"
+    [[ "${owner_commit}" == "${LAN_RUST_CAPABILITY_INTEGRATED_COMMIT}" ]] || \
+        lan_die 'manual, provenance or unrelated owner integration commit override is forbidden'
     [[ "${repo}" == /* && -d "${repo}/.git" || "${repo}" == /* && -f "${repo}/.git" ]] || lan_die 'source repository path is invalid'
     [[ "$(git -C "${repo}" rev-parse HEAD 2>/dev/null)" == "${source_commit}" ]] || lan_die 'runtime source commit differs from exact local HEAD'
     git -C "${repo}" cat-file -e "${owner_commit}^{commit}" 2>/dev/null || lan_die 'owner integration commit is unavailable locally'

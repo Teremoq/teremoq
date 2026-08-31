@@ -16,7 +16,8 @@ import publish_capability as CAPABILITY  # noqa: E402
 
 RUN_ID = "lan-capability-test"
 SOURCE_COMMIT = "a" * 40
-OWNER_COMMIT = CAPABILITY.RUST_LAN_CAPABILITY_COMMIT
+OWNER_COMMIT = CAPABILITY.RUST_LAN_CAPABILITY_INTEGRATED_COMMIT
+PROVENANCE_COMMIT = CAPABILITY.RUST_LAN_CAPABILITY_PROVENANCE_COMMIT
 
 
 class PublishCapabilityTest(unittest.TestCase):
@@ -49,7 +50,15 @@ class PublishCapabilityTest(unittest.TestCase):
         metadata = (self.state / CAPABILITY.METADATA_NAME).read_text(encoding="ascii")
         if payload.decode("ascii").strip() in metadata:
             self.fail("private capability value leaked into metadata")
+        self.assertIn(f"owner_integration_commit\t{OWNER_COMMIT}\n", metadata)
+        if PROVENANCE_COMMIT in metadata:
+            self.fail("provenance commit leaked into the operational capability metadata")
         CAPABILITY.verify_publish_capability(self.state, RUN_ID, SOURCE_COMMIT, OWNER_COMMIT, digest)
+
+    def test_provenance_commit_cannot_override_operational_commit(self) -> None:
+        with self.assertRaisesRegex(ValueError, "owner integration commit mismatch"):
+            CAPABILITY.prepare_publish_capability(self.state, RUN_ID, SOURCE_COMMIT, PROVENANCE_COMMIT)
+        self.assertFalse((self.state / CAPABILITY.CAPABILITY_NAME).exists())
 
     def test_changed_content_mode_and_metadata_digest_are_rejected(self) -> None:
         digest = self.prepare()

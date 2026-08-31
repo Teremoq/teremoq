@@ -5,6 +5,7 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,7 +20,8 @@ SPEC.loader.exec_module(RUNTIME)
 
 RUN_ID = "lan-runtime-test"
 SOURCE_COMMIT = "a" * 40
-OWNER_COMMIT = "2f8fb1b3219483050bc997bee25a052c2db5f463"
+OWNER_COMMIT = "6dadfbd8695bd1d0037568d879563eb83b7567b5"
+PROVENANCE_COMMIT = "2f8fb1b3219483050bc997bee25a052c2db5f463"
 SERVER_IP = "192.168.77.10"
 CLIENT_IP = "192.168.77.20"
 PROFILE = "Public"
@@ -175,6 +177,11 @@ class LabRuntimePolicyTest(unittest.TestCase):
             }
             path.write_text("".join(f"{key}\t{value}\n" for key, value in values.items()), encoding="utf-8")
             self.assertEqual(RUNTIME.parse_authorization(path)["operator_authorized"], "true")
+            values["owner_integration_commit"] = PROVENANCE_COMMIT
+            path.write_text("".join(f"{key}\t{value}\n" for key, value in values.items()), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "exact reviewed Rust"):
+                RUNTIME.parse_authorization(path)
+            values["owner_integration_commit"] = OWNER_COMMIT
             path.write_text("".join(f"{key}\t{value}\n" for key, value in values.items()) + "server_preflight_gate\tpass\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "unknown or duplicate"):
                 RUNTIME.parse_authorization(path)
@@ -182,6 +189,19 @@ class LabRuntimePolicyTest(unittest.TestCase):
             path.write_text("".join(f"{key}\t{value}\n" for key, value in values.items()), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "explicitly true"):
                 RUNTIME.parse_authorization(path)
+
+    def test_repository_rejects_provenance_and_unrelated_operational_overrides(self) -> None:
+        integration = Path("/home/jimbomilk/teremoq-lan-integration")
+        self.assertTrue(integration.is_dir(), "reviewed LAN integration worktree is required")
+        integrated_head = subprocess.run(
+            ["git", "-C", str(integration), "rev-parse", "HEAD"], check=True,
+            stdout=subprocess.PIPE, text=True,
+        ).stdout.strip()
+        RUNTIME.verify_repository(integration, integrated_head, OWNER_COMMIT)
+        with self.assertRaisesRegex(ValueError, "exact integrated"):
+            RUNTIME.verify_repository(Path("/not/used"), SOURCE_COMMIT, PROVENANCE_COMMIT)
+        with self.assertRaisesRegex(ValueError, "exact integrated"):
+            RUNTIME.verify_repository(Path("/not/used"), SOURCE_COMMIT, "b" * 40)
 
     def test_closed_preflight_and_firewall_contracts_accept_ready_evidence(self) -> None:
         RUNTIME.parse_wsl_preflight(wsl_preflight(), RUN_ID, SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE)

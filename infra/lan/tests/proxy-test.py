@@ -10,6 +10,7 @@ import tempfile
 import unittest
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "udp_proxy.py"
+sys.path.insert(0, str(MODULE_PATH.parent))
 SPEC = importlib.util.spec_from_file_location("teremoq_lan_udp_proxy", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 PROXY = importlib.util.module_from_spec(SPEC)
@@ -18,6 +19,18 @@ SPEC.loader.exec_module(PROXY)
 
 
 class ProxyPolicyTest(unittest.TestCase):
+    def attestation(self, owner_commit: str = PROXY.RUST_LAN_CAPABILITY_INTEGRATED_COMMIT) -> dict[str, str]:
+        run_id = "lan-policy-test"
+        return {
+            "schema_version": "1", "run_id": run_id, "source_commit": "a" * 40,
+            "server_ipv4": "192.168.77.10", "client_ipv4": "192.168.77.20",
+            "network_mode": "mirrored", "network_profile": "Public",
+            "windows_firewall_rule_name": f"Teremoq-LAN-{run_id}-Defender-QUIC-UDP-14433",
+            "hyperv_firewall_rule_name": f"Teremoq-LAN-{run_id}-HyperV-QUIC-UDP-14433",
+            "firewall_verified": "true", "relay_san_integration_commit": owner_commit,
+            "certificate_fingerprint_sha256": "c" * 64,
+        }
+
     def test_source_allowlist_and_capacity(self) -> None:
         proxy = PROXY.BoundedUdpProxy("127.0.0.1", "192.168.77.20", 25, 2, 30)
         self.assertTrue(proxy.source_allowed(("192.168.77.20", 50000)))
@@ -60,6 +73,19 @@ class ProxyPolicyTest(unittest.TestCase):
             path.write_text("".join(f"{key}\t{value}\n" for key, value in values.items()), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "NAT"):
                 PROXY.load_attestation(path)
+
+    def test_attestation_rejects_origin_and_unrelated_operational_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "attestation.tsv"
+            for owner_commit in (PROXY.RUST_LAN_CAPABILITY_PROVENANCE_COMMIT, "b" * 40):
+                values = self.attestation(owner_commit)
+                path.write_text("".join(f"{key}\t{value}\n" for key, value in values.items()), encoding="utf-8")
+                with self.subTest(owner_commit=owner_commit), self.assertRaisesRegex(ValueError, "exact integrated"):
+                    PROXY.load_attestation(path)
+            values = self.attestation()
+            path.write_text("".join(f"{key}\t{value}\n" for key, value in values.items()), encoding="utf-8")
+            self.assertEqual(PROXY.load_attestation(path)["relay_san_integration_commit"],
+                             PROXY.RUST_LAN_CAPABILITY_INTEGRATED_COMMIT)
 
     def test_non_exact_or_non_private_frontend_rejected(self) -> None:
         for value in ("0.0.0.0", "8.8.8.8", "100.64.0.1", "169.254.1.2", "192.0.0.1", "224.0.0.1", "192.168.77.0/24", "any"):

@@ -16,7 +16,9 @@ import sys
 
 CAPABILITY_NAME = "publish-capability"
 METADATA_NAME = "publish-capability.metadata.tsv"
-RUST_LAN_CAPABILITY_COMMIT = "2f8fb1b3219483050bc997bee25a052c2db5f463"
+RUST_LAN_CAPABILITY_INTEGRATED_COMMIT = "6dadfbd8695bd1d0037568d879563eb83b7567b5"
+RUST_LAN_CAPABILITY_PROVENANCE_COMMIT = "2f8fb1b3219483050bc997bee25a052c2db5f463"
+RUST_LAN_CAPABILITY_PATCH_ID = "5729506f85cb640b0026e4db80e402d496cd8fd8"
 METADATA_KEYS = {
     "schema_version", "run_id", "source_commit", "owner_integration_commit",
     "capability_filename", "capability_sha256", "capability_bytes", "capability_mode",
@@ -33,7 +35,7 @@ def _validate_binding(run_id: str, source_commit: str, owner_commit: str) -> Non
         fail("invalid capability run ID")
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
         fail("invalid capability source commit")
-    if owner_commit != RUST_LAN_CAPABILITY_COMMIT:
+    if owner_commit != RUST_LAN_CAPABILITY_INTEGRATED_COMMIT:
         fail("publish capability owner integration commit mismatch")
 
 

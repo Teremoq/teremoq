@@ -15,7 +15,7 @@ valid="${scratch}/valid.tsv"
 make_lan_config "${ROOT}/config/lan.example.tsv" "${valid}" "${scratch}" "${commit}"
 "${ROOT}/validate-config.sh" --config "${valid}" >/dev/null
 grep -Fq $'relay_san_integration_status\tready' "${ROOT}/config/lan.example.tsv"
-grep -Fq $'relay_san_integration_commit\t2f8fb1b3219483050bc997bee25a052c2db5f463' "${ROOT}/config/lan.example.tsv"
+grep -Fq $'relay_san_integration_commit\t6dadfbd8695bd1d0037568d879563eb83b7567b5' "${ROOT}/config/lan.example.tsv"
 
 expect_failure() { "$@" >/dev/null 2>&1 && { printf 'config-test: unexpected success\n' >&2; exit 1; }; return 0; }
 expect_failure "${ROOT}/validate-config.sh" --config "${ROOT}/config/lan.example.tsv"
@@ -37,10 +37,14 @@ for spec in \
 done
 ready="${scratch}/ready.tsv"
 make_lan_config "${ROOT}/config/lan.example.tsv" "${ready}" "${scratch}" "${commit}" ready \
-    2f8fb1b3219483050bc997bee25a052c2db5f463
+    6dadfbd8695bd1d0037568d879563eb83b7567b5
 "${ROOT}/validate-config.sh" --config "${ready}" >/dev/null
 wrong_owner="${scratch}/wrong-owner.tsv"
 awk -F '\t' -v OFS='\t' '$1 == "relay_san_integration_commit" {$2="7160d2b7318dea74dc7e593641c015266fa13dc4"} {print}' \
     "${ready}" >"${wrong_owner}"
 expect_failure "${ROOT}/validate-config.sh" --config "${wrong_owner}"
+origin_override="${scratch}/origin-override.tsv"
+awk -F '\t' -v OFS='\t' '$1 == "relay_san_integration_commit" {$2="2f8fb1b3219483050bc997bee25a052c2db5f463"} {print}' \
+    "${ready}" >"${origin_override}"
+expect_failure "${ROOT}/validate-config.sh" --config "${origin_override}"
 printf 'lan-config-test: pass\n'
