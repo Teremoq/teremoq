@@ -32,8 +32,8 @@ emit() {
 
 preflight_blocked=0
 printf 'check\tstatus\tvalue\tevidence_quality\n'
-emit schema_version pass 1 configured
-emit report_kind pass teremoq-lan-wsl-preflight-v1 configured
+emit schema_version pass 2 configured
+emit report_kind pass teremoq-lan-wsl-preflight-v2 configured
 emit run_id pass "${LAN_CONFIG[run_id]}" configured
 emit source_commit pass "${LAN_CONFIG[source_commit]}" configured
 emit role pass "${role}" configured
@@ -42,6 +42,11 @@ emit client_ipv4 pass "${LAN_CONFIG[client_ipv4]}" configured
 emit prefix_length pass "${LAN_CONFIG[prefix_length]}" configured
 emit network_profile pass "${LAN_CONFIG[network_profile]}" configured
 emit expected_wsl_mode pass "${LAN_CONFIG[${role}_wsl_mode]}" configured
+emit maximum_clock_offset_ms pass "${LAN_CONFIG[maximum_clock_offset_ms]}" configured
+emit minimum_mtu pass "${LAN_CONFIG[minimum_mtu]}" configured
+emit minimum_cpu_cores pass "${LAN_CONFIG[${role}_minimum_cpu_cores]}" configured
+emit minimum_memory_mib pass "${LAN_CONFIG[${role}_minimum_memory_mib]}" configured
+emit minimum_disk_mib pass "${LAN_CONFIG[${role}_minimum_disk_mib]}" configured
 if grep -qi microsoft /proc/version 2>/dev/null; then
     emit wsl_kernel observed "$(uname -r 2>/dev/null || printf unavailable)" real
 else
@@ -87,16 +92,24 @@ if command -v ip >/dev/null 2>&1; then
 fi
 emit route_to_peer "$([[ "${route_line}" == unavailable ]] && printf blocked || printf observed)" "${route_line}" "$([[ "${route_line}" == unavailable ]] && printf unavailable || printf real)"
 emit route_interface "$([[ "${interface}" == unavailable ]] && printf blocked || printf observed)" "${interface}" "$([[ "${interface}" == unavailable ]] && printf unavailable || printf real)"
-emit mtu "$([[ "${mtu}" == unavailable ]] && printf blocked || printf observed)" "${mtu}" "$([[ "${mtu}" == unavailable ]] && printf unavailable || printf real)"
+mtu_status=blocked
+[[ "${mtu}" =~ ^[0-9]+$ ]] && (( 10#${mtu} >= 10#${LAN_CONFIG[minimum_mtu]} )) && mtu_status=pass
+emit mtu "${mtu_status}" "${mtu}" "$([[ "${mtu}" == unavailable ]] && printf unavailable || printf real)"
 
 cpu="$(command -v nproc >/dev/null 2>&1 && nproc 2>/dev/null || printf unavailable)"
 memory="$(awk '/MemAvailable:/ {printf "%d", $2 / 1024}' /proc/meminfo 2>/dev/null || true)"
 [[ -n "${memory}" ]] || memory=unavailable
 disk="$(df -Pm "${SCRIPT_DIR}" 2>/dev/null | awk 'NR==2 {print $4}' || true)"
 [[ -n "${disk}" ]] || disk=unavailable
-emit cpu_cores "$([[ "${cpu}" == unavailable ]] && printf blocked || printf observed)" "${cpu}" "$([[ "${cpu}" == unavailable ]] && printf unavailable || printf real)"
-emit available_memory_mib "$([[ "${memory}" == unavailable ]] && printf blocked || printf observed)" "${memory}" "$([[ "${memory}" == unavailable ]] && printf unavailable || printf real)"
-emit available_disk_mib "$([[ "${disk}" == unavailable ]] && printf blocked || printf observed)" "${disk}" "$([[ "${disk}" == unavailable ]] && printf unavailable || printf real)"
+cpu_status=blocked
+memory_status=blocked
+disk_status=blocked
+[[ "${cpu}" =~ ^[0-9]+$ ]] && (( 10#${cpu} >= 10#${LAN_CONFIG[${role}_minimum_cpu_cores]} )) && cpu_status=pass
+[[ "${memory}" =~ ^[0-9]+$ ]] && (( 10#${memory} >= 10#${LAN_CONFIG[${role}_minimum_memory_mib]} )) && memory_status=pass
+[[ "${disk}" =~ ^[0-9]+$ ]] && (( 10#${disk} >= 10#${LAN_CONFIG[${role}_minimum_disk_mib]} )) && disk_status=pass
+emit cpu_cores "${cpu_status}" "${cpu}" "$([[ "${cpu}" == unavailable ]] && printf unavailable || printf real)"
+emit available_memory_mib "${memory_status}" "${memory}" "$([[ "${memory}" == unavailable ]] && printf unavailable || printf real)"
+emit available_disk_mib "${disk_status}" "${disk}" "$([[ "${disk}" == unavailable ]] && printf unavailable || printf real)"
 
 for tool in openssl curl sha256sum tar; do
     if command -v "${tool}" >/dev/null 2>&1; then emit "tool_${tool}" pass present real; else emit "tool_${tool}" blocked unavailable unavailable; fi
@@ -120,14 +133,18 @@ if [[ "${role}" == server ]]; then
             emit "listener_${descriptor}" blocked unavailable unavailable
         done
     fi
-    if command -v docker >/dev/null 2>&1; then
-        while IFS=$'\t' read -r service ports; do
-            [[ -n "${service}" ]] || continue
-            for conflict in '4433/tcp' '5678/tcp' '6379/tcp' '11434/tcp' '4433/udp' '9000/udp' '14433/udp' '19000/udp'; do
-                [[ "${ports}" == *"${conflict}"* ]] || continue
-                emit inherited_docker_publication blocked "service=${service};port=${conflict}" real
-            done
-        done < <(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null || true)
+    if command -v docker >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        if docker_conflicts="$(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null | python3 "${SCRIPT_DIR}/docker_publications.py" 2>/dev/null)"; then
+            emit docker_publication_inventory pass bounded-scan real
+            while IFS= read -r conflict; do
+                [[ -n "${conflict}" ]] || continue
+                emit inherited_docker_publication blocked "${conflict}" real
+            done <<<"${docker_conflicts}"
+        else
+            emit docker_publication_inventory blocked malformed-or-unavailable real
+        fi
+    else
+        emit docker_publication_inventory blocked unavailable unavailable
     fi
 fi
 if [[ "${role}" == client ]]; then

@@ -18,6 +18,12 @@ for file in "${ROOT}"/windows/*.ps1 "${ROOT}"/client/*.ps1; do
         '$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile($env:TEREMOQ_PS_PARSE_FILE,[ref]$tokens,[ref]$errors) > $null; if($errors.Count -ne 0){$errors | ForEach-Object {Write-Error $_}; exit 1}' \
         >/dev/null
 done
+grep -Fq 'Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex' "${ROOT}/windows/Preflight-Lan.ps1"
+grep -Fq 'Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex' "${ROOT}/windows/Preflight-Client.ps1"
+grep -Fq '/query /status /verbose' "${ROOT}/windows/Preflight-Lan.ps1"
+grep -Fq '/query /status /verbose' "${ROOT}/windows/Preflight-Client.ps1"
+grep -Fq 'Preflight-Contract.ps1' "${ROOT}/windows/Preflight-Lan.ps1"
+grep -Fq 'Preflight-Contract.ps1' "${ROOT}/windows/Preflight-Client.ps1"
 
 context="$(powershell.exe -NoProfile -NonInteractive -Command '
 $profile = Get-NetConnectionProfile | Where-Object {$_.NetworkCategory -in @("Public","Private")} | Select-Object -First 1
@@ -57,6 +63,9 @@ for tamper in edge cardinality; do
         printf 'powershell-policy-test: firewall Verify accepted %s tamper\n' "${tamper}" >&2; exit 1
     fi
 done
+wlan_fixture="$(wslpath -w "${TEST_DIR}/preflight-contract-fixture.ps1")"
+contract_helper="$(wslpath -w "${ROOT}/windows/Preflight-Contract.ps1")"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wlan_fixture}" -ScriptPath "${contract_helper}" >/dev/null
 wsl_plan="$(wslpath -w "${ROOT}/windows/Wsl-Mirrored-Plan.ps1")"
 wsl_plan_output="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wsl_plan}" -Action Plan -RunId lan-firewall-test 2>/dev/null | tr -d '\r')"
 grep -Fq 'networkingMode=mirrored' <<<"${wsl_plan_output}"
@@ -64,11 +73,13 @@ wsl_rollback_output="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolic
 grep -Fq 'wsl.exe --shutdown' <<<"${wsl_rollback_output}"
 client_preflight="$(wslpath -w "${ROOT}/windows/Preflight-Client.ps1")"
 if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${client_preflight}" \
-    -RunId lan-policy-test -SourceCommit "${policy_commit}" -ServerIPv4 8.8.8.8 -ClientIPv4 192.168.77.20 -PrefixLength 24 -NetworkProfile Public -ExpectedWslMode nat >/dev/null 2>&1; then
+    -RunId lan-policy-test -SourceCommit "${policy_commit}" -ServerIPv4 8.8.8.8 -ClientIPv4 192.168.77.20 -PrefixLength 24 -NetworkProfile Public -ExpectedWslMode nat \
+    -MaximumClockOffsetMs 25 -MinimumMtu 1280 -MinimumCpuCores 2 -MinimumMemoryMiB 2048 -MinimumDiskMiB 4096 >/dev/null 2>&1; then
     printf 'powershell-policy-test: public server IP accepted by client preflight\n' >&2; exit 1
 fi
 if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${client_preflight}" \
-    -RunId lan-policy-test -SourceCommit "${policy_commit}" -ServerIPv4 192.168.77.0 -ClientIPv4 192.168.77.20 -PrefixLength 24 -NetworkProfile Public -ExpectedWslMode nat >/dev/null 2>&1; then
+    -RunId lan-policy-test -SourceCommit "${policy_commit}" -ServerIPv4 192.168.77.0 -ClientIPv4 192.168.77.20 -PrefixLength 24 -NetworkProfile Public -ExpectedWslMode nat \
+    -MaximumClockOffsetMs 25 -MinimumMtu 1280 -MinimumCpuCores 2 -MinimumMemoryMiB 2048 -MinimumDiskMiB 4096 >/dev/null 2>&1; then
     printf 'powershell-policy-test: network address accepted by client preflight\n' >&2; exit 1
 fi
 collector="$(wslpath -w "${ROOT}/windows/Collect-Evidence.ps1")"

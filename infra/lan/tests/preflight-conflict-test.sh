@@ -25,8 +25,20 @@ chmod +x "${test_support}/ss" "${test_support}/docker"
 PATH="${test_support}:${PATH}" "${ROOT}/preflight-wsl.sh" --role server --config "${config}" >"${scratch}/report.tsv"
 grep -Fq $'listener_udp_4433\tblocked\toccupied\treal' "${scratch}/report.tsv"
 grep -Fq $'listener_tcp_5678\tblocked\toccupied\treal' "${scratch}/report.tsv"
+grep -Fq $'docker_publication_inventory\tpass\tbounded-scan\treal' "${scratch}/report.tsv"
 grep -Fq 'service=legacy-relay;port=4433/udp' "${scratch}/report.tsv"
 grep -Fq 'service=legacy-relay;port=5678/tcp' "${scratch}/report.tsv"
 grep -Fq $'preflight_gate\tblocked\tblocked\treal' "${scratch}/report.tsv"
 ! grep -Eiq 'pid=|process_id' "${scratch}/report.tsv"
+printf 'tramiteplus-redis-1\t6379/tcp\n' | python3 "${ROOT}/docker_publications.py" >"${scratch}/internal-only.txt"
+[[ ! -s "${scratch}/internal-only.txt" ]]
+printf 'tramiteplus-redis-1\t127.0.0.1:6379->6379/tcp\n' | python3 "${ROOT}/docker_publications.py" >"${scratch}/loopback.txt"
+grep -Fx 'service=tramiteplus-redis-1;port=6379/tcp' "${scratch}/loopback.txt" >/dev/null
+printf 'legacy-ollama\t[::]:11434->11434/tcp\n' | python3 "${ROOT}/docker_publications.py" >"${scratch}/ipv6.txt"
+grep -Fx 'service=legacy-ollama;port=11434/tcp' "${scratch}/ipv6.txt" >/dev/null
+printf 'bad\t0.0.0.0:6379-6380->6379/tcp\n' >"${scratch}/malformed.txt"
+if python3 "${ROOT}/docker_publications.py" <"${scratch}/malformed.txt" >/dev/null 2>&1; then
+    printf 'preflight-conflict-test: malformed docker publication token accepted\n' >&2
+    exit 1
+fi
 printf 'lan-preflight-conflict-test: pass\n'

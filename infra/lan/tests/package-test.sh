@@ -12,7 +12,7 @@ trap 'find "${scratch}" -depth -delete' EXIT
 repo="${scratch}/repo"
 mkdir -p -- "${repo}/infra/lan/windows" "${scratch}/player" "${scratch}/out-pending" "${scratch}/out-a" "${scratch}/out-b" "${scratch}/out-tamper" "${scratch}/out-secret"
 cp -a -- "${ROOT}/client" "${repo}/infra/lan/client"
-cp -- "${ROOT}/windows/Preflight-Client.ps1" "${ROOT}/windows/Collect-Evidence.ps1" "${repo}/infra/lan/windows/"
+cp -- "${ROOT}/windows/Preflight-Client.ps1" "${ROOT}/windows/Collect-Evidence.ps1" "${ROOT}/windows/Preflight-Contract.ps1" "${repo}/infra/lan/windows/"
 printf '<!doctype html><title>fixture player artifact</title>\n' >"${scratch}/player/index.html"
 git -C "${repo}" init -q
 git -C "${repo}" add .
@@ -65,6 +65,7 @@ awk -F '\t' -v commit="${commit}" '$1 == "source_commit" && $2 == commit {found=
 [[ -f "${extract}/player/index.html" && -f "${extract}/public-identity/relay-cert.pem" && ! -e "${extract}/player/unused.key" ]]
 [[ ! -e "${extract}/trust/root-ca.pem" ]]
 [[ -f "${extract}/LAN-CONFIG.json" ]]
+[[ -f "${extract}/infra/lan/windows/Preflight-Contract.ps1" ]]
 python3 - "${extract}/LAN-CONFIG.json" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])

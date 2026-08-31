@@ -13,7 +13,8 @@ seven public keys (including run and commit) and SHA-256 are closed by
 type or redirect JSON to another address. The launcher resolves it
 deterministically as `../LAN-CONFIG.json` from `player/`.
 
-On Windows 10, verify the archive SHA-256 before extracting it, then run:
+On Windows 10, open a native Windows PowerShell console, verify the archive
+SHA-256 before extracting it, then run:
 
 ```powershell
 $archive = 'C:\ABSOLUTE\PRIVATE\teremoq-lan-client-RUN-COMMIT.tar.gz'
@@ -21,17 +22,20 @@ $expected = (Get-Content -LiteralPath "$archive.sha256" -Raw).Split()[0].ToLower
 $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actual -ne $expected) { throw 'client archive SHA-256 mismatch' }
 # Extract only after this comparison, then change to the extracted package root.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\infra\lan\client\Verify-Package.ps1 `
+& .\infra\lan\client\Verify-Package.ps1 `
   -PackageRoot (Get-Location).Path
 ```
 
 First run the exact client preflight from the repository package:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\infra\lan\windows\Preflight-Client.ps1 `
+& .\infra\lan\windows\Preflight-Client.ps1 `
   -RunId RUN_ID -SourceCommit FULL_INTEGRATED_COMMIT `
   -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP -PrefixLength PREFIX `
-  -NetworkProfile Public -ExpectedWslMode nat
+  -NetworkProfile Public -ExpectedWslMode nat `
+  -MaximumClockOffsetMs MAX_CLOCK_MS -MinimumMtu MINIMUM_MTU `
+  -MinimumCpuCores CLIENT_MIN_CPU -MinimumMemoryMiB CLIENT_MIN_MEMORY_MIB `
+  -MinimumDiskMiB CLIENT_MIN_DISK_MIB
 ```
 
 The preflight requires an approved Node 22.x runtime because the Web standalone
@@ -42,7 +46,7 @@ must be free before `Start`.
 Validate the owner launcher contract without starting a player:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\infra\lan\client\Invoke-LanLoad.ps1 `
+& .\infra\lan\client\Invoke-LanLoad.ps1 `
   -Action Validate -RunId RUN_ID -Level 1 -PackageRoot (Get-Location).Path `
   -EvidenceRoot C:\ABSOLUTE\PRIVATE\EVIDENCE
 ```
@@ -100,6 +104,9 @@ artifact fails packaging and no 1/5/10/25 level may be claimed.
 is not. Chrome/Edge then initiates outbound UDP/14433 to the exact server
 address recorded in `VERSION.tsv`. Windows 10 WSL2 stays NAT and initiates only
 outbound traffic.
+Native PowerShell preflight output is the only accepted evidence source on this
+host. Running the preflight via WSL `powershell.exe` interop is not a valid
+collection path because nested native stdout can be incomplete.
 
 The ready package is accepted only when the exact nine-key launcher contract,
 its `source_commit`, launcher SHA-256 and the closed standalone manifest all

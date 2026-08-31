@@ -42,5 +42,13 @@ exec python3 "${SCRIPT_DIR}/lab_runtime.py" \
     --network-profile "${LAN_CONFIG[network_profile]}" \
     --moq-namespace "${LAN_CONFIG[moq_namespace]}" \
     --prefix-length "${LAN_CONFIG[prefix_length]}" \
+    --maximum-clock-offset-ms "${LAN_CONFIG[maximum_clock_offset_ms]}" \
+    --minimum-mtu "${LAN_CONFIG[minimum_mtu]}" \
+    --server-minimum-cpu-cores "${LAN_CONFIG[server_minimum_cpu_cores]}" \
+    --server-minimum-memory-mib "${LAN_CONFIG[server_minimum_memory_mib]}" \
+    --server-minimum-disk-mib "${LAN_CONFIG[server_minimum_disk_mib]}" \
+    --client-minimum-cpu-cores "${LAN_CONFIG[client_minimum_cpu_cores]}" \
+    --client-minimum-memory-mib "${LAN_CONFIG[client_minimum_memory_mib]}" \
+    --client-minimum-disk-mib "${LAN_CONFIG[client_minimum_disk_mib]}" \
     --max-clients "${LAN_CONFIG[proxy_max_clients]}" --association-margin "${LAN_CONFIG[proxy_association_margin]}" \
     --idle-timeout "${LAN_CONFIG[proxy_idle_timeout_seconds]}"

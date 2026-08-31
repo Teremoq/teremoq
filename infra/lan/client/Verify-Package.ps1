@@ -5,7 +5,7 @@ param([Parameter(Mandatory = $true)][string]$PackageRoot)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 $root = [IO.Path]::GetFullPath($PackageRoot)
-foreach ($required in @('VERSION.tsv', 'LAN-CONFIG.json', 'SHA256SUMS', 'public-identity/relay-cert.pem', 'public-identity/relay-cert.sha256', 'player')) {
+foreach ($required in @('VERSION.tsv', 'LAN-CONFIG.json', 'SHA256SUMS', 'public-identity/relay-cert.pem', 'public-identity/relay-cert.sha256', 'player', 'infra/lan/windows/Preflight-Contract.ps1')) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $required))) { throw "missing package artifact: $required" }
 }
 $versionPath = Join-Path $root 'VERSION.tsv'

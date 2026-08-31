@@ -31,7 +31,7 @@ git -C "${repo}" diff --quiet && git -C "${repo}" diff --cached --quiet || lan_d
 [[ -z "$(git -C "${repo}" status --porcelain --untracked-files=normal)" ]] || lan_die 'package source has untracked files'
 git -C "${repo}" cat-file -e "${commit}^{commit}" 2>/dev/null || lan_die 'explicit commit is unavailable locally'
 git -C "${repo}" cat-file -e "${commit}:infra/lan/client/README.md" 2>/dev/null || lan_die 'client scripts are absent from explicit commit'
-for path in infra/lan/windows/Preflight-Client.ps1 infra/lan/windows/Collect-Evidence.ps1; do
+for path in infra/lan/windows/Preflight-Client.ps1 infra/lan/windows/Collect-Evidence.ps1 infra/lan/windows/Preflight-Contract.ps1; do
     git -C "${repo}" cat-file -e "${commit}:${path}" 2>/dev/null || lan_die "client support script is absent from explicit commit: ${path}"
 done
 for path in "${player_dir}" "${output_dir}"; do [[ "${path}" == /* && -d "${path}" && ! -L "${path}" ]] || lan_die 'player/output paths must be absolute non-symlink directories'; done
@@ -82,7 +82,8 @@ trap 'find "${scratch}" -depth -delete' EXIT
 stage="${scratch}/stage"
 mkdir -m 0700 -p -- "${stage}/public-identity" "${stage}/player"
 git -C "${repo}" archive "${commit}" infra/lan/client \
-    infra/lan/windows/Preflight-Client.ps1 infra/lan/windows/Collect-Evidence.ps1 | tar -x -C "${stage}"
+    infra/lan/windows/Preflight-Client.ps1 infra/lan/windows/Collect-Evidence.ps1 \
+    infra/lan/windows/Preflight-Contract.ps1 | tar -x -C "${stage}"
 cp -a -- "${player_dir}/." "${stage}/player/"
 cp -- "${certificate}" "${stage}/public-identity/relay-cert.pem"
 printf '%s\n' "${fingerprint_value,,}" >"${stage}/public-identity/relay-cert.sha256"

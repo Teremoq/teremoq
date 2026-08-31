@@ -25,6 +25,14 @@ PROVENANCE_COMMIT = "2f8fb1b3219483050bc997bee25a052c2db5f463"
 SERVER_IP = "192.168.77.10"
 CLIENT_IP = "192.168.77.20"
 PROFILE = "Public"
+MAX_CLOCK = 25
+MIN_MTU = 1280
+SERVER_MIN_CPU = 2
+SERVER_MIN_MEMORY = 2048
+SERVER_MIN_DISK = 4096
+CLIENT_MIN_CPU = 2
+CLIENT_MIN_MEMORY = 2048
+CLIENT_MIN_DISK = 4096
 
 
 def check(name: str, value: str = "measured", status: str = "observed", quality: str = "real") -> dict[str, str]:
@@ -36,19 +44,34 @@ def windows_preflight(role: str) -> dict[str, object]:
     checks = {name: check(name) for name in names}
     checks["preflight_gate"] = check("preflight_gate", "ready", "pass")
     checks["network_profile"] = check("network_profile", PROFILE, "pass")
+    checks["clock_offset"] = check("clock_offset", "0.079", "pass")
+    checks["mtu"] = check("mtu", "1500", "pass")
+    checks["logical_cpu"] = check("logical_cpu", "8", "pass")
+    checks["physical_memory_mib"] = check("physical_memory_mib", "8192", "pass")
+    checks["free_disk_mib"] = check("free_disk_mib", "16384", "pass")
     if role == "server":
+        checks["wifi_adapter"] = check("wifi_adapter", "ifindex=11;physical_media=Native 802.11;ndis_medium=9", "pass")
+        checks["wifi_radio"] = check("wifi_radio", "802.11ac")
+        checks["wifi_band"] = check("wifi_band", "5 GHz", "pass")
         checks["expected_wsl_mode_gate"] = check("expected_wsl_mode_gate", "mirrored", "pass")
+        checks["docker_publication_inventory"] = check("docker_publication_inventory", "bounded-scan", "pass")
         for port in (*RUNTIME.LEGACY_UDP_PORTS, 14433, 19000):
             checks[f"listener_udp_{port}"] = check(f"listener_udp_{port}", "free", "pass")
         for port in RUNTIME.LEGACY_TCP_PORTS:
             checks[f"listener_tcp_{port}"] = check(f"listener_tcp_{port}", "free", "pass")
     else:
+        checks["wifi_radio"] = check("wifi_radio", "802.11ac")
+        checks["wifi_5ghz"] = check("wifi_5ghz", "5 GHz", "pass")
         checks["wsl_ipv4_mode"] = check("wsl_ipv4_mode", "nat", "pass")
         checks["player_loopback_tcp_3000"] = check("player_loopback_tcp_3000", "free", "pass")
     return {
-        "schema_version": 1, "report_kind": "teremoq-lan-windows-preflight-v1", "run_id": RUN_ID,
+        "schema_version": 2, "report_kind": "teremoq-lan-windows-preflight-v2", "run_id": RUN_ID,
         "source_commit": SOURCE_COMMIT, "role": role, "server_ipv4": SERVER_IP, "client_ipv4": CLIENT_IP,
         "prefix_length": 24, "network_profile": PROFILE, "expected_wsl_mode": "mirrored" if role == "server" else "nat",
+        "maximum_clock_offset_ms": MAX_CLOCK, "minimum_mtu": MIN_MTU,
+        "minimum_cpu_cores": SERVER_MIN_CPU if role == "server" else CLIENT_MIN_CPU,
+        "minimum_memory_mib": SERVER_MIN_MEMORY if role == "server" else CLIENT_MIN_MEMORY,
+        "minimum_disk_mib": SERVER_MIN_DISK if role == "server" else CLIENT_MIN_DISK,
         "checks": list(checks.values()),
     }
 
@@ -56,12 +79,21 @@ def windows_preflight(role: str) -> dict[str, object]:
 def wsl_preflight(blocked_udp_4433: bool = False, nat: bool = False) -> bytes:
     checks = {name: check(name) for name in RUNTIME.WSL_PREFLIGHT_CHECKS}
     bindings = {
-        "schema_version": "1", "report_kind": "teremoq-lan-wsl-preflight-v1", "run_id": RUN_ID,
+        "schema_version": "2", "report_kind": "teremoq-lan-wsl-preflight-v2", "run_id": RUN_ID,
         "source_commit": SOURCE_COMMIT, "role": "server", "server_ipv4": SERVER_IP, "client_ipv4": CLIENT_IP,
         "prefix_length": "24", "network_profile": PROFILE, "expected_wsl_mode": "mirrored",
+        "maximum_clock_offset_ms": str(MAX_CLOCK), "minimum_mtu": str(MIN_MTU),
+        "minimum_cpu_cores": str(SERVER_MIN_CPU), "minimum_memory_mib": str(SERVER_MIN_MEMORY),
+        "minimum_disk_mib": str(SERVER_MIN_DISK),
     }
     for name, value in bindings.items():
         checks[name] = check(name, value, "pass", "configured")
+    checks["clock_synchronized"] = check("clock_synchronized", "yes", "pass")
+    checks["mtu"] = check("mtu", "1500", "pass")
+    checks["cpu_cores"] = check("cpu_cores", "8", "pass")
+    checks["available_memory_mib"] = check("available_memory_mib", "8192", "pass")
+    checks["available_disk_mib"] = check("available_disk_mib", "16384", "pass")
+    checks["docker_publication_inventory"] = check("docker_publication_inventory", "bounded-scan", "pass")
     checks["preflight_gate"] = check("preflight_gate", "blocked" if blocked_udp_4433 else "ready",
                                       "blocked" if blocked_udp_4433 else "pass")
     checks["windows_wsl_mode_observed"] = check("windows_wsl_mode_observed", "nat" if nat else "mirrored",
@@ -193,6 +225,12 @@ class LabRuntimePolicyTest(unittest.TestCase):
     def test_repository_rejects_provenance_and_unrelated_operational_overrides(self) -> None:
         integration = Path("/home/jimbomilk/teremoq-lan-integration")
         self.assertTrue(integration.is_dir(), "reviewed LAN integration worktree is required")
+        status = subprocess.run(
+            ["git", "-C", str(integration), "status", "--porcelain=v1", "--untracked-files=all"],
+            check=True, stdout=subprocess.PIPE, text=True,
+        ).stdout.strip()
+        if status:
+            self.skipTest("reviewed LAN integration worktree is not clean in this environment")
         integrated_head = subprocess.run(
             ["git", "-C", str(integration), "rev-parse", "HEAD"], check=True,
             stdout=subprocess.PIPE, text=True,
@@ -204,10 +242,16 @@ class LabRuntimePolicyTest(unittest.TestCase):
             RUNTIME.verify_repository(Path("/not/used"), SOURCE_COMMIT, "b" * 40)
 
     def test_closed_preflight_and_firewall_contracts_accept_ready_evidence(self) -> None:
-        RUNTIME.parse_wsl_preflight(wsl_preflight(), RUN_ID, SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE)
+        RUNTIME.parse_wsl_preflight(wsl_preflight(), RUN_ID, SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                    MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
         for role in ("server", "client"):
             payload = json.dumps(windows_preflight(role)).encode()
-            RUNTIME.parse_windows_preflight(payload, role, RUN_ID, SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE)
+            RUNTIME.parse_windows_preflight(
+                payload, role, RUN_ID, SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE,
+                MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU if role == "server" else CLIENT_MIN_CPU,
+                SERVER_MIN_MEMORY if role == "server" else CLIENT_MIN_MEMORY,
+                SERVER_MIN_DISK if role == "server" else CLIENT_MIN_DISK,
+            )
         RUNTIME.parse_firewall_attestation(json.dumps(firewall_attestation()).encode(), RUN_ID, SOURCE_COMMIT,
                                            SERVER_IP, CLIENT_IP, PROFILE)
 
@@ -232,17 +276,20 @@ class LabRuntimePolicyTest(unittest.TestCase):
             self.assertEqual(parsed_authorization["operator_authorized"], "true")
             snapshot = RUNTIME.read_bound_bytes(path, 32768, parsed_authorization["wsl_preflight_sha256"], "WSL server preflight")
             with self.assertRaisesRegex(ValueError, "not activation-ready|listener conflict"):
-                RUNTIME.parse_wsl_preflight(snapshot, RUN_ID, SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE)
+                RUNTIME.parse_wsl_preflight(snapshot, RUN_ID, SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
 
     def test_nat_pending_unknown_and_unavailable_preflight_states_are_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "not activation-ready|NAT"):
-            RUNTIME.parse_wsl_preflight(wsl_preflight(nat=True), RUN_ID, SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE)
+            RUNTIME.parse_wsl_preflight(wsl_preflight(nat=True), RUN_ID, SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                        MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
         document = windows_preflight("client")
         document["checks"][0]["status"] = "pending"  # type: ignore[index]
         document["checks"][0]["value"] = "not_measured"  # type: ignore[index]
         with self.assertRaisesRegex(ValueError, "not activation-ready"):
             RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
-                                             SERVER_IP, CLIENT_IP, 24, PROFILE)
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
 
     def test_every_legacy_listener_port_is_fail_closed(self) -> None:
         for protocol, ports in (("udp", RUNTIME.LEGACY_UDP_PORTS), ("tcp", RUNTIME.LEGACY_TCP_PORTS)):
@@ -256,7 +303,8 @@ class LabRuntimePolicyTest(unittest.TestCase):
                     gate.update(status="blocked", value="blocked")
                     with self.assertRaisesRegex(ValueError, "not activation-ready|listener conflict"):
                         RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID,
-                                                         SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE)
+                                                        SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                                        MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
 
     def test_firewall_edge_traversal_and_cardinality_are_fail_closed(self) -> None:
         document = firewall_attestation()
@@ -275,12 +323,28 @@ class LabRuntimePolicyTest(unittest.TestCase):
         document["source_commit"] = "b" * 40
         with self.assertRaisesRegex(ValueError, "binding mismatch"):
             RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
-                                             SERVER_IP, CLIENT_IP, 24, PROFILE)
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "evidence.json"
             path.write_bytes(b"{}")
             with self.assertRaisesRegex(ValueError, "digest mismatch"):
                 RUNTIME.read_bound_bytes(path, 8192, "0" * 64, "tampered preflight")
+
+    def test_threshold_binding_and_measurement_mismatches_are_rejected(self) -> None:
+        document = windows_preflight("server")
+        document["maximum_clock_offset_ms"] = MAX_CLOCK + 1
+        with self.assertRaisesRegex(ValueError, "threshold binding mismatch"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
+        document = windows_preflight("client")
+        record = next(item for item in document["checks"] if item["check"] == "clock_offset")  # type: ignore[union-attr]
+        record.update(value="25.001")
+        with self.assertRaisesRegex(ValueError, "clock offset exceeds policy"):
+            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                            MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
 
 
 if __name__ == "__main__":

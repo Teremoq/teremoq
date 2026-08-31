@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -34,7 +35,9 @@ AUTH_KEYS = {
 CHECK_KEYS = {"check", "status", "value", "evidence_quality"}
 WINDOWS_PREFLIGHT_KEYS = {
     "schema_version", "report_kind", "run_id", "source_commit", "role", "server_ipv4",
-    "client_ipv4", "prefix_length", "network_profile", "expected_wsl_mode", "checks",
+    "client_ipv4", "prefix_length", "network_profile", "expected_wsl_mode",
+    "maximum_clock_offset_ms", "minimum_mtu", "minimum_cpu_cores", "minimum_memory_mib",
+    "minimum_disk_mib", "checks",
 }
 FIREWALL_ATTESTATION_KEYS = {
     "schema_version", "run_id", "source_commit", "server_ipv4", "client_ipv4",
@@ -209,9 +212,10 @@ def validate_checks(document: dict[str, object], expected_names: set[str], label
 
 SERVER_WINDOWS_CHECKS = {
     "windows_caption", "windows_version", "configured_private_ip_present", "network_profile",
-    "wifi_adapter", "wifi_link_speed", "wifi_band", "wsl_mode", "expected_wsl_mode_gate",
+    "wifi_adapter", "wifi_link_speed", "wifi_radio", "wifi_band", "wsl_mode", "expected_wsl_mode_gate",
     "clock_offset", "mtu", "logical_cpu", "physical_memory_mib", "free_disk_mib",
-    "browser_msedge.exe", "browser_chrome.exe", "docker_server", "wslconfig_present", "preflight_gate",
+    "browser_msedge.exe", "browser_chrome.exe", "docker_server", "docker_publication_inventory",
+    "wslconfig_present", "preflight_gate",
     *(f"listener_udp_{port}" for port in (*LEGACY_UDP_PORTS, 14433, 19000)),
     *(f"listener_tcp_{port}" for port in LEGACY_TCP_PORTS),
 }
@@ -224,12 +228,35 @@ CLIENT_WINDOWS_CHECKS = {
 }
 WSL_PREFLIGHT_CHECKS = {
     "schema_version", "report_kind", "run_id", "source_commit", "role", "server_ipv4", "client_ipv4",
-    "prefix_length", "network_profile", "expected_wsl_mode", "wsl_kernel", "windows_wsl_mode_observed",
-    "clock_synchronized", "route_to_peer", "route_interface", "mtu", "cpu_cores", "available_memory_mib",
-    "available_disk_mib", "tool_openssl", "tool_curl", "tool_sha256sum", "tool_tar", "docker_server",
-    "preflight_gate", *(f"listener_udp_{port}" for port in (*LEGACY_UDP_PORTS, 14433, 19000)),
+    "prefix_length", "network_profile", "expected_wsl_mode", "maximum_clock_offset_ms",
+    "minimum_mtu", "minimum_cpu_cores", "minimum_memory_mib", "minimum_disk_mib",
+    "wsl_kernel", "windows_wsl_mode_observed", "clock_synchronized", "route_to_peer",
+    "route_interface", "mtu", "cpu_cores", "available_memory_mib", "available_disk_mib",
+    "tool_openssl", "tool_curl", "tool_sha256sum", "tool_tar", "docker_server",
+    "docker_publication_inventory", "preflight_gate", *(f"listener_udp_{port}" for port in (*LEGACY_UDP_PORTS, 14433, 19000)),
     *(f"listener_tcp_{port}" for port in LEGACY_TCP_PORTS),
 }
+
+
+def parse_exact_int(value: object, label: str, minimum: int, maximum: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum or value > maximum:
+        fail(f"{label} is outside policy")
+    return value
+
+
+def parse_decimal_string(value: str, label: str) -> float:
+    if not re.fullmatch(r"-?\d+(?:\.\d{1,3})?", value):
+        fail(f"{label} is not a bounded decimal")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        fail(f"{label} is not finite")
+    return parsed
+
+
+def parse_check_int_value(value: str, label: str, minimum: int, maximum: int) -> int:
+    if not re.fullmatch(r"\d+", value):
+        fail(f"{label} is not a bounded integer")
+    return parse_exact_int(int(value), label, minimum, maximum)
 
 
 def validate_listener_checks(checks: dict[str, dict[str, str]], label: str, udp_ports: tuple[int, ...], tcp_ports: tuple[int, ...]) -> None:
@@ -241,14 +268,16 @@ def validate_listener_checks(checks: dict[str, dict[str, str]], label: str, udp_
 
 
 def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commit: str, server_ip: str,
-                            client_ip: str, prefix_length: int, network_profile: str) -> dict[str, dict[str, str]]:
+                            client_ip: str, prefix_length: int, network_profile: str,
+                            maximum_clock_offset_ms: int, minimum_mtu: int, minimum_cpu_cores: int,
+                            minimum_memory_mib: int, minimum_disk_mib: int) -> dict[str, dict[str, str]]:
     label = f"Windows {role} preflight"
     document = decode_json_object(payload, label)
     if set(document) != WINDOWS_PREFLIGHT_KEYS:
         fail(f"{label} top-level schema is not closed")
     expected_mode = "mirrored" if role == "server" else "nat"
     expected = {
-        "schema_version": 1, "report_kind": "teremoq-lan-windows-preflight-v1", "run_id": run_id,
+        "schema_version": 2, "report_kind": "teremoq-lan-windows-preflight-v2", "run_id": run_id,
         "source_commit": source_commit, "role": role, "server_ipv4": server_ip, "client_ipv4": client_ip,
         "prefix_length": prefix_length, "network_profile": network_profile, "expected_wsl_mode": expected_mode,
     }
@@ -260,7 +289,29 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
     mode_key = "expected_wsl_mode_gate" if role == "server" else "wsl_ipv4_mode"
     if checks[mode_key]["status"] != "pass" or checks[mode_key]["value"] != expected_mode:
         fail(f"{label} WSL mode mismatch")
+    if abs(parse_decimal_string(checks["clock_offset"]["value"], f"{label} clock offset")) > maximum_clock_offset_ms:
+        fail(f"{label} clock offset exceeds policy")
+    if parse_exact_int(document["minimum_mtu"], f"{label} minimum MTU binding", 576, 9000) != minimum_mtu or \
+       parse_exact_int(document["minimum_cpu_cores"], f"{label} minimum CPU binding", 1, 1024) != minimum_cpu_cores or \
+       parse_exact_int(document["minimum_memory_mib"], f"{label} minimum memory binding", 1, 1073741824) != minimum_memory_mib or \
+       parse_exact_int(document["minimum_disk_mib"], f"{label} minimum disk binding", 1, 1073741824) != minimum_disk_mib or \
+       parse_exact_int(document["maximum_clock_offset_ms"], f"{label} maximum clock binding", 1, 60000) != maximum_clock_offset_ms:
+        fail(f"{label} threshold binding mismatch")
+    if parse_check_int_value(checks["mtu"]["value"], f"{label} MTU", 576, 9000) < minimum_mtu or \
+       parse_check_int_value(checks["logical_cpu"]["value"], f"{label} logical CPU", 1, 1024) < minimum_cpu_cores or \
+       parse_check_int_value(checks["physical_memory_mib"]["value"], f"{label} physical memory", 1, 1073741824) < minimum_memory_mib or \
+       parse_check_int_value(checks["free_disk_mib"]["value"], f"{label} free disk", 1, 1073741824) < minimum_disk_mib:
+        fail(f"{label} measured capacity is below policy")
     if role == "server":
+        if checks["wifi_adapter"]["status"] != "pass" or checks["wifi_band"]["status"] != "pass":
+            fail("Windows server preflight did not prove the exact Wi-Fi interface and 5 GHz band")
+        if checks["docker_publication_inventory"] != {
+            "check": "docker_publication_inventory",
+            "status": "pass",
+            "value": "bounded-scan",
+            "evidence_quality": "real",
+        }:
+            fail("Windows server Docker publication inventory is not exact")
         validate_listener_checks(checks, label, (*LEGACY_UDP_PORTS, 14433, 19000), LEGACY_TCP_PORTS)
     elif checks["player_loopback_tcp_3000"]["status"] != "pass" or checks["player_loopback_tcp_3000"]["value"] != "free":
         fail("Windows client preflight reports loopback TCP/3000 occupied")
@@ -268,7 +319,9 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
 
 
 def parse_wsl_preflight(payload: bytes, run_id: str, source_commit: str, server_ip: str, client_ip: str,
-                        prefix_length: int, network_profile: str) -> dict[str, dict[str, str]]:
+                        prefix_length: int, network_profile: str, maximum_clock_offset_ms: int,
+                        minimum_mtu: int, minimum_cpu_cores: int, minimum_memory_mib: int,
+                        minimum_disk_mib: int) -> dict[str, dict[str, str]]:
     label = "WSL server preflight"
     try:
         text = payload.decode("utf-8", errors="strict")
@@ -285,15 +338,30 @@ def parse_wsl_preflight(payload: bytes, run_id: str, source_commit: str, server_
         records.append(dict(zip(("check", "status", "value", "evidence_quality"), fields)))
     checks = validate_checks({"checks": records}, WSL_PREFLIGHT_CHECKS, label)
     bindings = {
-        "schema_version": "1", "report_kind": "teremoq-lan-wsl-preflight-v1", "run_id": run_id,
+        "schema_version": "2", "report_kind": "teremoq-lan-wsl-preflight-v2", "run_id": run_id,
         "source_commit": source_commit, "role": "server", "server_ipv4": server_ip, "client_ipv4": client_ip,
         "prefix_length": str(prefix_length), "network_profile": network_profile, "expected_wsl_mode": "mirrored",
+        "maximum_clock_offset_ms": str(maximum_clock_offset_ms), "minimum_mtu": str(minimum_mtu),
+        "minimum_cpu_cores": str(minimum_cpu_cores), "minimum_memory_mib": str(minimum_memory_mib),
+        "minimum_disk_mib": str(minimum_disk_mib),
     }
     for name, value in bindings.items():
         if checks[name] != {"check": name, "status": "pass", "value": value, "evidence_quality": "configured"}:
             fail(f"{label} binding mismatch: {name}")
     if checks["windows_wsl_mode_observed"] != {"check": "windows_wsl_mode_observed", "status": "pass", "value": "mirrored", "evidence_quality": "real"}:
         fail("WSL server NAT/unavailable mode is forbidden")
+    if checks["docker_publication_inventory"] != {
+        "check": "docker_publication_inventory",
+        "status": "pass",
+        "value": "bounded-scan",
+        "evidence_quality": "real",
+    }:
+        fail("WSL Docker publication inventory is not exact")
+    if parse_check_int_value(checks["mtu"]["value"], f"{label} MTU", 576, 9000) < minimum_mtu or \
+       parse_check_int_value(checks["cpu_cores"]["value"], f"{label} CPU cores", 1, 1024) < minimum_cpu_cores or \
+       parse_check_int_value(checks["available_memory_mib"]["value"], f"{label} memory", 1, 1073741824) < minimum_memory_mib or \
+       parse_check_int_value(checks["available_disk_mib"]["value"], f"{label} disk", 1, 1073741824) < minimum_disk_mib:
+        fail(f"{label} measured capacity is below policy")
     validate_listener_checks(checks, label, (*LEGACY_UDP_PORTS, 14433, 19000), LEGACY_TCP_PORTS)
     return checks
 
@@ -573,6 +641,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--network-profile", required=True, choices=("Public", "Private"))
     parser.add_argument("--moq-namespace", required=True)
     parser.add_argument("--prefix-length", required=True, type=int)
+    parser.add_argument("--maximum-clock-offset-ms", required=True, type=int)
+    parser.add_argument("--minimum-mtu", required=True, type=int)
+    parser.add_argument("--server-minimum-cpu-cores", required=True, type=int)
+    parser.add_argument("--server-minimum-memory-mib", required=True, type=int)
+    parser.add_argument("--server-minimum-disk-mib", required=True, type=int)
+    parser.add_argument("--client-minimum-cpu-cores", required=True, type=int)
+    parser.add_argument("--client-minimum-memory-mib", required=True, type=int)
+    parser.add_argument("--client-minimum-disk-mib", required=True, type=int)
     parser.add_argument("--max-clients", required=True, type=int)
     parser.add_argument("--association-margin", required=True, type=int)
     parser.add_argument("--idle-timeout", required=True, type=int)
@@ -605,11 +681,17 @@ def main() -> int:
     parse_proxy_attestation(evidence_payloads["proxy_attestation_sha256"], args.run_id, args.source_commit,
                             args.owner_commit, server_ip, client_ip, args.network_profile)
     parse_wsl_preflight(evidence_payloads["wsl_preflight_sha256"], args.run_id, args.source_commit,
-                        server_ip, client_ip, args.prefix_length, args.network_profile)
+                        server_ip, client_ip, args.prefix_length, args.network_profile,
+                        args.maximum_clock_offset_ms, args.minimum_mtu, args.server_minimum_cpu_cores,
+                        args.server_minimum_memory_mib, args.server_minimum_disk_mib)
     parse_windows_preflight(evidence_payloads["server_preflight_sha256"], "server", args.run_id,
-                            args.source_commit, server_ip, client_ip, args.prefix_length, args.network_profile)
+                            args.source_commit, server_ip, client_ip, args.prefix_length, args.network_profile,
+                            args.maximum_clock_offset_ms, args.minimum_mtu, args.server_minimum_cpu_cores,
+                            args.server_minimum_memory_mib, args.server_minimum_disk_mib)
     parse_windows_preflight(evidence_payloads["client_preflight_sha256"], "client", args.run_id,
-                            args.source_commit, server_ip, client_ip, args.prefix_length, args.network_profile)
+                            args.source_commit, server_ip, client_ip, args.prefix_length, args.network_profile,
+                            args.maximum_clock_offset_ms, args.minimum_mtu, args.client_minimum_cpu_cores,
+                            args.client_minimum_memory_mib, args.client_minimum_disk_mib)
     parse_firewall_attestation(evidence_payloads["firewall_attestation_sha256"], args.run_id, args.source_commit,
                                server_ip, client_ip, args.network_profile)
     commands = parse_commands(args.commands, args.source_commit, authorization["commands_sha256"], args.repo_root, args.artifact_root)

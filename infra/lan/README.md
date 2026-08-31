@@ -69,23 +69,31 @@ infra/lan/preflight-wsl.sh --role server --config /ABSOLUTE/PRIVATE/PATH/lan.tsv
   > /ABSOLUTE/PRIVATE/PATH/server-wsl-preflight.tsv
 ```
 
-Windows 11 server, read-only:
+Windows 11 server, read-only, from a native elevated-or-non-elevated Windows
+PowerShell console on the server itself:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\infra\lan\windows\Preflight-Lan.ps1 `
+& .\infra\lan\windows\Preflight-Lan.ps1 `
   -Role Server -RunId RUN_ID -SourceCommit FULL_INTEGRATED_COMMIT `
   -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP `
   -PrefixLength PREFIX -NetworkProfile Public -ExpectedWslMode mirrored `
+  -MaximumClockOffsetMs MAX_CLOCK_MS -MinimumMtu MINIMUM_MTU `
+  -MinimumCpuCores SERVER_MIN_CPU -MinimumMemoryMiB SERVER_MIN_MEMORY_MIB `
+  -MinimumDiskMiB SERVER_MIN_DISK_MIB `
   | Set-Content -Encoding UTF8 C:\ABSOLUTE\PRIVATE\server-preflight.json
 ```
 
-Windows 10 client, read-only and outbound-only:
+Windows 10 client, read-only and outbound-only, from a native Windows
+PowerShell console on the client itself:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\infra\lan\windows\Preflight-Client.ps1 `
+& .\infra\lan\windows\Preflight-Client.ps1 `
   -RunId RUN_ID -SourceCommit FULL_INTEGRATED_COMMIT `
   -ServerIPv4 SERVER_EXACT_IP -ClientIPv4 CLIENT_EXACT_IP -PrefixLength PREFIX `
   -NetworkProfile Public -ExpectedWslMode nat `
+  -MaximumClockOffsetMs MAX_CLOCK_MS -MinimumMtu MINIMUM_MTU `
+  -MinimumCpuCores CLIENT_MIN_CPU -MinimumMemoryMiB CLIENT_MIN_MEMORY_MIB `
+  -MinimumDiskMiB CLIENT_MIN_DISK_MIB `
   | Set-Content -Encoding UTF8 C:\ABSOLUTE\PRIVATE\client-preflight.json
 ```
 
@@ -98,6 +106,11 @@ report only service/protocol/port, never PID.
 Client loopback TCP/3000 is an additional fail-closed reservation for the
 standalone Node process and must be free in preflight and immediately before
 start; it is never exposed through the LAN firewall.
+Run both Windows preflights in native PowerShell. On this host, `powershell.exe`
+launched from WSL interop does not provide trustworthy nested native stdout for
+evidence capture, so WSL-driven captures are documentation-only and are not
+accepted as real preflight evidence. Copy/import the resulting JSON files only
+after the native PowerShell run completes.
 
 ## 2. Mirrored WSL plan
 

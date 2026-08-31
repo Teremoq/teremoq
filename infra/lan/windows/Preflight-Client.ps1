@@ -9,15 +9,17 @@ param(
     [Parameter(Mandatory = $true)][ValidateRange(8, 30)][int]$PrefixLength,
     [Parameter(Mandatory = $true)][ValidateSet('Public', 'Private')][string]$NetworkProfile,
     [Parameter(Mandatory = $true)][ValidateSet('nat')][string]$ExpectedWslMode,
+    [Parameter(Mandatory = $true)][ValidateRange(1, 60000)][int]$MaximumClockOffsetMs,
+    [Parameter(Mandatory = $true)][ValidateRange(576, 9000)][int]$MinimumMtu,
+    [Parameter(Mandatory = $true)][ValidateRange(1, 1024)][int]$MinimumCpuCores,
+    [Parameter(Mandatory = $true)][ValidateRange(1, 1073741824)][int]$MinimumMemoryMiB,
+    [Parameter(Mandatory = $true)][ValidateRange(1, 1073741824)][int]$MinimumDiskMiB,
     [ValidateRange(1, 65535)][int]$MoqUdpPort = 14433,
-    [ValidateRange(1, 65535)][int]$PlayerTcpPort = 3000,
-    [ValidateRange(576, 9000)][int]$MinimumMtu = 1280,
-    [ValidateRange(1, 1024)][int]$MinimumCpuCores = 2,
-    [ValidateRange(1, 1073741824)][int]$MinimumMemoryMiB = 2048,
-    [ValidateRange(1, 1073741824)][int]$MinimumDiskMiB = 2048
+    [ValidateRange(1, 65535)][int]$PlayerTcpPort = 3000
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
+. (Join-Path $PSScriptRoot 'Preflight-Contract.ps1')
 $checks = New-Object System.Collections.Generic.List[object]
 $script:PreflightBlocked = $false
 
@@ -69,26 +71,32 @@ foreach ($entry in @(@{ Name = 'ServerIPv4'; Bits = $serverBits }, @{ Name = 'Cl
 $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
 Add-Check 'windows_caption' 'observed' $(if ($os) { $os.Caption } else { 'unavailable' }) $(if ($os) { 'real' } else { 'unavailable' })
 Add-Check 'windows_version' 'observed' $(if ($os) { $os.Version } else { 'unavailable' }) $(if ($os) { 'real' } else { 'unavailable' })
-$address = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $ClientIPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
-Add-Check 'client_private_ip_present' $(if ($address) { 'pass' } else { 'blocked' }) $(if ($address) { $ClientIPv4 } else { 'unavailable' }) $(if ($address) { 'real' } else { 'unavailable' })
+$addressMatches = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ClientIPv4 })
+$address = if ($addressMatches.Count -eq 1) { $addressMatches[0] } else { $null }
+$addressValue = if ($addressMatches.Count -eq 1) { $ClientIPv4 } elseif ($addressMatches.Count -gt 1) { 'duplicate-address-record' } else { 'unavailable' }
+Add-Check 'client_private_ip_present' $(if ($addressMatches.Count -eq 1) { 'pass' } else { 'blocked' }) $addressValue $(if ($addressMatches.Count -gt 0) { 'real' } else { 'unavailable' })
 if ($address) {
-    $profile = Get-NetConnectionProfile -InterfaceIndex $address.InterfaceIndex -ErrorAction SilentlyContinue | Select-Object -First 1
-    $profileValue = if ($profile) { [string]$profile.NetworkCategory } else { 'unavailable' }
-    Add-Check 'network_profile' $(if ($profileValue -eq $NetworkProfile) { 'pass' } else { 'blocked' }) $profileValue $(if ($profile) { 'real' } else { 'unavailable' })
-    $interface = Get-NetIPInterface -InterfaceIndex $address.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
-    $mtu = if ($interface) { $interface.NlMtu } else { 'unavailable' }
-    Add-Check 'mtu' $(if ($interface -and $mtu -ge $MinimumMtu) { 'pass' } else { 'blocked' }) $mtu $(if ($interface) { 'real' } else { 'unavailable' })
+    $profileMatches = @(Get-NetConnectionProfile -InterfaceIndex $address.InterfaceIndex -ErrorAction SilentlyContinue)
+    $profile = if ($profileMatches.Count -eq 1) { $profileMatches[0] } else { $null }
+    $profileValue = if ($profile) { [string]$profile.NetworkCategory } elseif ($profileMatches.Count -gt 1) { 'duplicate-profile-record' } else { 'unavailable' }
+    Add-Check 'network_profile' $(if ($profileValue -eq $NetworkProfile) { 'pass' } else { 'blocked' }) $profileValue $(if ($profileMatches.Count -gt 0) { 'real' } else { 'unavailable' })
+    $interfaceMatches = @(Get-NetIPInterface -InterfaceIndex $address.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+    $interface = if ($interfaceMatches.Count -eq 1) { $interfaceMatches[0] } else { $null }
+    $mtuValue = if ($interface) { [int]$interface.NlMtu } elseif ($interfaceMatches.Count -gt 1) { 'duplicate-interface-record' } else { 'unavailable' }
+    Add-Check 'mtu' $(if ($interface -and [int]$interface.NlMtu -ge $MinimumMtu) { 'pass' } else { 'blocked' }) $mtuValue $(if ($interfaceMatches.Count -gt 0) { 'real' } else { 'unavailable' })
+
+    $wifi = Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex
+    $wlanText = (@(& "$env:SystemRoot\System32\netsh.exe" wlan show interfaces 2>$null) -join "`n")
+    $wifiObservation = if ($wifi) { Get-TeremoqWlanObservation -Text $wlanText -AdapterName $wifi.Name } else { [pscustomobject]@{ Band = 'unavailable'; Radio = 'unavailable'; Is5GHz = $false } }
+    Add-Check 'wifi_radio' 'observed' $wifiObservation.Radio $(if ($wifiObservation.Radio -eq 'unavailable') { 'unavailable' } else { 'real' })
+    $wifi5Value = if ($wifiObservation.Band -ne 'unavailable') { $wifiObservation.Band } elseif ($wifiObservation.Radio -ne 'unavailable') { "fallback-radio=$($wifiObservation.Radio)" } else { 'unavailable' }
+    Add-Check 'wifi_5ghz' $(if ($wifiObservation.Is5GHz) { 'pass' } else { 'blocked' }) $wifi5Value $(if ($wifi5Value -eq 'unavailable') { 'unavailable' } else { 'real' })
 } else {
     Add-Check 'network_profile' 'blocked' 'unavailable' 'unavailable'
     Add-Check 'mtu' 'blocked' 'unavailable' 'unavailable'
+    Add-Check 'wifi_radio' 'observed' 'unavailable' 'unavailable'
+    Add-Check 'wifi_5ghz' 'blocked' 'unavailable' 'unavailable'
 }
-
-$wlanText = (@(& "$env:SystemRoot\System32\netsh.exe" wlan show interfaces 2>$null) -join "`n")
-$radio = if ($wlanText -match '(?im)^\s*(Radio type|Tipo de radio)\s*:\s*([^\r\n]+)') { $Matches[2].Trim() } else { 'unavailable' }
-$band = if ($wlanText -match '(?im)^\s*(Band|Banda)\s*:\s*([^\r\n]+)') { $Matches[2].Trim() } else { 'unavailable' }
-$wifi5 = $band -match '5\s*GHz' -or $radio -match '802\.11(ac|ax)'
-Add-Check 'wifi_radio' 'observed' $radio $(if ($radio -eq 'unavailable') { 'unavailable' } else { 'real' })
-Add-Check 'wifi_5ghz' $(if ($wifi5) { 'pass' } else { 'blocked' }) $band $(if ($band -eq 'unavailable') { 'unavailable' } else { 'real' })
 
 $wslIPv4 = (@(& "$env:SystemRoot\System32\wsl.exe" -e sh -lc "ip -o -4 addr show scope global 2>/dev/null | awk 'NR==1 {print `$4}'" 2>$null) -join "`n").Trim()
 $wslMode = 'unavailable'
@@ -118,17 +126,19 @@ $playerListeners = @(Get-NetTCPConnection -State Listen -LocalPort $PlayerTcpPor
 Add-Check 'player_loopback_tcp_3000' $(if ($playerListeners.Count -eq 0) { 'pass' } else { 'blocked' }) `
     $(if ($playerListeners.Count -eq 0) { 'free' } else { 'occupied' }) 'real'
 
-$clockText = (@(& "$env:SystemRoot\System32\w32tm.exe" /query /status 2>$null) -join "`n")
-$clockOffset = if ($clockText -match '(?im)^\s*(Phase Offset|Desfase de fase)\s*:\s*([^\r\n]+)') { $Matches[2].Trim() } else { 'unavailable' }
-Add-Check 'clock_offset' 'observed' $clockOffset $(if ($clockOffset -eq 'unavailable') { 'unavailable' } else { 'real' })
+$clockText = (@(& "$env:SystemRoot\System32\w32tm.exe" /query /status /verbose 2>$null) -join "`n")
+$clockOffsetMs = Convert-TeremoqPhaseOffsetMilliseconds -Text $clockText
+$clockValue = if ($null -eq $clockOffsetMs) { 'unavailable' } else { Format-TeremoqInvariantDecimal -Value $clockOffsetMs }
+Add-Check 'clock_offset' $(if ($null -ne $clockOffsetMs -and [math]::Abs($clockOffsetMs) -le $MaximumClockOffsetMs) { 'pass' } else { 'blocked' }) $clockValue $(if ($null -eq $clockOffsetMs) { 'unavailable' } else { 'real' })
+
 $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-$cpu = if ($computer) { $computer.NumberOfLogicalProcessors } else { 'unavailable' }
+$cpu = if ($computer) { [int]$computer.NumberOfLogicalProcessors } else { 'unavailable' }
 $memory = if ($computer) { [math]::Floor($computer.TotalPhysicalMemory / 1MB) } else { 'unavailable' }
 $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
 $diskMiB = if ($disk) { [math]::Floor($disk.FreeSpace / 1MB) } else { 'unavailable' }
-Add-Check 'logical_cpu' $(if ($computer -and $cpu -ge $MinimumCpuCores) { 'pass' } else { 'blocked' }) $cpu $(if ($computer) { 'real' } else { 'unavailable' })
-Add-Check 'physical_memory_mib' $(if ($computer -and $memory -ge $MinimumMemoryMiB) { 'pass' } else { 'blocked' }) $memory $(if ($computer) { 'real' } else { 'unavailable' })
-Add-Check 'free_disk_mib' $(if ($disk -and $diskMiB -ge $MinimumDiskMiB) { 'pass' } else { 'blocked' }) $diskMiB $(if ($disk) { 'real' } else { 'unavailable' })
+Add-Check 'logical_cpu' $(if ($computer -and [int]$cpu -ge $MinimumCpuCores) { 'pass' } else { 'blocked' }) $cpu $(if ($computer) { 'real' } else { 'unavailable' })
+Add-Check 'physical_memory_mib' $(if ($computer -and [double]$memory -ge $MinimumMemoryMiB) { 'pass' } else { 'blocked' }) $memory $(if ($computer) { 'real' } else { 'unavailable' })
+Add-Check 'free_disk_mib' $(if ($disk -and [double]$diskMiB -ge $MinimumDiskMiB) { 'pass' } else { 'blocked' }) $diskMiB $(if ($disk) { 'real' } else { 'unavailable' })
 
 $pings = @(Test-Connection -ComputerName $ServerIPv4 -Count 4 -ErrorAction SilentlyContinue)
 $rtts = @($pings | ForEach-Object { $_.ResponseTime } | Where-Object { $null -ne $_ })
@@ -139,8 +149,8 @@ Add-Check 'icmp_echo_rtt_average_ms_approximation' 'observed' $rtt $(if ($rtts.C
 Add-Check 'inbound_client_firewall' 'pass' 'not-required;client-initiates-outbound-only' 'configured'
 Add-Check 'preflight_gate' $(if ($script:PreflightBlocked) { 'blocked' } else { 'pass' }) $(if ($script:PreflightBlocked) { 'blocked' } else { 'ready' }) 'real'
 [ordered]@{
-    schema_version = 1
-    report_kind = 'teremoq-lan-windows-preflight-v1'
+    schema_version = 2
+    report_kind = 'teremoq-lan-windows-preflight-v2'
     run_id = $RunId
     source_commit = $SourceCommit
     role = 'client'
@@ -149,5 +159,10 @@ Add-Check 'preflight_gate' $(if ($script:PreflightBlocked) { 'blocked' } else { 
     prefix_length = $PrefixLength
     network_profile = $NetworkProfile
     expected_wsl_mode = $ExpectedWslMode
+    maximum_clock_offset_ms = $MaximumClockOffsetMs
+    minimum_mtu = $MinimumMtu
+    minimum_cpu_cores = $MinimumCpuCores
+    minimum_memory_mib = $MinimumMemoryMiB
+    minimum_disk_mib = $MinimumDiskMiB
     checks = @($checks | ForEach-Object { $_ })
 } | ConvertTo-Json -Depth 5
