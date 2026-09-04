@@ -54,10 +54,28 @@ function Read-TeremoqClosedTsv {
 
 function Get-TeremoqBoundedFileSha256 {
     param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][int]$MaxBytes)
-    $text = Read-TeremoqBoundedUtf8File -Path $Path -MaxBytes $MaxBytes
-    $bytes = (New-Object Text.UTF8Encoding($false, $true)).GetBytes($text)
+    if ($MaxBytes -lt 1 -or $MaxBytes -gt 104857600) { throw 'bounded hash limit is outside 1..104857600 bytes' }
+    $resolved = Assert-TeremoqNonReparseFilePath -Path $Path
+    $item = Get-Item -LiteralPath $resolved -Force
+    if ($item.Length -gt $MaxBytes) { throw "file exceeds ${MaxBytes} bytes: $Path" }
+    $length = $item.Length
+    $write = $item.LastWriteTimeUtc.Ticks
+    $stream = [IO.File]::Open($resolved, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
     $hash = [Security.Cryptography.SHA256]::Create()
-    try { return ([BitConverter]::ToString($hash.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant() } finally { $hash.Dispose() }
+    try {
+        $buffer = New-Object byte[] 65536
+        $total = [Int64]0
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $total += $read
+            if ($total -gt $MaxBytes) { throw 'file exceeded bounded hash limit while reading' }
+            [void]$hash.TransformBlock($buffer, 0, $read, $buffer, 0)
+        }
+        [void]$hash.TransformFinalBlock((New-Object byte[] 0), 0, 0)
+        $final = Get-Item -LiteralPath $resolved -Force
+        if ($total -ne $length -or $final.Length -ne $length -or $final.LastWriteTimeUtc.Ticks -ne $write -or
+            ($final.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "file changed while hashing: $Path" }
+        return ([BitConverter]::ToString($hash.Hash) -replace '-', '').ToLowerInvariant()
+    } finally { $stream.Dispose(); $hash.Dispose() }
 }
 
 function Get-TeremoqGitExecutable {
@@ -189,7 +207,7 @@ function Invoke-TeremoqBoundedNativeProcess {
         [Parameter()][int]$StdoutMaxBytes = 131072,
         [Parameter()][int]$StderrMaxBytes = 131072
     )
-    if ($TimeoutMilliseconds -lt 1000 -or $TimeoutMilliseconds -gt 60000) { throw 'native process timeout is outside 1000..60000 ms' }
+    if ($TimeoutMilliseconds -lt 1000 -or $TimeoutMilliseconds -gt 900000) { throw 'native process timeout is outside 1000..900000 ms' }
     $resolvedFilePath = [IO.Path]::GetFullPath($FilePath)
     $resolvedWorkingDirectory = [IO.Path]::GetFullPath($WorkingDirectory)
     if (-not (Test-Path -LiteralPath $resolvedFilePath -PathType Leaf) -or -not (Test-Path -LiteralPath $resolvedWorkingDirectory -PathType Container)) {
@@ -628,7 +646,7 @@ function Get-TeremoqWebPlayerInventorySha256 {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -gt 104857600) { throw 'Web player inventory contains unsafe file' }
     }
     $inventory = @($items | ForEach-Object {
-        [ordered]@{ path = $_.FullName.Substring($root.Length).TrimStart('\\','/').Replace('\\','/'); bytes = [Int64]$_.Length; sha256 = (Get-TeremoqBoundedFileSha256 -Path (Assert-TeremoqNonReparseFilePath -Path $_.FullName) -MaxBytes 1048576) }
+        [ordered]@{ path = $_.FullName.Substring($root.Length).TrimStart('\\','/').Replace('\\','/'); bytes = [Int64]$_.Length; sha256 = (Get-TeremoqBoundedFileSha256 -Path (Assert-TeremoqNonReparseFilePath -Path $_.FullName) -MaxBytes 104857600) }
     } | Sort-Object @{ Expression = { if ($_.path -eq 'MANIFEST.sha256.json') { 1 } else { 0 } } }, @{ Expression = { $_.path } })
     $json = (ConvertTo-Json -InputObject $inventory -Compress -Depth 3) + "`n"
     $encoding = New-Object Text.UTF8Encoding($false)

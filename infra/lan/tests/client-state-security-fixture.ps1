@@ -33,6 +33,13 @@ try {
             if (-not $replaced) { throw "replacement during $name validation was accepted" }
         } finally { $handle.Dispose() }
     }
+    $binary = Join-Path $root 'raw.bin'
+    $rawBytes = New-Object byte[] 1100000
+    $rawBytes[0] = 0xef; $rawBytes[1] = 0xbb; $rawBytes[2] = 0xbf; $rawBytes[3] = 0x0d; $rawBytes[4] = 0x0a; $rawBytes[5] = 0xff
+    [IO.File]::WriteAllBytes($binary, $rawBytes)
+    $expectedRaw = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ((Get-TeremoqBoundedFileSha256 -Path $binary -MaxBytes 104857600) -cne $expectedRaw) { throw 'raw binary SHA-256 was decoded or changed' }
+    try { Get-TeremoqBoundedFileSha256 -Path $binary -MaxBytes 1048576 | Out-Null; throw 'oversized bounded binary accepted' } catch { if ($_.Exception.Message -match 'oversized bounded binary accepted') { throw } }
     $target = Join-Path $root 'target'
     $alias = Join-Path $root 'alias'
     New-Item -ItemType Directory -Path $target -Force | Out-Null

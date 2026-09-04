@@ -31,6 +31,11 @@ param([string]$First, [string]$Second)
     if ($result.ExitCode -ne 0 -or $result.Stdout -ne $expected -or $result.Stderr -ne '') {
         throw 'PowerShell 5 native argv round-trip did not preserve spaces and metacharacters'
     }
+    $warningScript = Join-Path $scratch 'warning.ps1'
+    Set-Content -LiteralPath $warningScript -Encoding UTF8 -Value "[Console]::Out.Write('ok'); [Console]::Error.Write('npm warning fixture')"
+    $warning = Invoke-TeremoqBoundedNativeProcess -FilePath $nativeShell -WorkingDirectory $scratch `
+        -Arguments @('-NoProfile', '-NonInteractive', '-File', $warningScript) -TimeoutMilliseconds 5000 -StdoutMaxBytes 1024 -StderrMaxBytes 1024
+    if ($warning.ExitCode -ne 0 -or $warning.Stdout -ne 'ok' -or $warning.Stderr -ne 'npm warning fixture') { throw 'bounded successful stderr fixture was not preserved' }
     $floodScript = Join-Path $scratch 'flood.ps1'
     Set-Content -LiteralPath $floodScript -Encoding UTF8 -Value "[Console]::Out.Write(('x' * 140000)); [Console]::Error.Write(('y' * 140000))"
     $watch = [Diagnostics.Stopwatch]::StartNew()

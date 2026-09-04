@@ -51,8 +51,10 @@ if (-not $hostPath -or -not $hostPath.EndsWith('powershell.exe', [StringComparis
 $arguments = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$builder,'-CheckoutRoot',$checkout.CheckoutRoot,'-StateRoot',$state,'-RepositoryUrl',$RepositoryUrl,'-RepositoryRef',$RepositoryRef,'-SourceCommit',$ExpectedCommit)
 if ($RefreshDependencies) { $arguments += '-RefreshDependencies' }
 if ($Offline) { $arguments += '-Offline' }
-$result = Invoke-TeremoqBoundedNativeProcess -FilePath $hostPath -WorkingDirectory $checkout.CheckoutRoot -Arguments $arguments -TimeoutMilliseconds 60000 -StdoutMaxBytes 131072 -StderrMaxBytes 131072
-if ($result.ExitCode -ne 0 -or -not [string]::IsNullOrWhiteSpace($result.Stderr)) { throw 'Web Git builder failed or emitted stderr' }
+$result = Invoke-TeremoqBoundedNativeProcess -FilePath $hostPath -WorkingDirectory $checkout.CheckoutRoot -Arguments $arguments -TimeoutMilliseconds 900000 -StdoutMaxBytes 131072 -StderrMaxBytes 131072
+# npm emits bounded warnings on stderr even when its build is successful; stdout's
+# exact closed receipt and the exit status, not silent stderr, determine success.
+if ($result.ExitCode -ne 0) { throw 'Web Git builder failed' }
 $parsed = ConvertFrom-TeremoqWebBuilderReceipt -Output $result.Stdout -ExpectedCommit $ExpectedCommit
 if (-not (Test-Path -LiteralPath $state -PathType Container)) { throw 'Web Git builder did not create StateRoot' }
 [void](Get-TeremoqNonReparseDirectoryPath -Path $state)
