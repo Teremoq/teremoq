@@ -88,6 +88,10 @@ try {
     Invoke-TestGit -WorkingDirectory $seed -Arguments @('config', 'user.email', 'test@example.invalid') | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $seed 'infra') -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $source 'infra\lan') -Destination (Join-Path $seed 'infra\lan') -Recurse
+    New-Item -ItemType Directory -Path (Join-Path $seed 'supervisor-web') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $source '.gitattributes') -Destination (Join-Path $seed '.gitattributes')
+    Copy-Item -LiteralPath (Join-Path $source 'supervisor-web\package.json') -Destination (Join-Path $seed 'supervisor-web\package.json')
+    Copy-Item -LiteralPath (Join-Path $source 'supervisor-web\package-lock.json') -Destination (Join-Path $seed 'supervisor-web\package-lock.json')
     [IO.File]::WriteAllText((Join-Path $seed 'git-e2e-marker.txt'), "one`n", (New-Object Text.UTF8Encoding($false)))
     Invoke-TestGit -WorkingDirectory $seed -Arguments @('add', '.') | Out-Null
     Invoke-TestGit -WorkingDirectory $seed -Arguments @('commit', '-m', 'first') | Out-Null
@@ -95,11 +99,18 @@ try {
     $first = Invoke-TestGit -WorkingDirectory $seed -Arguments @('rev-parse', 'HEAD')
 
     $bareUrl = 'file:///' + ($bare.Replace('\','/'))
-    $env:GIT_CONFIG_COUNT = '1'
+    $env:GIT_CONFIG_COUNT = '2'
     $env:GIT_CONFIG_KEY_0 = "url.$bareUrl.insteadOf"
     $env:GIT_CONFIG_VALUE_0 = 'https://github.com/Teremoq/teremoq'
+    $env:GIT_CONFIG_KEY_1 = 'core.autocrlf'
+    $env:GIT_CONFIG_VALUE_1 = 'true'
     & (Join-Path $source 'infra\lan\client\Install-LanClient.ps1') -CheckoutRoot $checkout `
         -RepositoryUrl 'https://github.com/Teremoq/teremoq' -RepositoryRef $repositoryRef -ExpectedCommit $first -RepositorySubdirectory 'infra/lan'
+    foreach ($relative in @('supervisor-web\package.json', 'supervisor-web\package-lock.json')) {
+        $sourceSha = (Get-FileHash -LiteralPath (Join-Path $source $relative) -Algorithm SHA256).Hash
+        $checkoutSha = (Get-FileHash -LiteralPath (Join-Path $checkout $relative) -Algorithm SHA256).Hash
+        if ($checkoutSha -cne $sourceSha) { throw "$relative changed bytes under core.autocrlf=true" }
+    }
     New-TestClientState -Root $state -Commit $first -RepositoryRef $repositoryRef
     & (Join-Path $checkout 'infra\lan\client\Update-LanClient.ps1') -CheckoutRoot $checkout -StateRoot $state -ExpectedCommit $first
     $stateBefore = (Get-FileHash -LiteralPath (Join-Path $state 'SHA256SUMS') -Algorithm SHA256).Hash
@@ -138,5 +149,7 @@ try {
     Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue
     Remove-Item Env:GIT_CONFIG_KEY_0 -ErrorAction SilentlyContinue
     Remove-Item Env:GIT_CONFIG_VALUE_0 -ErrorAction SilentlyContinue
+    Remove-Item Env:GIT_CONFIG_KEY_1 -ErrorAction SilentlyContinue
+    Remove-Item Env:GIT_CONFIG_VALUE_1 -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
