@@ -72,4 +72,61 @@ Restore-ProcessEnvironment -Snapshot $snapshot
 if (Test-Path "Env:$canaryName") { throw 'new process environment entry survived restoration' }
 if ($env:PATH -cne $originalPath) { throw 'PATH was not restored exactly' }
 
+$configRoot = Join-Path $env:TEMP ('teremoq-config-lock-' + [Guid]::NewGuid().ToString('N'))
+$gitDirectory = Join-Path $configRoot '.git'
+[void][IO.Directory]::CreateDirectory((Join-Path $gitDirectory 'objects'))
+[void][IO.Directory]::CreateDirectory((Join-Path $gitDirectory 'refs'))
+[IO.File]::WriteAllText(
+    (Join-Path $gitDirectory 'HEAD'),
+    'ref: refs/heads/test' + [Environment]::NewLine
+)
+$validConfig = @'
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	bare = false
+	logallrefupdates = true
+	symlinks = false
+	ignorecase = true
+[remote "origin"]
+	url = https://github.com/Teremoq/teremoq
+	fetch = +refs/heads/test:refs/remotes/origin/test
+[branch "test"]
+	remote = origin
+	merge = refs/heads/test
+'@
+$injectedTransportConfig = @'
+[http]
+	sslVerify = false
+'@
+$configPath = Join-Path $gitDirectory 'config'
+[IO.File]::WriteAllText($configPath, $validConfig)
+$configStream = [IO.File]::Open($configPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+    $script:GitExecutable = Assert-RegularFile -Path (Join-Path $env:ProgramFiles 'Git\cmd\git.exe')
+    $script:GitExecutableSha256 = (Get-FileHash -LiteralPath $script:GitExecutable -Algorithm SHA256).Hash
+    $configValidation = @{
+        CheckoutRoot = $configRoot
+        ConfigStream = $configStream
+        Branch = 'test'
+        RepositoryUrl = 'https://github.com/Teremoq/teremoq'
+        RepositoryRef = 'refs/heads/test'
+        FetchSpec = '+refs/heads/test:refs/remotes/origin/test'
+    }
+    Assert-LockedLocalGitConfig @configValidation
+} finally {
+    $configStream.Dispose()
+}
+[IO.File]::WriteAllText($configPath, $validConfig + $injectedTransportConfig)
+$configStream = [IO.File]::Open($configPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+    $configValidation.ConfigStream = $configStream
+    $rejected = $false
+    try { Assert-LockedLocalGitConfig @configValidation } catch { $rejected = $true }
+    if (-not $rejected) { throw 'injected local Git transport configuration was accepted' }
+} finally {
+    $configStream.Dispose()
+    [IO.Directory]::Delete($configRoot, $true)
+}
+
 Write-Output 'client-bootstrap-primitives-fixture: pass'

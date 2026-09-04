@@ -209,6 +209,36 @@ function Restore-ProcessEnvironment {
     }
 }
 
+function Assert-LockedLocalGitConfig {
+    param([Parameter(Mandatory = $true)][string]$CheckoutRoot,
+          [Parameter(Mandatory = $true)][IO.FileStream]$ConfigStream,
+          [Parameter(Mandatory = $true)][string]$Branch,
+          [Parameter(Mandatory = $true)][string]$RepositoryUrl,
+          [Parameter(Mandatory = $true)][string]$RepositoryRef,
+          [Parameter(Mandatory = $true)][string]$FetchSpec)
+    $expectedLocalConfig = @(
+        "branch.$Branch.merge=$RepositoryRef",
+        "branch.$Branch.remote=origin",
+        'core.bare=false',
+        'core.filemode=false',
+        'core.ignorecase=true',
+        'core.logallrefupdates=true',
+        'core.repositoryformatversion=0',
+        'core.symlinks=false',
+        "remote.origin.fetch=$FetchSpec",
+        "remote.origin.url=$RepositoryUrl"
+    ) | Sort-Object
+    $actualLocalConfig = @(
+        (Get-ExactGitOutput -WorkingDirectory $CheckoutRoot -Arguments @('config', '--local', '--list')) -split [char]10 |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    ) | Sort-Object
+    $configDifferences = @(Compare-Object -CaseSensitive $expectedLocalConfig $actualLocalConfig)
+    if ($actualLocalConfig.Count -ne $expectedLocalConfig.Count -or $configDifferences.Count -ne 0) {
+        throw 'La configuracion Git local contiene claves inesperadas'
+    }
+    if ($ConfigStream.Length -gt 4096) { throw 'La configuracion Git local supera el limite permitido' }
+}
+
 $hostPath = (Get-Process -Id $PID).Path
 if (-not $hostPath -or -not $hostPath.EndsWith('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Ejecuta este archivo con Windows PowerShell, no desde WSL ni PowerShell Core'
@@ -344,6 +374,26 @@ try {
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('remote', 'add', 'origin', $RepositoryUrl))
     $fetchSpec = '+{0}:refs/remotes/origin/{1}' -f $RepositoryRef, $Branch
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('config', 'remote.origin.fetch', $fetchSpec))
+    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('config', "branch.$Branch.remote", 'origin'))
+    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('config', "branch.$Branch.merge", $RepositoryRef))
+
+    $localConfigPath = Join-Path $gitDirectory 'config'
+    $localConfigStream = [IO.File]::Open(
+        (Assert-RegularFile -Path $localConfigPath),
+        [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read
+    )
+    $isolationStreams.Add($localConfigStream)
+    Assert-LockedHandlePath -Stream $localConfigStream -ExpectedPath $localConfigPath
+    $configValidation = @{
+        CheckoutRoot = $checkoutRoot
+        ConfigStream = $localConfigStream
+        Branch = $Branch
+        RepositoryUrl = $RepositoryUrl
+        RepositoryRef = $RepositoryRef
+        FetchSpec = $fetchSpec
+    }
+    Assert-LockedLocalGitConfig @configValidation
+
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('fetch', '--quiet', '--no-tags', 'origin', $fetchSpec))
     $replaceRefs = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @(
         'for-each-ref', '--format=%(refname)', 'refs/replace'
@@ -355,15 +405,16 @@ try {
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('cat-file', '-e', ('{0}^{commit}' -f $ExpectedCommit)))
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('merge-base', '--is-ancestor', $ExpectedCommit, $remoteTip))
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('checkout', '--quiet', '-b', $Branch, $ExpectedCommit))
-    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('branch', '--set-upstream-to', "origin/$Branch", $Branch))
 
     $remotes = @((Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('remote')) -split [char]10)
     $remoteUrl = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('remote', 'get-url', 'origin')
     $head = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('rev-parse', 'HEAD')
     $checkedOutBranch = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')
+    $upstream = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('rev-parse', '@{upstream}')
     $dirty = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
     if ($remotes.Count -ne 1 -or $remotes[0] -cne 'origin' -or $remoteUrl -cne $RepositoryUrl -or
-        $head -cne $ExpectedCommit -or $checkedOutBranch -cne $Branch -or -not [string]::IsNullOrEmpty($dirty)) {
+        $head -cne $ExpectedCommit -or $checkedOutBranch -cne $Branch -or $upstream -cne $remoteTip -or
+        -not [string]::IsNullOrEmpty($dirty)) {
         throw 'El checkout no coincide exactamente con la version LAN aprobada'
     }
 
