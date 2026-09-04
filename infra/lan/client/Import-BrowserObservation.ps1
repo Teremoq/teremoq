@@ -3,13 +3,14 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$SourcePath,
-    [Parameter(Mandatory = $true)][string]$PackageRoot,
+    [Parameter(Mandatory = $true)][string]$StateRoot,
     [Parameter(Mandatory = $true)][string]$EvidenceRoot,
     [Parameter(Mandatory = $true)][string]$RunId,
     [Parameter(Mandatory = $true)][ValidateSet(1, 5, 10, 25)][int]$Level
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
+. (Join-Path $PSScriptRoot 'Client-Distribution.ps1')
 $exactName = 'local-browser-observation-user-exported.json'
 if ($RunId -notmatch '^lan-[a-z0-9][a-z0-9-]{0,31}$') { throw 'invalid RunId' }
 $source = [IO.Path]::GetFullPath($SourcePath)
@@ -31,27 +32,13 @@ try {
     if ($sourceStream.ReadByte() -ne -1) { throw 'browser export exceeded its opened length' }
     $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
     $sourceText = $strictUtf8.GetString($sourceBytes)
-$package = [IO.Path]::GetFullPath($PackageRoot)
+$state = Get-TeremoqLanStateContext -StateRoot $StateRoot
 $evidenceRootFull = [IO.Path]::GetFullPath($EvidenceRoot)
-foreach ($directory in @($package, $evidenceRootFull)) {
-    if (-not (Test-Path -LiteralPath $directory -PathType Container) -or ((Get-Item -LiteralPath $directory).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'package/evidence roots must be existing non-reparse directories' }
+foreach ($directory in @($state.StateRoot, $evidenceRootFull)) {
+    if (-not (Test-Path -LiteralPath $directory -PathType Container) -or ((Get-Item -LiteralPath $directory).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'state/evidence roots must be existing non-reparse directories' }
 }
-$version = @{}
-foreach ($line in Get-Content -LiteralPath (Join-Path $package 'VERSION.tsv')) {
-    $fields = $line -split "`t", 3
-    if ($fields.Count -eq 2 -and -not $version.ContainsKey($fields[0])) { $version[$fields[0]] = $fields[1] }
-}
-$lanConfigPath = Join-Path $package 'LAN-CONFIG.json'
-if (-not (Test-Path -LiteralPath $lanConfigPath -PathType Leaf) -or (Get-Item -LiteralPath $lanConfigPath).Length -gt 512 -or
-    (Get-FileHash -LiteralPath $lanConfigPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $version.lan_config_sha256) { throw 'package LAN configuration is absent or not bound by VERSION.tsv' }
-if (((Get-Item -LiteralPath $lanConfigPath).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'package LAN configuration may not be a symlink/reparse point' }
-$lanConfig = Get-Content -LiteralPath $lanConfigPath -Raw | ConvertFrom-Json
-$lanConfigKeys = @($lanConfig.PSObject.Properties.Name)
-if ($lanConfigKeys.Count -ne 7 -or @($lanConfigKeys | Where-Object { @('schema_version', 'run_id', 'source_commit', 'relay_url', 'fingerprint_sha256', 'prefix_length', 'namespace') -notcontains $_ }).Count -ne 0 -or
-    $lanConfig.schema_version -ne 1 -or $lanConfig.run_id -ne $version.run_id -or $lanConfig.source_commit -ne $version.source_commit -or
-    $lanConfig.namespace -isnot [string] -or $lanConfig.namespace.Length -gt 256 -or
-    $lanConfig.namespace -notmatch '^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$' -or
-    @($lanConfig.namespace.Split('/') | Where-Object { $_ -in @('.', '..') }).Count -ne 0) { throw 'LAN configuration closed schema/run/commit/namespace binding mismatch' }
+$version = $state.Version
+$lanConfig = $state.LanConfig
 function Assert-ExactProperties($Object, [string[]]$Expected, [string]$Label) {
     if ($null -eq $Object) { throw "$Label must be an object" }
     $actual = @($Object.PSObject.Properties.Name)

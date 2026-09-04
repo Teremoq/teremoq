@@ -126,7 +126,124 @@ function Test-TeremoqAllowedWslMountWarningLine {
     return $Line -cmatch '^WSL: Failed to mount [A-Z]:\\, see dmesg for more details\.$'
 }
 
-function Test-TeremoqCanonicalGlobalIPv4 {
+function Convert-TeremoqWindowsArgument {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+    if ($Value -eq '') { return '""' }
+    if ($Value -cnotmatch '[\s"]') { return $Value }
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            $backslashes += 1
+            continue
+        }
+        if ($character -eq '"') {
+            [void]$builder.Append('\' * (($backslashes * 2) + 1))
+            [void]$builder.Append('"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append('\' * $backslashes)
+            $backslashes = 0
+        }
+        [void]$builder.Append($character)
+    }
+    if ($backslashes -gt 0) {
+        [void]$builder.Append('\' * ($backslashes * 2))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Convert-TeremoqWindowsCommandLine {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    if ($Arguments.Count -lt 1 -or $Arguments.Count -gt 16) { throw 'native process argument count is outside 1..16' }
+    return (($Arguments | ForEach-Object { Convert-TeremoqWindowsArgument -Value $_ }) -join ' ')
+}
+
+function Read-TeremoqBoundedUtf8StreamCapture {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.Stream]$Stream,
+        [Parameter(Mandatory = $true)][int]$MaxBytes
+    )
+    if ($MaxBytes -lt 1 -or $MaxBytes -gt 65536) { throw 'bounded stream limit is outside 1..65536 bytes' }
+    $buffer = New-Object byte[] 256
+    $bytes = New-Object 'System.Collections.Generic.List[byte]'
+    while ($true) {
+        $read = $Stream.Read($buffer, 0, $buffer.Length)
+        if ($read -le 0) { break }
+        for ($index = 0; $index -lt $read; $index += 1) { $bytes.Add($buffer[$index]) }
+        if ($bytes.Count -gt $MaxBytes) {
+            return [pscustomobject]@{ Oversized = $true; Text = '' }
+        }
+    }
+    $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+    return [pscustomobject]@{
+        Oversized = $false
+        Text = $strictUtf8.GetString($bytes.ToArray())
+    }
+}
+
+function Invoke-TeremoqBoundedNativeProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [Parameter(Mandatory = $true)][int]$StdoutMaxBytes,
+        [Parameter(Mandatory = $true)][int]$StderrMaxBytes,
+        [Parameter()][int]$TimeoutMilliseconds = 15000
+    )
+    if ($TimeoutMilliseconds -lt 1000 -or $TimeoutMilliseconds -gt 60000) {
+        throw 'native process timeout is outside 1000..60000 ms'
+    }
+    $resolvedPath = [IO.Path]::GetFullPath($FilePath)
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        return [pscustomobject]@{
+            Outcome = 'launch-failed'; ExitCode = -1; Stdout = ''; Stderr = ''
+        }
+    }
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $resolvedPath
+    $startInfo.Arguments = Convert-TeremoqWindowsCommandLine -Arguments $ArgumentList
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            return [pscustomobject]@{ Outcome = 'launch-failed'; ExitCode = -1; Stdout = ''; Stderr = '' }
+        }
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            try { $process.Kill() } catch { return [pscustomobject]@{ Outcome = 'kill-failed'; ExitCode = -1; Stdout = ''; Stderr = '' } }
+            if (-not $process.WaitForExit(5000)) {
+                return [pscustomobject]@{ Outcome = 'kill-timeout'; ExitCode = -1; Stdout = ''; Stderr = '' }
+            }
+            return [pscustomobject]@{ Outcome = 'timeout'; ExitCode = -1; Stdout = ''; Stderr = '' }
+        }
+        $stdoutCapture = Read-TeremoqBoundedUtf8StreamCapture -Stream $process.StandardOutput.BaseStream -MaxBytes $StdoutMaxBytes
+        $stderrCapture = Read-TeremoqBoundedUtf8StreamCapture -Stream $process.StandardError.BaseStream -MaxBytes $StderrMaxBytes
+        if ($stdoutCapture.Oversized -or $stderrCapture.Oversized) {
+            return [pscustomobject]@{ Outcome = 'oversized'; ExitCode = $process.ExitCode; Stdout = ''; Stderr = '' }
+        }
+        return [pscustomobject]@{
+            Outcome = 'ok'
+            ExitCode = $process.ExitCode
+            Stdout = $stdoutCapture.Text
+            Stderr = $stderrCapture.Text
+        }
+    } catch [System.Text.DecoderFallbackException] {
+        return [pscustomobject]@{ Outcome = 'encoding-invalid'; ExitCode = -1; Stdout = ''; Stderr = '' }
+    } catch {
+        return [pscustomobject]@{ Outcome = 'unavailable'; ExitCode = -1; Stdout = ''; Stderr = '' }
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Test-TeremoqCanonicalPrivateUnicastIPv4 {
     param([Parameter(Mandatory = $true)][string]$Value)
     $parsed = $null
     if (-not [Net.IPAddress]::TryParse($Value, [ref]$parsed) -or
@@ -135,10 +252,27 @@ function Test-TeremoqCanonicalGlobalIPv4 {
         return $false
     }
     $bytes = $parsed.GetAddressBytes()
-    if ($bytes[0] -eq 0 -or $Value -eq '255.255.255.255' -or $parsed.IsIPv6Multicast -or [Net.IPAddress]::IsLoopback($parsed)) {
+    if ([Net.IPAddress]::IsLoopback($parsed) -or $bytes[0] -eq 0 -or $Value -eq '255.255.255.255') {
         return $false
     }
-    return $true
+    if ($bytes[0] -ge 224 -or (($bytes[0] -eq 169) -and ($bytes[1] -eq 254)) -or $bytes[0] -ge 240) { return $false }
+    return ($bytes[0] -eq 10) -or ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) -or ($bytes[0] -eq 192 -and $bytes[1] -eq 168)
+}
+
+function Test-TeremoqHostAddressInPrefix {
+    param(
+        [Parameter(Mandatory = $true)][string]$IPv4,
+        [Parameter(Mandatory = $true)][int]$PrefixLength
+    )
+    if ($PrefixLength -lt 8 -or $PrefixLength -gt 30) { return $false }
+    $parts = $IPv4.Split('.')
+    if ($parts.Count -ne 4) { return $false }
+    [int64]$value = 0
+    foreach ($part in $parts) { $value = (($value -shl 8) -bor [int64][int]$part) -band 0xffffffffL }
+    [int64]$mask = ((-1L -shl (32 - $PrefixLength)) -band 0xffffffffL)
+    [int64]$hostMask = ((-bnot $mask) -band 0xffffffffL)
+    $hostBits = $value -band $hostMask
+    return $hostBits -ne 0 -and $hostBits -ne $hostMask
 }
 
 function Get-TeremoqWslIpv4ModeFromCommandResult {
@@ -159,7 +293,8 @@ function Get-TeremoqWslIpv4ModeFromCommandResult {
         return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'stdout-invalid' }
     }
     $wslIpv4 = $stdoutMatch.Groups['ip'].Value
-    if (-not (Test-TeremoqCanonicalGlobalIPv4 -Value $wslIpv4)) {
+    $prefixLength = [int]$stdoutMatch.Groups['prefix'].Value
+    if (-not (Test-TeremoqCanonicalPrivateUnicastIPv4 -Value $wslIpv4) -or -not (Test-TeremoqHostAddressInPrefix -IPv4 $wslIpv4 -PrefixLength $prefixLength)) {
         return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'stdout-invalid' }
     }
     $warningCount = 0
@@ -194,35 +329,17 @@ function Invoke-TeremoqClientWslIpv4ModeQuery {
     if ($TimeoutMilliseconds -lt 1000 -or $TimeoutMilliseconds -gt 60000) {
         throw 'WSL IPv4 query timeout is outside 1000..60000 ms'
     }
-    $stdoutPath = [System.IO.Path]::GetTempFileName()
-    $stderrPath = [System.IO.Path]::GetTempFileName()
-    try {
-        try {
-            $process = Start-Process -FilePath "$env:SystemRoot\System32\wsl.exe" `
-                -ArgumentList @('-e', 'sh', '-lc', "ip -o -4 addr show scope global 2>/dev/null | awk 'NR==1 {print `$4}'") `
-                -PassThru `
-                -RedirectStandardOutput $stdoutPath `
-                -RedirectStandardError $stderrPath `
-                -ErrorAction Stop
-        } catch {
-            return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'launch-failed' }
-        }
-        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-            try { $process.Kill() } catch {}
-            return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'timeout' }
-        }
-        $process.WaitForExit()
-        $stdout = Read-TeremoqBoundedUtf8File -Path $stdoutPath -MaxBytes 256
-        $stderr = Read-TeremoqBoundedUtf8File -Path $stderrPath -MaxBytes 4096
-        return Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 $ClientIPv4 -ExitCode $process.ExitCode -Stdout $stdout -Stderr $stderr
-    } catch {
-        return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'unavailable' }
-    } finally {
-        foreach ($temporaryPath in @($stdoutPath, $stderrPath)) {
-            if ($temporaryPath -and (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
-                Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
-            }
-        }
+    $result = Invoke-TeremoqBoundedNativeProcess -FilePath "$env:SystemRoot\System32\wsl.exe" `
+        -ArgumentList @('-e', 'sh', '-lc', "ip -o -4 addr show scope global 2>/dev/null | awk 'NR==1 {print `$4}'") `
+        -StdoutMaxBytes 256 -StderrMaxBytes 4096 -TimeoutMilliseconds $TimeoutMilliseconds
+    switch ($result.Outcome) {
+        'ok' { return Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 $ClientIPv4 -ExitCode $result.ExitCode -Stdout $result.Stdout -Stderr $result.Stderr }
+        'oversized' { return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'oversized' } }
+        'launch-failed' { return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'launch-failed' } }
+        'timeout' { return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'timeout' } }
+        'kill-failed' { return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'kill-failed' } }
+        'kill-timeout' { return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'kill-timeout' } }
+        default { return [pscustomobject]@{ Mode = 'unavailable'; WarningCount = 0; StderrClassification = 'unavailable' } }
     }
 }
 

@@ -326,19 +326,38 @@ infra/lan/package-client.sh --repo "$PWD" --commit FULL_LOCAL_COMMIT \
   --player-dir /ABSOLUTE/REVIEWED/PLAYER-ARTIFACT \
   --certificate /ABSOLUTE/RUNTIME/relay/cert.pem \
   --fingerprint /ABSOLUTE/RUNTIME/relay/fingerprint.sha256 \
+  --git-url https://github.com/Teremoq/teremoq \
+  --git-ref refs/heads/EXPLICIT-LAN-BRANCH \
+  --git-subdirectory infra/lan \
   --output-dir /ABSOLUTE/PRIVATE/OUTPUT
 ```
 
-The deterministic package has commit/version, endpoint, per-file SHA-256,
-archive SHA-256 and no key/token/password/`.env`. It also contains a closed
-public `LAN-CONFIG.json`, hash-bound by `VERSION.tsv`, with the exact relay URL,
-pin, prefix and configured MoQT namespace segments. The approved
-`moq_namespace` is set explicitly in the Gateway runtime and serialized as
-the canonical path string `"teremoq/live"` for the contractual default; it is never independently
-defaulted by the client. This Platform-only branch deliberately remains
-`pending_owner_integration`; packaging fails until the reviewed nine-key Web
-launcher and versioned manifest are rebuilt from the exact clean integrated
-commit. No 1/5/10/25 start is claimed before that gate passes.
+This command no longer creates a USB/tar package. It prepares an external,
+non-versioned client state directory with commit/version identity, per-file
+SHA-256, a closed public `LAN-CONFIG.json`, the reviewed `player/` artifact,
+the relay public leaf/pin and a closed `CLIENT-COMPATIBILITY.tsv`. That
+compatibility contract binds the exact repository URL, explicit LAN branch ref,
+repository subdirectory, allowed client commit, source commit, player
+`package_version` and the SHA-256 of the launcher contract, player manifest and
+`LAN-CONFIG.json`. The approved `moq_namespace` is set explicitly in the
+Gateway runtime and serialized as the canonical path string `"teremoq/live"`;
+the client never invents a default namespace.
+
+The operator workflow is now split cleanly:
+
+- Git checkout: install once with `Install-LanClient.ps1`, update only with
+  `Update-LanClient.ps1` and a validated `git fetch` + `git merge --ff-only`.
+- External state: keep `VERSION.tsv`, `LAN-CONFIG.json`,
+  `CLIENT-COMPATIBILITY.tsv`, `player/`, `public-identity/` and evidence roots
+  outside the checkout so updates cannot overwrite them.
+
+This versioned boundary is intentionally ready for a later move to
+`teremoq-client`: the operator workflow stays the same and only the
+repository/ref/subdirectory contract changes. This Platform-only branch
+deliberately remains `pending_owner_integration`; preparation fails until the
+reviewed nine-key Web launcher and versioned manifest are rebuilt from the
+exact clean integrated commit. No 1/5/10/25 start is claimed before that gate
+passes.
 
 During each later real level, run the bounded collector on both Windows hosts:
 

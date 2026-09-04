@@ -149,6 +149,39 @@ if (-not (Test-TeremoqAllowedWslMountWarningLine -Line 'WSL: Failed to mount F:\
 if (Test-TeremoqAllowedWslMountWarningLine -Line 'WSL: Failed to mount F:\Users\, see dmesg for more details.') {
     throw 'non-canonical WSL mount path was accepted'
 }
+$nativeShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if ($nativeShell) {
+    $nativeScratch = Join-Path ([System.IO.Path]::GetTempPath()) ("teremoq-native-process-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $nativeScratch -Force | Out-Null
+    try {
+        $argvScript = Join-Path $nativeScratch 'argv.ps1'
+        Set-Content -LiteralPath $argvScript -Encoding UTF8 -Value 'param([string]$Value) [Console]::Out.Write($Value)'
+        $argvRoundTrip = Invoke-TeremoqBoundedNativeProcess -FilePath $nativeShell `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $argvScript, 'alpha beta') `
+            -StdoutMaxBytes 256 -StderrMaxBytes 256 -TimeoutMilliseconds 5000
+        if ($argvRoundTrip.Outcome -ne 'ok' -or $argvRoundTrip.ExitCode -ne 0 -or $argvRoundTrip.Stdout -ne 'alpha beta' -or $argvRoundTrip.Stderr -ne '') {
+            throw 'native argv round-trip did not preserve the single spaced argument'
+        }
+        $oversizedScript = Join-Path $nativeScratch 'oversized.ps1'
+        Set-Content -LiteralPath $oversizedScript -Encoding UTF8 -Value "[Console]::Out.Write(('x' * 300))"
+        $oversizedOutput = Invoke-TeremoqBoundedNativeProcess -FilePath $nativeShell `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $oversizedScript) `
+            -StdoutMaxBytes 256 -StderrMaxBytes 256 -TimeoutMilliseconds 5000
+        if ($oversizedOutput.Outcome -ne 'oversized') {
+            throw 'oversized native stdout was not rejected'
+        }
+        $timeoutScript = Join-Path $nativeScratch 'timeout.ps1'
+        Set-Content -LiteralPath $timeoutScript -Encoding UTF8 -Value 'Start-Sleep -Seconds 10'
+        $timeoutOutput = Invoke-TeremoqBoundedNativeProcess -FilePath $nativeShell `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-File', $timeoutScript) `
+            -StdoutMaxBytes 256 -StderrMaxBytes 256 -TimeoutMilliseconds 1000
+        if ($timeoutOutput.Outcome -ne 'timeout') {
+            throw 'timed out native process was not terminated and reported'
+        }
+    } finally {
+        Remove-Item -LiteralPath $nativeScratch -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 $wslNatWithAllowedWarning = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "172.23.80.2/20`n" -Stderr "WSL: Failed to mount F:\, see dmesg for more details.`r`n"
 if ($wslNatWithAllowedWarning.Mode -ne 'nat' -or $wslNatWithAllowedWarning.WarningCount -ne 1 -or $wslNatWithAllowedWarning.StderrClassification -ne 'allowed-mount-warning-redacted') {
     throw 'allowed WSL mount warning did not preserve NAT classification'
@@ -176,6 +209,26 @@ if ($wslMultiple.Mode -ne 'unavailable' -or $wslMultiple.StderrClassification -n
 $wslMalformed = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "172.23.80.2`n" -Stderr ''
 if ($wslMalformed.Mode -ne 'unavailable' -or $wslMalformed.StderrClassification -ne 'stdout-invalid') {
     throw 'malformed WSL stdout was accepted'
+}
+$wslPublic = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "8.8.8.8/24`n" -Stderr ''
+if ($wslPublic.Mode -ne 'unavailable' -or $wslPublic.StderrClassification -ne 'stdout-invalid') {
+    throw 'public WSL IPv4 was accepted as NAT'
+}
+$wslMulticast = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "224.0.0.1/24`n" -Stderr ''
+if ($wslMulticast.Mode -ne 'unavailable' -or $wslMulticast.StderrClassification -ne 'stdout-invalid') {
+    throw 'multicast WSL IPv4 was accepted as NAT'
+}
+$wslLinkLocal = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "169.254.1.1/16`n" -Stderr ''
+if ($wslLinkLocal.Mode -ne 'unavailable' -or $wslLinkLocal.StderrClassification -ne 'stdout-invalid') {
+    throw 'link-local WSL IPv4 was accepted as NAT'
+}
+$wslReserved = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "240.0.0.1/4`n" -Stderr ''
+if ($wslReserved.Mode -ne 'unavailable' -or $wslReserved.StderrClassification -ne 'stdout-invalid') {
+    throw 'reserved WSL IPv4 was accepted as NAT'
+}
+$wslBroadcast = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout "172.23.80.255/24`n" -Stderr ''
+if ($wslBroadcast.Mode -ne 'unavailable' -or $wslBroadcast.StderrClassification -ne 'stdout-invalid') {
+    throw 'broadcast WSL IPv4 was accepted as NAT'
 }
 $wslOversized = Get-TeremoqWslIpv4ModeFromCommandResult -ClientIPv4 '192.168.77.20' -ExitCode 0 -Stdout ('1' * 257) -Stderr ''
 if ($wslOversized.Mode -ne 'unavailable' -or $wslOversized.StderrClassification -ne 'oversized') {
