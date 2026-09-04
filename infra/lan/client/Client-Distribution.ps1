@@ -299,6 +299,17 @@ function Invoke-TeremoqGit {
     return ($result.Stdout -replace "`r", '').TrimEnd("`n")
 }
 
+function Get-TeremoqOptionalGitConfigValues {
+    param([Parameter(Mandatory = $true)][string]$CheckoutRoot, [Parameter(Mandatory = $true)][string]$Key)
+    $gitPath = Get-TeremoqGitExecutable
+    if (-not $gitPath) { throw 'Git for Windows is required and was not found' }
+    $result = Invoke-TeremoqBoundedNativeProcess -FilePath $gitPath -WorkingDirectory $CheckoutRoot `
+        -Arguments @('config', '--get-all', $Key) -TimeoutMilliseconds 30000 -StdoutMaxBytes 131072 -StderrMaxBytes 131072
+    if ($result.ExitCode -eq 1 -and [string]::IsNullOrWhiteSpace($result.Stdout) -and [string]::IsNullOrWhiteSpace($result.Stderr)) { return @() }
+    if ($result.ExitCode -ne 0) { throw 'Git config query failed' }
+    return @(($result.Stdout -replace "`r", '').TrimEnd("`n") -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+}
+
 function Test-TeremoqSafeRelativeRepositorySubdirectory {
     param([Parameter(Mandatory = $true)][string]$Value)
     if ($Value.Length -lt 1 -or $Value.Length -gt 128) { return $false }
@@ -553,13 +564,15 @@ function Get-TeremoqGitCheckoutContext {
     }
     $status = Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
     if (-not [string]::IsNullOrEmpty($status)) { throw 'Git checkout must be clean, including untracked files' }
-    $remotes = @(Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('remote') -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $remoteOutput = Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('remote')
+    $remotes = @($remoteOutput -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($remotes.Count -ne 1 -or $remotes[0] -cne 'origin') { throw 'Git checkout must expose exactly one remote named origin' }
-    $fetchUrls = @(Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('config', '--get-all', 'remote.origin.url') -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $fetchUrlOutput = Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('config', '--get-all', 'remote.origin.url')
+    $fetchUrls = @($fetchUrlOutput -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($fetchUrls.Count -ne 1 -or $fetchUrls[0] -cne $StateContext.Compatibility.repository_url) {
         throw 'Git remote URL differs from the approved client repository URL'
     }
-    $pushUrls = @(Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('config', '--get-all', 'remote.origin.pushurl') -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $pushUrls = @(Get-TeremoqOptionalGitConfigValues -CheckoutRoot $root -Key 'remote.origin.pushurl')
     if ($pushUrls.Count -gt 1 -or ($pushUrls.Count -eq 1 -and $pushUrls[0] -cne $fetchUrls[0])) {
         throw 'Git push URL differs from the approved client repository URL'
     }
@@ -602,11 +615,13 @@ function Get-TeremoqGitBootstrapCheckoutContext {
     if ($topLevel -cne $root) { throw 'CheckoutRoot is not the Git repository root' }
     $status = Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
     if (-not [string]::IsNullOrEmpty($status)) { throw 'Git checkout must be clean, including untracked files' }
-    $remotes = @(Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('remote') -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $remoteOutput = Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('remote')
+    $remotes = @($remoteOutput -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($remotes.Count -ne 1 -or $remotes[0] -cne 'origin') { throw 'Git checkout must expose exactly one remote named origin' }
-    $fetchUrls = @(Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('config', '--get-all', 'remote.origin.url') -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $fetchUrlOutput = Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('config', '--get-all', 'remote.origin.url')
+    $fetchUrls = @($fetchUrlOutput -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($fetchUrls.Count -ne 1 -or $fetchUrls[0] -cne $RepositoryUrl) { throw 'Git remote URL differs from the approved client repository URL' }
-    $pushUrls = @(Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('config', '--get-all', 'remote.origin.pushurl') -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $pushUrls = @(Get-TeremoqOptionalGitConfigValues -CheckoutRoot $root -Key 'remote.origin.pushurl')
     if ($pushUrls.Count -gt 1 -or ($pushUrls.Count -eq 1 -and $pushUrls[0] -cne $fetchUrls[0])) { throw 'Git push URL differs from the approved client repository URL' }
     $branch = Get-TeremoqRepositoryBranchName -RepositoryRef $RepositoryRef
     if ((Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')) -cne $branch) { throw 'Git checkout is not on the approved LAN branch' }
@@ -614,6 +629,36 @@ function Get-TeremoqGitBootstrapCheckoutContext {
     $supportRoot = [IO.Path]::GetFullPath((Join-Path $root $RepositorySubdirectory))
     if (-not $supportRoot.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $supportRoot -PathType Container)) { throw 'approved repository_subdirectory is absent from the checkout' }
     return [pscustomobject]@{ CheckoutRoot = $root; Head = $ExpectedCommit; SupportRoot = $supportRoot }
+}
+
+function Invoke-TeremoqGitFastForwardUpdate {
+    param(
+        [Parameter(Mandatory = $true)][string]$CheckoutRoot,
+        [Parameter(Mandatory = $true)][string]$RepositoryUrl,
+        [Parameter(Mandatory = $true)][string]$RepositoryRef,
+        [Parameter(Mandatory = $true)][string]$RepositorySubdirectory,
+        [Parameter(Mandatory = $true)][string]$CurrentCommit,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit
+    )
+    if ($ExpectedCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'expected update commit must be an exact lowercase Git commit' }
+    $current = Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $CheckoutRoot -RepositoryUrl $RepositoryUrl `
+        -RepositoryRef $RepositoryRef -ExpectedCommit $CurrentCommit -RepositorySubdirectory $RepositorySubdirectory
+    $branch = Get-TeremoqRepositoryBranchName -RepositoryRef $RepositoryRef
+    $upstream = Invoke-TeremoqGit -CheckoutRoot $current.CheckoutRoot -Arguments @('rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}')
+    if ($upstream -cne ("origin/{0}" -f $branch)) { throw 'Git checkout upstream differs from the approved LAN branch' }
+    Invoke-TeremoqGit -CheckoutRoot $current.CheckoutRoot -Arguments @('fetch', '--no-tags', 'origin', $RepositoryRef) | Out-Null
+    $fetched = Invoke-TeremoqGit -CheckoutRoot $current.CheckoutRoot -Arguments @('rev-parse', 'FETCH_HEAD')
+    if ($fetched -cne $ExpectedCommit) { throw 'fetched commit differs from the explicitly approved update commit' }
+    if ($fetched -cne $CurrentCommit) {
+        try {
+            Invoke-TeremoqGit -CheckoutRoot $current.CheckoutRoot -Arguments @('merge-base', '--is-ancestor', $CurrentCommit, $fetched) | Out-Null
+        } catch {
+            throw 'Git checkout diverges from the approved update commit; ff-only update is forbidden'
+        }
+        Invoke-TeremoqGit -CheckoutRoot $current.CheckoutRoot -Arguments @('merge', '--ff-only', $fetched) | Out-Null
+    }
+    return Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $current.CheckoutRoot -RepositoryUrl $RepositoryUrl `
+        -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
 }
 
 function Get-TeremoqWebGenerationContext {

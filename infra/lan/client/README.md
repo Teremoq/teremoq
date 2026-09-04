@@ -14,7 +14,7 @@ Current boundary:
 - Git checkout: reviewed scripts and support files under the repository root.
 - External state root: locally generated `VERSION.tsv`, `LAN-CONFIG.json`,
   `CLIENT-COMPATIBILITY.tsv`, `SHA256SUMS`, the public SHA-256 pin and a copy
-  of the player from the exact Git checkout.
+  of the player built from the exact Git checkout.
 - Evidence root: deterministic per-run output only.
 
 Today the Git boundary points at the monorepo and `infra/lan`; a future move to
@@ -61,27 +61,23 @@ if ((git rev-parse HEAD) -cne $ExpectedCommit) { throw 'unexpected Git commit' }
 if (git status --porcelain=v1 --untracked-files=all) { throw 'checkout is not clean' }
 ```
 
-Only after the native checks pass, run the versioned Web builder from that
-exact checkout. It performs two reproducible builds and promotes its result
-only under the external `StateRoot`; no player, certificate, configuration or
-compatibility file is copied from the server.
+Only after the native checks pass, run the combined preparation command from
+that exact checkout. It invokes the reviewed Web builder, requires two
+byte-identical builds and initializes the compatibility state under the
+external `StateRoot`; no player, certificate, configuration or compatibility
+file is copied from the server.
 
 ```powershell
-$Build = & "$CheckoutRoot\supervisor-web\lan-player\Build-LanPlayerFromGit.ps1" `
-  -CheckoutRoot $CheckoutRoot -StateRoot $StateRoot `
-  -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -SourceCommit $ExpectedCommit
-$PlayerRelativePath = ($Build | ConvertFrom-Json).player_relative_path
 $RunId = 'lan-EXPLICIT-RUN-ID'
 $ServerIPv4 = 'SERVER_EXACT_RFC1918_IP'
 $PrefixLength = 24
 $Namespace = 'teremoq/live'
 $FingerprintSha256 = 'EXACT_64_LOWERCASE_HEX_RELAY_PIN'
 
-& "$CheckoutRoot\infra\lan\client\Initialize-LanClientState.ps1" `
+& "$CheckoutRoot\infra\lan\client\Prepare-LanClientFromGit.ps1" `
   -CheckoutRoot $CheckoutRoot -StateRoot $StateRoot `
   -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef `
-  -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory `
-  -PlayerRelativePath $PlayerRelativePath -RunId $RunId `
+  -ExpectedCommit $ExpectedCommit -RunId $RunId `
   -ServerIPv4 $ServerIPv4 -PrefixLength $PrefixLength -Namespace $Namespace `
   -FingerprintSha256 $FingerprintSha256
 ```
@@ -102,17 +98,24 @@ Subsequent verification refuses the checkout unless:
 - the approved support files still exist under the contracted repository
   subdirectory.
 
-Safe updates use only `git fetch` plus validation plus `git merge --ff-only`:
+Safe updates require the next approved full commit. Git downloads only missing
+objects with `fetch`, verifies that exact commit and advances with
+`merge --ff-only`. A new external state directory is built for the new commit;
+the previous local state is never overwritten and remains available for
+rollback.
 
 ```powershell
 & "$CheckoutRoot\infra\lan\client\Update-LanClient.ps1" `
-  -StateRoot $StateRoot -CheckoutRoot $CheckoutRoot
+  -StateRoot $StateRoot -CheckoutRoot $CheckoutRoot `
+  -ExpectedCommit 'NEXT_FULL_40_CHARACTER_APPROVED_COMMIT' `
+  -NewStateRoot 'C:\ABSOLUTE\PRIVATE\teremoq-lan-state-next'
 ```
 
 Updates fail closed on a dirty worktree, untracked files, remote URL drift,
 branch drift, divergence, a fetched commit different from the approved commit,
-or any unexpected checkout layout. No downloaded code is executed before that
-validation passes.
+or any unexpected checkout layout. A no-op update to the current commit does
+not require `NewStateRoot`. The updated player is prepared only after the Git
+commit and fast-forward relationship have been validated.
 
 After initialization or update, verify the checkout and the external state
 together:

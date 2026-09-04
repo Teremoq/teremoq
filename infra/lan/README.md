@@ -4,7 +4,8 @@
 # Minimal opt-in LAN E2E laboratory
 
 This is a local, reversible preparation for one Windows 11 server and one
-Windows 10 client on the same private 5 GHz Wi-Fi. It does not alter normal
+Windows 10 client on the same private Wi-Fi. A 5 GHz link is recommended but
+is not required for the first functional run. It does not alter normal
 loopback defaults, expose the root Compose stack, configure Windows by itself,
 run a load or claim production readiness.
 
@@ -37,7 +38,7 @@ payload or full client/server IP.
 ## Current real blockers
 
 The observed host is Windows build 22621, WSL 2.7.12/kernel 6.18 in NAT,
-without `.wslconfig`, Wi-Fi 802.11ac/5 GHz, profile `Public`, non-elevated
+without `.wslconfig`, Wi-Fi (preferably 802.11ac/5 GHz), profile `Public`, non-elevated
 PowerShell 5.1 and default-deny Hyper-V inbound. Inherited containers currently
 publish wildcard TCP/4433, 5678, 6379, 11434 and UDP/4433, 9000. They are not
 owned here and must not be stopped or changed by these scripts.
@@ -97,7 +98,7 @@ PowerShell console on the client itself:
   | Set-Content -Encoding UTF8 C:\ABSOLUTE\PRIVATE\client-preflight.json
 ```
 
-The checks cover exact private IP/subnet/profile, Wi-Fi 5 GHz when observable,
+The checks cover exact private IP/subnet/profile, Wi-Fi band when observable,
 clock, Chrome/Edge, WSL mode, Docker/tools where applicable, MTU and capacity.
 Missing data is `unavailable`, never zero. Client ping fields are explicitly
 `icmp_echo_*_approximation`; they are not QUIC loss, jitter or reachability.
@@ -117,8 +118,10 @@ but trust still comes from native PowerShell execution plus CIM-derived process
 ancestry, not from any external CLI-supplied context. Activation rejects WSL
 interop, truncated CIM ancestry, PID cycles/reuse, depth-limit captures or any
 other ambiguous capture path even if the JSON/hash pair is otherwise well
-formed. Wi-Fi band acceptance is equally strict: only the exact canonical
-`5 GHz` value passes when the band field is present. Internally, every queried
+formed. An exact canonical `5 GHz` value is recorded when available; any other
+or unavailable band becomes a documented warning and does not block the first
+functional run. The exact Wi-Fi adapter and private IP remain mandatory so the
+warning cannot select another interface. Internally, every queried
 PID is re-read and must keep the same `ProcessId`, `ParentProcessId`, basename
 and `CreationDate` before the ancestry walk advances; a parent whose
 `CreationDate` is later than the observed child is rejected. Equality is

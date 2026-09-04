@@ -190,7 +190,9 @@ def forbidden_evidence_token(value: str) -> bool:
     return re.search(r"(?:^|[^a-z])(blocked|pending|unavailable|unknown|not_measured)(?:$|[^a-z])", value, re.IGNORECASE) is not None
 
 
-def validate_checks(document: dict[str, object], expected_names: set[str], label: str) -> dict[str, dict[str, str]]:
+def validate_checks(document: dict[str, object], expected_names: set[str], label: str,
+                    advisory_names: set[str] | None = None) -> dict[str, dict[str, str]]:
+    advisory_names = advisory_names or set()
     checks = document.get("checks")
     if not isinstance(checks, list) or not 1 <= len(checks) <= 64:
         fail(f"{label} check cardinality is outside policy")
@@ -206,14 +208,27 @@ def validate_checks(document: dict[str, object], expected_names: set[str], label
         if name in parsed:
             fail(f"{label} contains a duplicate check: {name}")
         parsed[name] = record  # type: ignore[assignment]
-        if record["status"] not in {"pass", "observed"} or record["evidence_quality"] not in {"real", "configured"} or \
-           forbidden_evidence_token(record["value"]):
+        if name in advisory_names:
+            if record["status"] not in {"pass", "observed"}:
+                fail(f"{label} advisory check has an invalid status: {name}")
+        elif record["status"] not in {"pass", "observed"} or record["evidence_quality"] not in {"real", "configured"} or \
+             forbidden_evidence_token(record["value"]):
             fail(f"{label} check is not activation-ready: {name}")
     if set(parsed) != expected_names:
         fail(f"{label} check-name schema is incomplete or unknown")
     if parsed["preflight_gate"]["status"] != "pass" or parsed["preflight_gate"]["value"] != "ready":
         fail(f"{label} preflight gate is not pass/ready")
     return parsed
+
+
+def validate_wifi_advisory(record: dict[str, str], check_name: str, label: str) -> None:
+    exact = {"check": check_name, "status": "pass", "value": "5 GHz", "evidence_quality": "real"}
+    if record == exact:
+        return
+    if record["status"] == "observed" and record["value"].startswith("warning:band-") and \
+       record["evidence_quality"] in {"real", "configured"}:
+        return
+    fail(f"{label} Wi-Fi band evidence is neither exact 5 GHz nor a documented warning")
 
 
 SERVER_WINDOWS_CHECKS = {
@@ -231,6 +246,14 @@ CLIENT_WINDOWS_CHECKS = {
     "node_runtime_22_x", "player_loopback_tcp_3000", "clock_offset", "logical_cpu",
     "physical_memory_mib", "free_disk_mib", "icmp_echo_loss_percent_approximation",
     "icmp_echo_rtt_average_ms_approximation", "inbound_client_firewall", "preflight_gate",
+}
+SERVER_WINDOWS_ADVISORIES = {
+    "windows_caption", "windows_version", "wifi_link_speed", "wifi_radio", "wifi_band", "wsl_mode",
+    "browser_msedge.exe", "browser_chrome.exe", "docker_server",
+}
+CLIENT_WINDOWS_ADVISORIES = {
+    "windows_caption", "windows_version", "wifi_radio", "wifi_5ghz", "browser_edge", "browser_chrome",
+    "icmp_echo_loss_percent_approximation", "icmp_echo_rtt_average_ms_approximation",
 }
 WSL_PREFLIGHT_CHECKS = {
     "schema_version", "report_kind", "run_id", "source_commit", "role", "server_ipv4", "client_ipv4",
@@ -345,7 +368,12 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
     if any(document.get(key) != value for key, value in expected.items()):
         fail(f"{label} run/IP/profile/WSL/commit binding mismatch")
     validate_capture_context(document["capture_context"], label)
-    checks = validate_checks(document, SERVER_WINDOWS_CHECKS if role == "server" else CLIENT_WINDOWS_CHECKS, label)
+    checks = validate_checks(
+        document,
+        SERVER_WINDOWS_CHECKS if role == "server" else CLIENT_WINDOWS_CHECKS,
+        label,
+        SERVER_WINDOWS_ADVISORIES if role == "server" else CLIENT_WINDOWS_ADVISORIES,
+    )
     if checks["capture_origin"] != {
         "check": "capture_origin",
         "status": "pass",
@@ -372,10 +400,9 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
        parse_check_int_value(checks["free_disk_mib"]["value"], f"{label} free disk", 1, 1073741824) < minimum_disk_mib:
         fail(f"{label} measured capacity is below policy")
     if role == "server":
-        if checks["wifi_adapter"]["status"] != "pass" or checks["wifi_band"] != {
-            "check": "wifi_band", "status": "pass", "value": "5 GHz", "evidence_quality": "real"
-        }:
-            fail("Windows server preflight did not prove the exact Wi-Fi interface and 5 GHz band")
+        if checks["wifi_adapter"]["status"] != "pass":
+            fail("Windows server preflight did not prove the exact Wi-Fi interface")
+        validate_wifi_advisory(checks["wifi_band"], "wifi_band", label)
         if checks["docker_publication_inventory"] != {
             "check": "docker_publication_inventory",
             "status": "pass",
@@ -385,8 +412,7 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
             fail("Windows server Docker publication inventory is not exact")
         validate_listener_checks(checks, label, (*LEGACY_UDP_PORTS, 14433, 19000), LEGACY_TCP_PORTS)
     else:
-        if checks["wifi_5ghz"] != {"check": "wifi_5ghz", "status": "pass", "value": "5 GHz", "evidence_quality": "real"}:
-            fail("Windows client preflight did not prove the exact 5 GHz Wi-Fi band")
+        validate_wifi_advisory(checks["wifi_5ghz"], "wifi_5ghz", label)
         if checks["player_loopback_tcp_3000"]["status"] != "pass" or checks["player_loopback_tcp_3000"]["value"] != "free":
             fail("Windows client preflight reports loopback TCP/3000 occupied")
     return checks

@@ -519,23 +519,28 @@ class LabRuntimePolicyTest(unittest.TestCase):
                                             SERVER_IP, CLIENT_IP, 24, PROFILE,
                                             MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
 
-    def test_ambiguous_or_noncanonical_wifi_band_blocks_activation(self) -> None:
+    def test_noncanonical_wifi_band_requires_documented_warning(self) -> None:
         for band_value in ("2.4 GHz / 5 GHz", "not 5 GHz", "5 GHz preferred", "5 ghz", "5     GHz"):
             with self.subTest(band_value=band_value):
                 document = windows_preflight("server")
                 record = next(item for item in document["checks"] if item["check"] == "wifi_band")  # type: ignore[union-attr]
                 record.update(status="observed", value=band_value)
-                with self.assertRaisesRegex(ValueError, "did not prove the exact Wi-Fi interface and 5 GHz band"):
+                with self.assertRaisesRegex(ValueError, "neither exact 5 GHz nor a documented warning"):
                     RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
                                                     SERVER_IP, CLIENT_IP, 24, PROFILE,
                                                     MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
+        document = windows_preflight("server")
+        record = next(item for item in document["checks"] if item["check"] == "wifi_band")  # type: ignore[union-attr]
+        record.update(status="observed", value="warning:band-not-confirmed:2.4 GHz")
+        RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "server", RUN_ID, SOURCE_COMMIT,
+                                       SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                       MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
         document = windows_preflight("client")
         record = next(item for item in document["checks"] if item["check"] == "wifi_5ghz")  # type: ignore[union-attr]
-        record.update(status="pass", value="fallback-radio=802.11ac")
-        with self.assertRaisesRegex(ValueError, "exact 5 GHz"):
-            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
-                                            SERVER_IP, CLIENT_IP, 24, PROFILE,
-                                            MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
+        record.update(status="observed", value="warning:band-not-observed", evidence_quality="configured")
+        RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+                                       SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                       MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
 
 
 if __name__ == "__main__":

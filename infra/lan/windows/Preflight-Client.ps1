@@ -22,6 +22,7 @@ Set-StrictMode -Version 3.0
 . (Join-Path $PSScriptRoot 'Preflight-Contract.ps1')
 $checks = New-Object System.Collections.Generic.List[object]
 $script:PreflightBlocked = $false
+$script:AdvisoryChecks = @('windows_caption', 'windows_version', 'wifi_radio', 'wifi_5ghz', 'browser_edge', 'browser_chrome', 'icmp_echo_loss_percent_approximation', 'icmp_echo_rtt_average_ms_approximation')
 $captureContext = Get-TeremoqCaptureContext
 $nativeCapture = Test-TeremoqCaptureContextEvidence -Context $captureContext
 
@@ -30,7 +31,7 @@ function Add-Check([string]$Name, [string]$Status, $Value, [string]$Quality) {
         $Value = 'unavailable'
         $Quality = 'unavailable'
     }
-    if ($Name -ne 'preflight_gate' -and ($Status -notin @('pass', 'observed') -or $Quality -notin @('real', 'configured') -or
+    if ($Name -ne 'preflight_gate' -and $script:AdvisoryChecks -notcontains $Name -and ($Status -notin @('pass', 'observed') -or $Quality -notin @('real', 'configured') -or
         [string]$Value -match '(?i)(^|[^a-z])(blocked|pending|unavailable|unknown|not_measured|occupied)($|[^a-z])')) {
         $script:PreflightBlocked = $true
     }
@@ -91,14 +92,16 @@ if ($address) {
     $wifi = Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex
     $wlanText = (@(& "$env:SystemRoot\System32\netsh.exe" wlan show interfaces 2>$null) -join "`n")
     $wifiObservation = if ($wifi) { Get-TeremoqWlanObservation -Text $wlanText -AdapterName $wifi.Name } else { [pscustomobject]@{ Band = 'unavailable'; Radio = 'unavailable'; IsCanonical5GHz = $false; FallbackRadioQualified = $false } }
-    Add-Check 'wifi_radio' 'observed' $wifiObservation.Radio $(if ($wifiObservation.Radio -eq 'unavailable') { 'unavailable' } else { 'real' })
+    Add-Check 'wifi_radio' 'observed' $(if ($wifiObservation.Radio -eq 'unavailable') { 'warning:radio-not-observed' } else { $wifiObservation.Radio }) $(if ($wifiObservation.Radio -eq 'unavailable') { 'configured' } else { 'real' })
     $wifi5Value = if ($wifiObservation.Band -ne 'unavailable') { $wifiObservation.Band } elseif ($wifiObservation.FallbackRadioQualified) { "fallback-radio=$($wifiObservation.Radio)" } else { 'unavailable' }
-    Add-Check 'wifi_5ghz' $(if ($wifiObservation.IsCanonical5GHz) { 'pass' } else { 'blocked' }) $wifi5Value $(if ($wifi5Value -eq 'unavailable') { 'unavailable' } else { 'real' })
+    Add-Check 'wifi_5ghz' $(if ($wifiObservation.IsCanonical5GHz) { 'pass' } else { 'observed' }) `
+        $(if ($wifiObservation.IsCanonical5GHz) { '5 GHz' } elseif ($wifi5Value -eq 'unavailable') { 'warning:band-not-observed' } else { "warning:band-not-confirmed:$wifi5Value" }) `
+        $(if ($wifi5Value -eq 'unavailable') { 'configured' } else { 'real' })
 } else {
     Add-Check 'network_profile' 'blocked' 'unavailable' 'unavailable'
     Add-Check 'mtu' 'blocked' 'unavailable' 'unavailable'
-    Add-Check 'wifi_radio' 'observed' 'unavailable' 'unavailable'
-    Add-Check 'wifi_5ghz' 'blocked' 'unavailable' 'unavailable'
+    Add-Check 'wifi_radio' 'observed' 'warning:radio-not-observed' 'configured'
+    Add-Check 'wifi_5ghz' 'observed' 'warning:band-not-observed' 'configured'
 }
 
 $wslObservation = Invoke-TeremoqClientWslIpv4ModeQuery -ClientIPv4 $ClientIPv4
