@@ -3,23 +3,50 @@
 
 Set-StrictMode -Version 3.0
 
+if (-not ('TeremoqLanNativeFile' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class TeremoqLanNativeFile {
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ public static extern uint GetFinalPathNameByHandle(SafeFileHandle h, StringBuilder p, uint n, uint f);
+}
+'@
+}
+
+function Open-TeremoqVerifiedRegularFile {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][int]$MaxBytes)
+    [void](Assert-TeremoqNonReparseFilePath -Path $Path)
+    $expected = [IO.Path]::GetFullPath($Path)
+    $stream = [IO.File]::Open($expected, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try {
+        $buffer = New-Object Text.StringBuilder 32768
+        $n = [TeremoqLanNativeFile]::GetFinalPathNameByHandle($stream.SafeFileHandle, $buffer, [uint32]$buffer.Capacity, 0)
+        if ($n -eq 0 -or $n -ge $buffer.Capacity) { throw 'could not obtain bounded final path for opened file handle' }
+        $final = $buffer.ToString()
+        if ($final.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { $final = '\\' + $final.Substring(8) }
+        elseif ($final.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) { $final = $final.Substring(4) }
+        if (-not $final.Equals($expected, [StringComparison]::OrdinalIgnoreCase) -or $stream.Length -gt $MaxBytes -or $stream.SafeFileHandle.IsInvalid) {
+            throw 'opened file handle does not match the validated regular path'
+        }
+        return $stream
+    } catch { $stream.Dispose(); throw }
+}
+
 function Read-TeremoqBoundedUtf8File {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][int]$MaxBytes
     )
     if ($MaxBytes -lt 1 -or $MaxBytes -gt 1048576) { throw 'bounded file limit is outside 1..1048576 bytes' }
-    $item = Get-Item -LiteralPath $Path -Force
-    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "path is not a regular non-reparse file: $Path"
-    }
-    if ($item.Length -gt $MaxBytes) { throw "file exceeds ${MaxBytes} bytes: $Path" }
-    [void](Assert-TeremoqNonReparseFilePath -Path $item.FullName)
-    $initialLength = $item.Length
-    $stream = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    $stream = Open-TeremoqVerifiedRegularFile -Path $Path -MaxBytes $MaxBytes
     try {
-        $buffer = New-Object byte[] ($initialLength + 1)
-        $read = $stream.Read($buffer, 0, $buffer.Length)
+        $initialLength = $stream.Length
+        $buffer = New-Object byte[] $initialLength
+        $read = 0
+        while ($read -lt $initialLength) { $chunk = $stream.Read($buffer, $read, $initialLength - $read); if ($chunk -eq 0) { break }; $read += $chunk }
         # Length and LastWriteTimeUtc here are queried from the already-open
         # FileStream; never reopen a pathname to decide which object was parsed.
         if ($read -ne $initialLength -or $stream.ReadByte() -ne -1 -or $stream.Length -ne $initialLength -or $stream.SafeFileHandle.IsInvalid) { throw "file changed while reading: $Path" }
@@ -54,11 +81,7 @@ function Read-TeremoqClosedTsv {
 function Get-TeremoqBoundedFileSha256 {
     param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][int]$MaxBytes)
     if ($MaxBytes -lt 1 -or $MaxBytes -gt 104857600) { throw 'bounded hash limit is outside 1..104857600 bytes' }
-    $resolved = Assert-TeremoqNonReparseFilePath -Path $Path
-    $item = Get-Item -LiteralPath $resolved -Force
-    if ($item.Length -gt $MaxBytes) { throw "file exceeds ${MaxBytes} bytes: $Path" }
-    $length = $item.Length
-    $stream = [IO.File]::Open($resolved, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    $stream = Open-TeremoqVerifiedRegularFile -Path $Path -MaxBytes $MaxBytes
     $hash = [Security.Cryptography.SHA256]::Create()
     try {
         $buffer = New-Object byte[] 65536
@@ -69,7 +92,7 @@ function Get-TeremoqBoundedFileSha256 {
             [void]$hash.TransformBlock($buffer, 0, $read, $buffer, 0)
         }
         [void]$hash.TransformFinalBlock((New-Object byte[] 0), 0, 0)
-        if ($total -ne $length -or $stream.Length -ne $length -or $stream.SafeFileHandle.IsInvalid) { throw "file changed while hashing: $Path" }
+        if ($total -ne $stream.Length -or $stream.SafeFileHandle.IsInvalid) { throw "file changed while hashing: $Path" }
         return ([BitConverter]::ToString($hash.Hash) -replace '-', '').ToLowerInvariant()
     } finally { $stream.Dispose(); $hash.Dispose() }
 }

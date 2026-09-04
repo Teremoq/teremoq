@@ -56,6 +56,8 @@ try {
     New-Item -ItemType Junction -Path $alias -Target $target -ErrorAction Stop | Out-Null
     if (-not (Test-Path -LiteralPath $alias -PathType Container)) { throw 'junction fixture could not be created' }
     try { Get-TeremoqNonReparseDirectoryPath -Path $alias | Out-Null; throw 'junction parent accepted' } catch { if ($_.Exception.Message -match 'junction parent accepted') { throw } }
+    [IO.File]::WriteAllText((Join-Path $target 'swapped.tsv'), "schema_version`t1`n", (New-Object Text.UTF8Encoding($false)))
+    try { Read-TeremoqBoundedUtf8File -Path (Join-Path $alias 'swapped.tsv') -MaxBytes 256 | Out-Null; throw 'junction-resolved final handle accepted' } catch { if ($_.Exception.Message -match 'junction-resolved final handle accepted') { throw } }
     $nested = Join-Path $root 'nested'
     New-Item -ItemType Directory -Path $nested -Force | Out-Null
     $nestedAlias = Join-Path $nested 'generation-link'
