@@ -14,11 +14,16 @@ function Read-TeremoqBoundedUtf8File {
         throw "path is not a regular non-reparse file: $Path"
     }
     if ($item.Length -gt $MaxBytes) { throw "file exceeds ${MaxBytes} bytes: $Path" }
-    $stream = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    [void](Assert-TeremoqNonReparseFilePath -Path $item.FullName)
+    $initialLength = $item.Length
+    $initialWrite = $item.LastWriteTimeUtc.Ticks
+    $stream = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
     try {
-        $buffer = New-Object byte[] ($item.Length + 1)
+        $buffer = New-Object byte[] ($initialLength + 1)
         $read = $stream.Read($buffer, 0, $buffer.Length)
-        if ($read -ne $item.Length -or $stream.ReadByte() -ne -1) { throw "file changed while reading: $Path" }
+        $final = Get-Item -LiteralPath $item.FullName -Force
+        if ($read -ne $initialLength -or $stream.ReadByte() -ne -1 -or $final.Length -ne $initialLength -or $final.LastWriteTimeUtc.Ticks -ne $initialWrite -or
+            ($final.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "file changed while reading: $Path" }
         $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
         return $strictUtf8.GetString($buffer, 0, $read)
     } finally {
@@ -45,6 +50,14 @@ function Read-TeremoqClosedTsv {
     }
     if ($values.Count -ne $AllowedKeys.Count) { throw "$Label is incomplete" }
     return $values
+}
+
+function Get-TeremoqBoundedFileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][int]$MaxBytes)
+    $text = Read-TeremoqBoundedUtf8File -Path $Path -MaxBytes $MaxBytes
+    $bytes = (New-Object Text.UTF8Encoding($false, $true)).GetBytes($text)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($hash.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant() } finally { $hash.Dispose() }
 }
 
 function Get-TeremoqGitExecutable {
@@ -592,9 +605,9 @@ function Get-TeremoqWebGenerationContext {
     if ($values.schema_version -ne '1' -or $values.repository_url -cne 'https://github.com/Teremoq/teremoq' -or
         $values.repository_ref -cne (Invoke-TeremoqGit -CheckoutRoot $Checkout.CheckoutRoot -Arguments @('symbolic-ref','--quiet','HEAD')) -or
         $values.source_commit -cne $Checkout.Head -or $values.source_tree -cne $tree -or
-        $values.source_contract_sha256 -cne (Get-FileHash -LiteralPath $contract -Algorithm SHA256).Hash.ToLowerInvariant() -or
-        $values.package_lock_sha256 -cne (Get-FileHash -LiteralPath $lock -Algorithm SHA256).Hash.ToLowerInvariant() -or
-        $values.package_json_sha256 -cne (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant() -or
+        $values.source_contract_sha256 -cne (Get-TeremoqBoundedFileSha256 -Path $contract -MaxBytes 4096) -or
+        $values.package_lock_sha256 -cne (Get-TeremoqBoundedFileSha256 -Path $lock -MaxBytes 1048576) -or
+        $values.package_json_sha256 -cne (Get-TeremoqBoundedFileSha256 -Path $package -MaxBytes 65536) -or
         $values.node_version -cnotmatch '^v22[.][0-9]+[.][0-9]+$' -or $values.npm_version -cnotmatch '^10[.][0-9]+[.][0-9]+$' -or
         $values.independent_builds -cne '2' -or $values.byte_identical -cne 'true' -or
         $values.player_manifest_sha256 -cne $PlayerManifestSha256 -or $values.launcher_contract_sha256 -cne $LauncherContractSha256 -or

@@ -18,7 +18,7 @@ for file in "${ROOT}"/windows/*.ps1 "${ROOT}"/client/*.ps1; do
         '$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile($env:TEREMOQ_PS_PARSE_FILE,[ref]$tokens,[ref]$errors) > $null; if($errors.Count -ne 0){$errors | ForEach-Object {Write-Error $_}; exit 1}' \
         >/dev/null
 done
-for file in "${TEST_DIR}"/Run-GitClientE2E.ps1 "${TEST_DIR}"/client-distribution-fixture.ps1; do
+for file in "${TEST_DIR}"/Run-GitClientE2E.ps1 "${TEST_DIR}"/client-distribution-fixture.ps1 "${TEST_DIR}"/client-state-security-fixture.ps1; do
     TEREMOQ_PS_PARSE_FILE="${file}" WSLENV="TEREMOQ_PS_PARSE_FILE/p${WSLENV:+:${WSLENV}}" powershell.exe -NoProfile -NonInteractive -Command \
         '$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile($env:TEREMOQ_PS_PARSE_FILE,[ref]$tokens,[ref]$errors) > $null; if($errors.Count -ne 0){$errors | ForEach-Object {Write-Error $_}; exit 1}' \
         >/dev/null
@@ -33,6 +33,8 @@ grep -Fq 'New-TeremoqBoundedStreamState -Stream $process.StandardError.BaseStrea
 client_distribution_fixture="$(wslpath -w "${TEST_DIR}/client-distribution-fixture.ps1")"
 client_distribution="$(wslpath -w "${ROOT}/client/Client-Distribution.ps1")"
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${client_distribution_fixture}" -ScriptPath "${client_distribution}" >/dev/null
+client_state_fixture="$(wslpath -w "${TEST_DIR}/client-state-security-fixture.ps1")"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${client_state_fixture}" -ScriptPath "${client_distribution}" >/dev/null
 grep -Fq 'Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex' "${ROOT}/windows/Preflight-Lan.ps1"
 grep -Fq 'Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex' "${ROOT}/windows/Preflight-Client.ps1"
 grep -Fq '/query /status /verbose' "${ROOT}/windows/Preflight-Lan.ps1"
