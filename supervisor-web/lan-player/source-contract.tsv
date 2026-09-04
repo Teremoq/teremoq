@@ -1,0 +1,14 @@
+schema_version	1
+repository_url	https://github.com/Teremoq/teremoq
+source_subdirectory	supervisor-web
+package_lock_relative_path	package-lock.json
+package_lock_sha256	ea213de47c167e46e5879fef9723b19f950c245fe571b9908ec6bb9a64c7c0f8
+package_json_relative_path	package.json
+package_json_sha256	1e5d32db5c08045cb8eabfde932af80b3ae8606da9d35d8f214a7570a46e20c5
+node_major	22
+npm_major	10
+build_script	build:lan
+package_script	package:lan
+output_contract	external-state-root-only
+future_repository_boundary	teremoq-client
+source_commit	<runtime-exact-head>

@@ -17,5 +17,9 @@ export function verifyPackageSource(
   if (head !== sourceCommit) throw new Error("--source-commit no coincide con HEAD");
   const status = runGit(["-C", root, "status", "--porcelain=v1", "--untracked-files=all"]);
   if (status !== "") throw new Error("el checkout Git debe estar limpio antes de empaquetar");
-  return Object.freeze({ root, sourceCommit });
+  const sourceTree = runGit(["-C", root, "rev-parse", `${sourceCommit}:supervisor-web`]);
+  if (!/^[0-9a-f]{40}$/.test(sourceTree)) {
+    throw new Error("árbol supervisor-web inválido");
+  }
+  return Object.freeze({ root, sourceCommit, sourceTree });
 }

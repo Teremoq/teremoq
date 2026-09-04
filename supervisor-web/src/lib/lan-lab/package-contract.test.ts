@@ -13,7 +13,9 @@ describe("contrato del paquete LAN", () => {
 
   it("activa standalone únicamente durante el build LAN explícito", () => {
     expect(buildScript).toContain('TEREMOQ_LAN_LAB: "1"');
+    expect(buildScript).toContain("TEREMOQ_LAN_SOURCE_COMMIT: source.sourceCommit");
     expect(nextConfig).toContain('output: "standalone"');
+    expect(nextConfig).toContain("generateBuildId");
     expect(nextConfig).toContain("isLanLabEnabled(process.env)");
   });
 
@@ -32,6 +34,12 @@ describe("contrato del paquete LAN", () => {
     expect(packageScript).toContain("EVIDENCE_VALIDATOR_NAME");
     expect(packageScript).toContain("package_version: packageVersion");
     expect(packageScript).toContain("source_commit: sourceCommit");
+    expect(packageScript).toContain('"BUILD-PROVENANCE.json"');
+    expect(packageScript).toContain("readBuildProvenanceFile");
+    expect(packageScript).toContain("normalizePrerenderManifest");
+    expect(packageScript).toContain("normalizeRequiredServerFiles");
+    expect(packageScript).toContain("normalizeEmptyServerReferenceManifests");
+    expect(packageScript).toContain("normalizeStandaloneServer");
   });
 
   it("fija la UI empaquetada a loopback sin alterar TLS del relay", () => {

@@ -7,6 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "build:lan": "node scripts/build-lan-lab.mjs",
+    "distribute:lan": "node scripts/distribute-lan-from-git.mjs",
     "package:lan": "node scripts/package-lan-lab.mjs",
     "start": "next start",
     "start:lan": "node scripts/start-lan-lab.mjs",

@@ -8,6 +8,15 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  BUILD_PROVENANCE_NAME,
+  hashRegularFile,
+  normalizeEmptyServerReferenceManifests,
+  normalizePrerenderManifest,
+  normalizeRequiredServerFiles,
+  normalizeStandaloneServer,
+  readBuildProvenanceFile,
+} from "./lan-build-provenance.mjs";
 import { verifyPackageSource } from "./verify-package-source.mjs";
 
 const MAX_PACKAGE_BYTES = 128 * 1024 * 1024;
@@ -34,9 +43,10 @@ if (typeof packageMetadata.version !== "string" ||
 const packageVersion = packageMetadata.version;
 
 const projectRoot = process.cwd();
-verifyPackageSource(projectRoot, sourceCommit);
+const source = verifyPackageSource(projectRoot, sourceCommit);
 const standaloneRoot = join(projectRoot, ".next", "standalone");
 const standaloneServer = join(standaloneRoot, "server.js");
+const buildProvenancePath = join(projectRoot, ".next", BUILD_PROVENANCE_NAME);
 const outputRoot = resolve(process.argv[outputFlag + 1]);
 const outputRelativeToProject = relative(projectRoot, outputRoot);
 if (
@@ -46,6 +56,21 @@ if (
   throw new Error("El paquete LAN debe escribirse fuera del checkout");
 }
 await requireRegularFile(standaloneServer, "Ejecuta npm run build:lan antes de empaquetar");
+const npmVersion = npmVersionFromEnvironment();
+const expectedProvenance = {
+  schema_version: 1,
+  source_commit: source.sourceCommit,
+  source_tree: source.sourceTree,
+  package_lock_sha256: await hashRegularFile(join(projectRoot, "package-lock.json"), 1_048_576),
+  package_json_sha256: await hashRegularFile(join(projectRoot, "package.json"), 65_536),
+  node_version: process.version,
+  npm_version: npmVersion,
+  build_mode: "lan-standalone",
+};
+const { text: buildProvenanceBytes } = await readBuildProvenanceFile(
+  buildProvenancePath,
+  expectedProvenance,
+);
 try {
   await lstat(outputRoot);
   throw new Error("El directorio de salida ya existe");
@@ -59,10 +84,44 @@ try {
 
 await mkdir(outputRoot, { recursive: true });
 await cp(standaloneRoot, outputRoot, { recursive: true, errorOnExist: true });
+const packagedStandaloneServer = join(outputRoot, "server.js");
+await writeFile(
+  packagedStandaloneServer,
+  normalizeStandaloneServer(await readFile(packagedStandaloneServer, "utf8"), projectRoot),
+  { encoding: "utf8" },
+);
 await cp(join(projectRoot, ".next", "static"), join(outputRoot, ".next", "static"), {
   recursive: true,
   errorOnExist: true,
 });
+const packagedRequiredServerFiles = join(outputRoot, ".next", "required-server-files.json");
+await writeFile(
+  packagedRequiredServerFiles,
+  normalizeRequiredServerFiles(await readFile(packagedRequiredServerFiles, "utf8"), projectRoot),
+  { encoding: "utf8" },
+);
+const packagedPrerenderManifest = join(outputRoot, ".next", "prerender-manifest.json");
+await writeFile(
+  packagedPrerenderManifest,
+  normalizePrerenderManifest(await readFile(packagedPrerenderManifest, "utf8"), sourceCommit),
+  { encoding: "utf8" },
+);
+const serverReferenceJson = join(outputRoot, ".next", "server", "server-reference-manifest.json");
+const serverReferenceJs = join(outputRoot, ".next", "server", "server-reference-manifest.js");
+const normalizedServerReferences = normalizeEmptyServerReferenceManifests(
+  await readFile(serverReferenceJson, "utf8"),
+  await readFile(serverReferenceJs, "utf8"),
+  sourceCommit,
+);
+await Promise.all([
+  writeFile(serverReferenceJson, normalizedServerReferences.json, { encoding: "utf8" }),
+  writeFile(serverReferenceJs, normalizedServerReferences.js, { encoding: "utf8" }),
+]);
+await writeFile(
+  join(outputRoot, "BUILD-PROVENANCE.json"),
+  buildProvenanceBytes,
+  { encoding: "utf8", flag: "wx" },
+);
 await cp(
   join(projectRoot, "scripts", "start-lan-lab.mjs"),
   join(outputRoot, "start.mjs"),
@@ -156,4 +215,14 @@ async function requireRegularFile(path, message) {
     // Se devuelve una razón estable sin revelar rutas locales.
   }
   throw new Error(message);
+}
+
+function npmVersionFromEnvironment() {
+  const userAgent = process.env.npm_config_user_agent ?? "";
+  const match = /(?:^|\s)npm\/(10\.[0-9]+\.[0-9]+)(?:\s|$)/.exec(userAgent);
+  if (!match) throw new Error("package:lan exige npm 10.x explícito");
+  if (!/^v22\.[0-9]+\.[0-9]+$/.test(process.version)) {
+    throw new Error("package:lan exige Node 22.x");
+  }
+  return match[1];
 }

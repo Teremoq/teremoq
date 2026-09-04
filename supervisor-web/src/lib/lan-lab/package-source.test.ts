@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { verifyPackageSource } from "../../../scripts/verify-package-source.mjs";
 
 const commit = "1".repeat(40);
+const tree = "a".repeat(40);
 const project = "/repo/supervisor-web";
 
 function runner(overrides: Record<string, string | Error> = {}) {
@@ -14,6 +15,7 @@ function runner(overrides: Record<string, string | Error> = {}) {
     if (command === `rev-parse --verify ${commit}^{commit}`) return commit;
     if (command === "rev-parse HEAD") return commit;
     if (command === "status --porcelain=v1 --untracked-files=all") return "";
+    if (command === `rev-parse ${commit}:supervisor-web`) return tree;
     throw new Error(`comando inesperado: ${command}`);
   };
 }
@@ -23,6 +25,7 @@ describe("procedencia Git del paquete LAN", () => {
     expect(verifyPackageSource(project, commit, runner())).toEqual({
       root: "/repo",
       sourceCommit: commit,
+      sourceTree: tree,
     });
   });
 

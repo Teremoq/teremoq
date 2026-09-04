@@ -121,11 +121,25 @@ letras, dígitos, `-`, `_` o `.`, y no puede superar 256 bytes. El fingerprint e
 obligatorio y corresponde al SHA-256 DER esperado; el player continúa usando
 `serverCertificateHashes` y no incluye opción para desactivar TLS o trust.
 
-`package:lan` no consulta Git ni depende de `origin/main`. Copia el standalone
+`build:lan` y `package:lan` comprueban el HEAD resoluble, el árbol
+`supervisor-web` y un checkout completamente limpio. El build deja un sello
+cerrado dentro de `.next`; el empaquetado lo cruza con HEAD, lock, `package.json`,
+Node y npm y lo incorpora como `BUILD-PROVENANCE.json`. Copia el standalone
 trazado por Next.js —incluidas sólo sus dependencias runtime seleccionadas—, los
 estáticos y el launcher; no copia el checkout ni el `node_modules` completo.
 Exige un directorio nuevo, limita el resultado a 128 MiB y genera
 `MANIFEST.sha256.json` ordenado para verificar contenido y tamaño.
+
+### Distribución desde Git sin versionar el binario
+
+El checkout sólo versiona el contrato y el launcher pequeño de
+[`lan-player/`](lan-player/). El player generado de unos 65 MiB nunca se añade a
+Git: `Build-LanPlayerFromGit.ps1` valida URL, ref, HEAD, limpieza, lock y
+Node/npm; crea dos worktrees efímeros; ejecuta dos veces `npm ci`, `build:lan` y
+`package:lan`; exige igualdad byte a byte y promueve el resultado únicamente a
+un `StateRoot` exterior. Los comandos de clone, actualización, construcción y
+refresco explícito de dependencias están documentados en
+[`LAN-GIT-DISTRIBUTION.md`](LAN-GIT-DISTRIBUTION.md).
 
 ### Launcher cerrado para Platform y carga progresiva
 
