@@ -303,58 +303,13 @@ player, certificate or configuration is packaged or transferred from the
 server. Use the native Git clone, Web Git builder and client-local initializer
 documented in `client/README.md`.
 
-Build and package the Web player only after Rust, Web and Platform commits are
-reviewed into one clean integration branch. Capture its exact 40-character
-HEAD; never build from `origin/main` or copy an older `.next` tree:
-
-```bash
-test -z "$(git status --porcelain --untracked-files=normal)"
-HEAD40="$(git rev-parse HEAD)"
-test "${#HEAD40}" -eq 40
-(cd supervisor-web && npm run build:lan)
-(cd supervisor-web && npm run package:lan -- --output /ABSOLUTE/NEW/PLAYER-ARTIFACT --source-commit "${HEAD40}")
-```
-
-The last command is the required TP-WEB-REALTIME owner contract. Its reviewed
-implementation accepts `--source-commit`; it must be run only after the Web and
-Platform commits are present in one clean integration branch. Its
-`player/lan-launcher.tsv` must have exactly the nine approved keys including
-`source_commit`; `MANIFEST.sha256.json` must bind that same commit and all
-standalone file hashes. Platform rejects a stale commit,
-extra/missing contract key, unlisted file or checksum mismatch and never marks
-the launcher ready in those cases. Only the public relay leaf and pin are
-included. No CA is installed or packaged as a trust root.
-
-```bash
-infra/lan/package-client.sh --repo "$PWD" --commit FULL_LOCAL_COMMIT \
-  --config /ABSOLUTE/PRIVATE/PATH/lan.tsv \
-  --player-dir /ABSOLUTE/REVIEWED/PLAYER-ARTIFACT \
-  --certificate /ABSOLUTE/RUNTIME/relay/cert.pem \
-  --fingerprint /ABSOLUTE/RUNTIME/relay/fingerprint.sha256 \
-  --git-url https://github.com/Teremoq/teremoq \
-  --git-ref refs/heads/EXPLICIT-LAN-BRANCH \
-  --git-subdirectory infra/lan \
-  --output-dir /ABSOLUTE/PRIVATE/OUTPUT
-```
-
-This command no longer creates a USB/tar package. It prepares an external,
-non-versioned client state directory with commit/version identity, per-file
-SHA-256, a closed public `LAN-CONFIG.json`, the reviewed `player/` artifact,
-the relay public leaf/pin and a closed `CLIENT-COMPATIBILITY.tsv`. That
-compatibility contract binds the exact repository URL, explicit LAN branch ref,
-repository subdirectory, allowed client commit, source commit, player
-`package_version` and the SHA-256 of the launcher contract, player manifest and
-`LAN-CONFIG.json`. The approved `moq_namespace` is set explicitly in the
-Gateway runtime and serialized as the canonical path string `"teremoq/live"`;
-the client never invents a default namespace.
-
-The operator workflow is now split cleanly:
-
-- Git checkout: install once with `Install-LanClient.ps1`, update only with
-  `Update-LanClient.ps1` and a validated `git fetch` + `git merge --ff-only`.
-- External state: keep `VERSION.tsv`, `LAN-CONFIG.json`,
-  `CLIENT-COMPATIBILITY.tsv`, `player/`, `public-identity/` and evidence roots
-  outside the checkout so updates cannot overwrite them.
+The sole positive flow is documented in `client/README.md`: native clone of
+the explicit Git ref and commit, `Build-LanPlayerFromGit.ps1` from that clean
+checkout, then `Initialize-LanClientState.ps1` against the external builder
+state. The Web builder alone creates `players/<source_commit>` after two
+byte-identical builds; Platform consumes its closed provenance and initializes
+only public pin/config/evidence metadata. No PEM, player directory or state is
+packaged, copied or transferred from the server.
 
 This versioned boundary is intentionally ready for a later move to
 `teremoq-client`: the operator workflow stays the same and only the
