@@ -565,6 +565,8 @@ function Get-TeremoqWebGenerationContext {
         [Parameter(Mandatory = $true)][string]$LauncherContractSha256
     )
     $generation = Join-Path $StateRoot ('.teremoq-web-build\generations\' + $Checkout.Head + '.tsv')
+    [void](Get-TeremoqNonReparseDirectoryPath -Path (Split-Path -Parent $generation))
+    [void](Get-TeremoqNonReparseDirectoryPath -Path (Split-Path -Parent ([IO.Path]::GetFullPath((Join-Path $StateRoot $PlayerRelativePath)))))
     $allowed = @('schema_version','repository_url','repository_ref','source_commit','source_tree','source_contract_sha256','package_lock_sha256','package_json_sha256','node_version','npm_version','dependency_mode','previous_source_commit','source_diff_files','source_diff_sha256','independent_builds','byte_identical','player_manifest_sha256','launcher_contract_sha256','inventory_sha256','player_relative_path')
     $values = Read-TeremoqClosedTsv -Path $generation -MaxBytes 8192 -AllowedKeys $allowed -Label 'Web generation provenance'
     $project = Join-Path $Checkout.CheckoutRoot 'supervisor-web'
@@ -575,6 +577,7 @@ function Get-TeremoqWebGenerationContext {
         if (-not (Test-Path -LiteralPath $path) -or ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Web source provenance path is absent or a reparse point' }
     }
     $tree = Invoke-TeremoqGit -CheckoutRoot $Checkout.CheckoutRoot -Arguments @('rev-parse', ($Checkout.Head + ':supervisor-web'))
+    $inventory = Get-TeremoqWebPlayerInventorySha256 -PlayerRoot ([IO.Path]::GetFullPath((Join-Path $StateRoot $PlayerRelativePath)))
     if ($values.schema_version -ne '1' -or $values.repository_url -cne 'https://github.com/Teremoq/teremoq' -or
         $values.repository_ref -cne (Invoke-TeremoqGit -CheckoutRoot $Checkout.CheckoutRoot -Arguments @('symbolic-ref','--quiet','HEAD')) -or
         $values.source_commit -cne $Checkout.Head -or $values.source_tree -cne $tree -or
@@ -584,10 +587,27 @@ function Get-TeremoqWebGenerationContext {
         $values.node_version -cnotmatch '^v22[.][0-9]+[.][0-9]+$' -or $values.npm_version -cnotmatch '^10[.][0-9]+[.][0-9]+$' -or
         $values.independent_builds -cne '2' -or $values.byte_identical -cne 'true' -or
         $values.player_manifest_sha256 -cne $PlayerManifestSha256 -or $values.launcher_contract_sha256 -cne $LauncherContractSha256 -or
-        $values.inventory_sha256 -cnotmatch '^[0-9a-f]{64}$' -or $values.player_relative_path -cne $PlayerRelativePath -or
+        $values.inventory_sha256 -cne $inventory -or $values.player_relative_path -cne $PlayerRelativePath -or
         $values.source_diff_files -cnotmatch '^[0-9]+$' -or $values.source_diff_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-        $values.dependency_mode -notin @('initial','reused','refreshed') -or $values.previous_source_commit -cnotmatch '^(none|[0-9a-f]{40})$') {
+        $values.dependency_mode -notin @('initial-npm-ci','reused-lock-cache','explicit-lock-refresh') -or $values.previous_source_commit -cnotmatch '^(none|[0-9a-f]{40})$') {
         throw 'Web generation provenance is not bound to the exact clean Git source and player'
     }
     return $values
+}
+
+function Get-TeremoqWebPlayerInventorySha256 {
+    param([Parameter(Mandatory = $true)][string]$PlayerRoot)
+    $root = Get-TeremoqNonReparseDirectoryPath -Path $PlayerRoot
+    $items = @(Get-ChildItem -LiteralPath $root -Recurse -Force -File)
+    if ($items.Count -lt 1 -or $items.Count -gt 10000) { throw 'Web player inventory cardinality is outside policy' }
+    foreach ($item in $items) {
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -gt 104857600) { throw 'Web player inventory contains unsafe file' }
+    }
+    $inventory = @($items | ForEach-Object {
+        [ordered]@{ path = $_.FullName.Substring($root.Length).TrimStart('\\','/').Replace('\\','/'); bytes = [Int64]$_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+    } | Sort-Object @{ Expression = { if ($_.path -eq 'MANIFEST.sha256.json') { 1 } else { 0 } } }, @{ Expression = { $_.path } })
+    $json = (ConvertTo-Json -InputObject $inventory -Compress -Depth 3) + "`n"
+    $encoding = New-Object Text.UTF8Encoding($false)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($hasher.ComputeHash($encoding.GetBytes($json))) -replace '-', '').ToLowerInvariant() } finally { $hasher.Dispose() }
 }
