@@ -310,8 +310,9 @@ class LabRuntimePolicyTest(unittest.TestCase):
             RUNTIME.parse_wsl_preflight(wsl_preflight(nat=True), RUN_ID, SOURCE_COMMIT, SERVER_IP, CLIENT_IP, 24, PROFILE,
                                         MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
         document = windows_preflight("client")
-        document["checks"][0]["status"] = "pending"  # type: ignore[index]
-        document["checks"][0]["value"] = "not_measured"  # type: ignore[index]
+        blocking_check = next(item for item in document["checks"] if item["check"] == "node_runtime_22_x")  # type: ignore[index]
+        blocking_check["status"] = "pending"
+        blocking_check["value"] = "not_measured"
         with self.assertRaisesRegex(ValueError, "not activation-ready"):
             RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
                                             SERVER_IP, CLIENT_IP, 24, PROFILE,
