@@ -7,15 +7,19 @@ umask 077
 TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(cd -- "${TEST_DIR}/.." && pwd -P)"
 source "${TEST_DIR}/test-lib.sh"
+if rg -n '^\s*\$[A-Za-z0-9_]+\.ArgumentList\b' "${ROOT}/client"/*.ps1 >/dev/null; then
+    printf 'lan-git-client-test: client runner uses ProcessStartInfo.ArgumentList, unsupported by Windows PowerShell 5\n' >&2
+    exit 1
+fi
 have_windows_git() {
     powershell.exe -NoProfile -NonInteractive -Command '
-    $candidate = @("git.exe","git.cmd","git.bat","git") | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+    $candidate = @("git.exe","git") | ForEach-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Where-Object {$_.Source -and $_.Source.EndsWith(".exe",[StringComparison]::OrdinalIgnoreCase)} | Select-Object -First 1
     if($candidate){exit 0}
     exit 1
     ' >/dev/null 2>&1
 }
 if ! command -v powershell.exe >/dev/null 2>&1 || ! command -v wslpath >/dev/null 2>&1 || ! have_windows_git; then
-    printf 'lan-git-client-test: skipped (Windows PowerShell runtime or Git for Windows unavailable)\n'
+    printf 'lan-git-client-test: skipped (native Windows PowerShell or Git for Windows unavailable; Git E2E not run)\n'
     exit 0
 fi
 scratch="$(mktemp -d /tmp/teremoq-lan-git-client-test.XXXXXX)"

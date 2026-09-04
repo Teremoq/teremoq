@@ -48,17 +48,19 @@ function Read-TeremoqClosedTsv {
 }
 
 function Get-TeremoqGitExecutable {
-    $commands = @('git.exe', 'git.cmd', 'git.bat', 'git')
+    # A .cmd/.bat launcher introduces a second cmd.exe parsing boundary. The
+    # approved client flow invokes only the Git for Windows executable.
+    $commands = @('git.exe', 'git')
     foreach ($commandName in $commands) {
         $command = Get-Command $commandName -ErrorAction SilentlyContinue
-        if ($command -and $command.Source -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) { return $command.Source }
+        if ($command -and $command.Source -and $command.Source.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) { return $command.Source }
     }
     $where = Get-Command where.exe -ErrorAction SilentlyContinue
     if ($where) {
-        foreach ($commandName in @('git.exe', 'git.cmd', 'git.bat', 'git')) {
+        foreach ($commandName in @('git.exe', 'git')) {
             $matches = & $where.Source $commandName 2>$null
             foreach ($match in @($matches)) {
-                if (-not [string]::IsNullOrWhiteSpace($match) -and (Test-Path -LiteralPath $match -PathType Leaf)) { return $match }
+                if (-not [string]::IsNullOrWhiteSpace($match) -and $match.EndsWith('.exe', [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $match -PathType Leaf)) { return $match }
             }
         }
     }
@@ -76,6 +78,159 @@ function Get-TeremoqGitExecutable {
     return $null
 }
 
+function Convert-TeremoqWindowsArgument {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+    if ($Value -eq '') { return '""' }
+    if ($Value -cnotmatch '[\s"]') { return $Value }
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            $backslashes += 1
+            continue
+        }
+        if ($character -eq '"') {
+            [void]$builder.Append('\' * (($backslashes * 2) + 1))
+            [void]$builder.Append('"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            [void]$builder.Append('\' * $backslashes)
+            $backslashes = 0
+        }
+        [void]$builder.Append($character)
+    }
+    if ($backslashes -gt 0) { [void]$builder.Append('\' * ($backslashes * 2)) }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Convert-TeremoqWindowsCommandLine {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    if ($Arguments.Count -lt 1 -or $Arguments.Count -gt 32) { throw 'native process argument count is outside 1..32' }
+    foreach ($argument in $Arguments) {
+        if ($null -eq $argument -or $argument.Length -gt 8192) { throw 'native process argument is invalid or oversized' }
+    }
+    return (($Arguments | ForEach-Object { Convert-TeremoqWindowsArgument -Value $_ }) -join ' ')
+}
+
+function New-TeremoqBoundedStreamState {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.Stream]$Stream,
+        [Parameter(Mandatory = $true)][int]$MaxBytes
+    )
+    if ($MaxBytes -lt 1 -or $MaxBytes -gt 131072) { throw 'native stream limit is outside 1..131072 bytes' }
+    $state = [pscustomobject]@{
+        Stream = $Stream
+        MaxBytes = $MaxBytes
+        Buffer = New-Object byte[] 4096
+        Bytes = New-Object System.IO.MemoryStream
+        Pending = $null
+        Complete = $false
+        Oversized = $false
+    }
+    $state.Pending = $state.Stream.BeginRead($state.Buffer, 0, $state.Buffer.Length, $null, $null)
+    return $state
+}
+
+function Update-TeremoqBoundedStreamState {
+    param([Parameter(Mandatory = $true)]$State)
+    if ($State.Complete -or -not $State.Pending.IsCompleted) { return }
+    $read = $State.Stream.EndRead($State.Pending)
+    $State.Pending = $null
+    if ($read -eq 0) {
+        $State.Complete = $true
+        return
+    }
+    if (($State.Bytes.Length + $read) -gt $State.MaxBytes) {
+        $State.Oversized = $true
+        $State.Complete = $true
+        return
+    }
+    $State.Bytes.Write($State.Buffer, 0, $read)
+    $State.Pending = $State.Stream.BeginRead($State.Buffer, 0, $State.Buffer.Length, $null, $null)
+}
+
+function Convert-TeremoqStreamStateToStrictUtf8 {
+    param([Parameter(Mandatory = $true)]$State)
+    if (-not $State.Complete -or $State.Oversized) { throw 'native stream did not finish within its bounded policy' }
+    $encoding = New-Object System.Text.UTF8Encoding($false, $true)
+    return $encoding.GetString($State.Bytes.ToArray())
+}
+
+function Stop-TeremoqNativeProcess {
+    param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
+    if ($Process.HasExited) { return $true }
+    try { $Process.Kill() } catch { return $false }
+    return $Process.WaitForExit(5000)
+}
+
+function Invoke-TeremoqBoundedNativeProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter()][int]$TimeoutMilliseconds = 30000,
+        [Parameter()][int]$StdoutMaxBytes = 131072,
+        [Parameter()][int]$StderrMaxBytes = 131072
+    )
+    if ($TimeoutMilliseconds -lt 1000 -or $TimeoutMilliseconds -gt 60000) { throw 'native process timeout is outside 1000..60000 ms' }
+    $resolvedFilePath = [IO.Path]::GetFullPath($FilePath)
+    $resolvedWorkingDirectory = [IO.Path]::GetFullPath($WorkingDirectory)
+    if (-not (Test-Path -LiteralPath $resolvedFilePath -PathType Leaf) -or -not (Test-Path -LiteralPath $resolvedWorkingDirectory -PathType Container)) {
+        throw 'native executable or working directory is unavailable'
+    }
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $resolvedFilePath
+    # ProcessStartInfo.ArgumentList is not present in Windows PowerShell 5/.NET Framework.
+    # This explicit Win32 command line is the single argv boundary for Git and test canaries.
+    $startInfo.Arguments = Convert-TeremoqWindowsCommandLine -Arguments $Arguments
+    $startInfo.WorkingDirectory = $resolvedWorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $stdoutState = $null
+    $stderrState = $null
+    $started = $false
+    try {
+        if (-not $process.Start()) { throw 'failed to start native process' }
+        $started = $true
+        $stdoutState = New-TeremoqBoundedStreamState -Stream $process.StandardOutput.BaseStream -MaxBytes $StdoutMaxBytes
+        $stderrState = New-TeremoqBoundedStreamState -Stream $process.StandardError.BaseStream -MaxBytes $StderrMaxBytes
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        while (-not ($process.HasExited -and $stdoutState.Complete -and $stderrState.Complete)) {
+            Update-TeremoqBoundedStreamState -State $stdoutState
+            Update-TeremoqBoundedStreamState -State $stderrState
+            if ($stdoutState.Oversized -or $stderrState.Oversized) {
+                if (-not (Stop-TeremoqNativeProcess -Process $process)) { throw 'native process output exceeded byte limits and termination could not be confirmed' }
+                throw 'native process output exceeded byte limits'
+            }
+            if ($stopwatch.ElapsedMilliseconds -gt $TimeoutMilliseconds) {
+                if (-not (Stop-TeremoqNativeProcess -Process $process)) { throw 'native process timed out and termination could not be confirmed' }
+                throw 'native process timed out'
+            }
+            Start-Sleep -Milliseconds 5
+        }
+        # Streams have reached EOF before collecting ExitCode: no redirected-pipe deadlock.
+        if (-not $process.WaitForExit(1000)) { throw 'native process did not exit after its streams closed' }
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            Stdout = Convert-TeremoqStreamStateToStrictUtf8 -State $stdoutState
+            Stderr = Convert-TeremoqStreamStateToStrictUtf8 -State $stderrState
+        }
+    } finally {
+        if ($started -and -not $process.HasExited) { [void](Stop-TeremoqNativeProcess -Process $process) }
+        if ($stdoutState) { $stdoutState.Bytes.Dispose() }
+        if ($stderrState) { $stderrState.Bytes.Dispose() }
+        $process.Dispose()
+    }
+}
+
 function Invoke-TeremoqGit {
     param(
         [Parameter(Mandatory = $true)][string]$CheckoutRoot,
@@ -83,30 +238,15 @@ function Invoke-TeremoqGit {
     )
     $gitPath = Get-TeremoqGitExecutable
     if (-not $gitPath) { throw 'Git for Windows is required and was not found' }
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $gitPath
-    $startInfo.WorkingDirectory = $CheckoutRoot
-    $startInfo.UseShellExecute = $false
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add($argument) }
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $startInfo
-    if (-not $process.Start()) { throw 'failed to start Git process' }
-    if (-not $process.WaitForExit(30000)) {
-        try { $process.Kill() } catch {}
-        throw 'Git process timed out'
-    }
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    if ($stdout.Length -gt 131072 -or $stderr.Length -gt 131072) { throw 'Git command output exceeded byte limits' }
-    if ($process.ExitCode -ne 0) {
-        $detail = $stderr.Trim()
-        if ([string]::IsNullOrWhiteSpace($detail)) { $detail = $stdout.Trim() }
+    $result = Invoke-TeremoqBoundedNativeProcess -FilePath $gitPath -WorkingDirectory $CheckoutRoot -Arguments $Arguments
+    if ($result.ExitCode -ne 0) {
+        $detail = $result.Stderr.Trim()
+        if ([string]::IsNullOrWhiteSpace($detail)) { $detail = $result.Stdout.Trim() }
         if ([string]::IsNullOrWhiteSpace($detail)) { $detail = 'no additional detail' }
+        if ($detail.Length -gt 1024) { $detail = $detail.Substring(0, 1024) }
         throw "Git command failed: $detail"
     }
-    return ($stdout -replace "`r", '').TrimEnd("`n")
+    return ($result.Stdout -replace "`r", '').TrimEnd("`n")
 }
 
 function Test-TeremoqSafeRelativeRepositorySubdirectory {

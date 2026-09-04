@@ -18,6 +18,16 @@ for file in "${ROOT}"/windows/*.ps1 "${ROOT}"/client/*.ps1; do
         '$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile($env:TEREMOQ_PS_PARSE_FILE,[ref]$tokens,[ref]$errors) > $null; if($errors.Count -ne 0){$errors | ForEach-Object {Write-Error $_}; exit 1}' \
         >/dev/null
 done
+if rg -n '^\s*\$[A-Za-z0-9_]+\.ArgumentList\b' "${ROOT}/client"/*.ps1 >/dev/null; then
+    printf 'powershell-policy-test: client runner uses ProcessStartInfo.ArgumentList, unsupported by Windows PowerShell 5\n' >&2
+    exit 1
+fi
+grep -Fq 'Convert-TeremoqWindowsCommandLine -Arguments $Arguments' "${ROOT}/client/Client-Distribution.ps1"
+grep -Fq 'New-TeremoqBoundedStreamState -Stream $process.StandardOutput.BaseStream' "${ROOT}/client/Client-Distribution.ps1"
+grep -Fq 'New-TeremoqBoundedStreamState -Stream $process.StandardError.BaseStream' "${ROOT}/client/Client-Distribution.ps1"
+client_distribution_fixture="$(wslpath -w "${TEST_DIR}/client-distribution-fixture.ps1")"
+client_distribution="$(wslpath -w "${ROOT}/client/Client-Distribution.ps1")"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${client_distribution_fixture}" -ScriptPath "${client_distribution}" >/dev/null
 grep -Fq 'Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex' "${ROOT}/windows/Preflight-Lan.ps1"
 grep -Fq 'Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex' "${ROOT}/windows/Preflight-Client.ps1"
 grep -Fq '/query /status /verbose' "${ROOT}/windows/Preflight-Lan.ps1"
