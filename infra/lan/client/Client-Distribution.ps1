@@ -256,12 +256,39 @@ function Test-TeremoqSafeRelativeRepositorySubdirectory {
     return @($Value.Split('/') | Where-Object { $_ -in @('.', '..') }).Count -eq 0
 }
 
+function Test-TeremoqCanonicalPrivateUnicastIPv4 {
+    param([Parameter(Mandatory = $true)][string]$Value)
+    $parsed = $null
+    if (-not [Net.IPAddress]::TryParse($Value, [ref]$parsed) -or
+        $parsed.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
+        $parsed.IPAddressToString -cne $Value) { return $false }
+    $bytes = $parsed.GetAddressBytes()
+    if ([Net.IPAddress]::IsLoopback($parsed) -or $bytes[0] -eq 0 -or $Value -eq '255.255.255.255' -or
+        $bytes[0] -ge 224 -or ($bytes[0] -eq 169 -and $bytes[1] -eq 254) -or $bytes[0] -ge 240) { return $false }
+    return ($bytes[0] -eq 10) -or ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) -or ($bytes[0] -eq 192 -and $bytes[1] -eq 168)
+}
+
 function Get-TeremoqRepositoryBranchName {
     param([Parameter(Mandatory = $true)][string]$RepositoryRef)
     if ($RepositoryRef -cnotmatch '^refs/heads/([A-Za-z0-9][A-Za-z0-9._/-]{0,127})$') {
         throw 'repository_ref must be an explicit refs/heads/* name for the ff-only LAN workflow'
     }
     return $Matches[1]
+}
+
+function Assert-TeremoqApprovedGitBootstrapParameters {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryUrl,
+        [Parameter(Mandatory = $true)][string]$RepositoryRef,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit,
+        [Parameter(Mandatory = $true)][string]$RepositorySubdirectory
+    )
+    if ($RepositoryUrl -cne 'https://github.com/Teremoq/teremoq' -or
+        $ExpectedCommit -cnotmatch '^[0-9a-f]{40}$' -or
+        -not (Test-TeremoqSafeRelativeRepositorySubdirectory -Value $RepositorySubdirectory)) {
+        throw 'Git bootstrap parameters are outside the approved LAN policy'
+    }
+    [void](Get-TeremoqRepositoryBranchName -RepositoryRef $RepositoryRef)
 }
 
 function Assert-TeremoqRootsSeparated {
@@ -285,7 +312,7 @@ function Get-TeremoqLanStateContext {
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'StateRoot must exist' }
     $rootItem = Get-Item -LiteralPath $root -Force
     if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'StateRoot may not be a reparse point' }
-    foreach ($required in @('VERSION.tsv', 'LAN-CONFIG.json', 'CLIENT-COMPATIBILITY.tsv', 'SHA256SUMS', 'public-identity/relay-cert.pem', 'public-identity/relay-cert.sha256', 'player')) {
+    foreach ($required in @('VERSION.tsv', 'LAN-CONFIG.json', 'CLIENT-COMPATIBILITY.tsv', 'SHA256SUMS', 'public-identity/relay-cert.sha256', 'player')) {
         if (-not (Test-Path -LiteralPath (Join-Path $root $required))) { throw "missing client state artifact: $required" }
     }
     $versionAllowed = @('schema_version', 'package_version', 'run_id', 'source_commit', 'server_ipv4', 'moq_url', 'player_manifest_sha256', 'launcher_contract_sha256', 'lan_config_sha256', 'player_evidence', 'load_launcher_status')
@@ -303,16 +330,17 @@ function Get-TeremoqLanStateContext {
         $version.load_launcher_status -cne 'ready') {
         throw 'VERSION.tsv values are outside the LAN Git client policy'
     }
-    $compatibilityAllowed = @('schema_version', 'repository_url', 'repository_ref', 'repository_subdirectory', 'allowed_client_commit', 'source_commit', 'package_version', 'client_protocol_version', 'player_manifest_sha256', 'launcher_contract_sha256', 'lan_config_sha256')
+    $compatibilityAllowed = @('schema_version', 'repository_url', 'repository_ref', 'repository_subdirectory', 'player_relative_path', 'allowed_client_commit', 'source_commit', 'package_version', 'client_protocol_version', 'player_manifest_sha256', 'launcher_contract_sha256', 'lan_config_sha256')
     $compatibility = Read-TeremoqClosedTsv -Path (Join-Path $root 'CLIENT-COMPATIBILITY.tsv') -MaxBytes 4096 -AllowedKeys $compatibilityAllowed -Label 'CLIENT-COMPATIBILITY.tsv'
     if ($compatibility.schema_version -ne '1' -or
         $compatibility.repository_url -cne 'https://github.com/Teremoq/teremoq' -or
         $compatibility.repository_ref -cnotmatch '^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$' -or
         -not (Test-TeremoqSafeRelativeRepositorySubdirectory -Value $compatibility.repository_subdirectory) -or
+        -not (Test-TeremoqSafeRelativeRepositorySubdirectory -Value $compatibility.player_relative_path) -or
         $compatibility.allowed_client_commit -cnotmatch '^[0-9a-f]{40}$' -or
         $compatibility.source_commit -cnotmatch '^[0-9a-f]{40}$' -or
         $compatibility.package_version -cnotmatch '^[A-Za-z0-9._-]{1,64}$' -or
-        $compatibility.client_protocol_version -cne 'teremoq-lan-git-v1' -or
+        $compatibility.client_protocol_version -cne 'teremoq-lan-git-v2' -or
         $compatibility.player_manifest_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         $compatibility.launcher_contract_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         $compatibility.lan_config_sha256 -cnotmatch '^[0-9a-f]{64}$') {
@@ -390,13 +418,6 @@ function Get-TeremoqLanStateContext {
         (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $launcherValues.launcher_sha256) {
         throw 'player launcher artifact/checksum mismatch'
     }
-    $certificateText = Read-TeremoqBoundedUtf8File -Path (Join-Path $root 'public-identity/relay-cert.pem') -MaxBytes 32768
-    $match = [regex]::Match($certificateText, '(?s)^\s*-----BEGIN CERTIFICATE-----\s*(?<body>[A-Za-z0-9+/=\r\n]+)\s*-----END CERTIFICATE-----\s*$')
-    if (-not $match.Success) { throw 'invalid relay public certificate PEM' }
-    $der = [Convert]::FromBase64String(($match.Groups['body'].Value -replace '\s', ''))
-    $hasher = [Security.Cryptography.SHA256]::Create()
-    try { $actualFingerprint = ([BitConverter]::ToString($hasher.ComputeHash($der)) -replace '-', '').ToLowerInvariant() } finally { $hasher.Dispose() }
-    if ($actualFingerprint -cne $fingerprint) { throw 'relay public certificate fingerprint mismatch' }
     $forbidden = Get-ChildItem -LiteralPath $root -Recurse -Force -File | Where-Object {
         $_.Name -match '(?i)(\.key$|\.p12$|\.pfx$|^id_rsa$|^\.env$|password|secret|token)'
     }
@@ -474,10 +495,25 @@ function Get-TeremoqGitCheckoutContext {
     if (-not $supportRoot.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $supportRoot -PathType Container)) {
         throw 'approved repository_subdirectory is absent from the checkout'
     }
-    foreach ($required in @('client/Install-LanClient.ps1', 'client/Update-LanClient.ps1', 'client/Invoke-LanLoad.ps1', 'client/Verify-Package.ps1', 'client/Import-BrowserObservation.ps1', 'client/Client-Distribution.ps1', 'windows/Preflight-Client.ps1', 'windows/Collect-Evidence.ps1', 'windows/Preflight-Contract.ps1')) {
+    foreach ($required in @('client/Install-LanClient.ps1', 'client/Initialize-LanClientState.ps1', 'client/Update-LanClient.ps1', 'client/Invoke-LanLoad.ps1', 'client/Verify-Package.ps1', 'client/Import-BrowserObservation.ps1', 'client/Client-Distribution.ps1', 'windows/Preflight-Client.ps1', 'windows/Collect-Evidence.ps1', 'windows/Preflight-Contract.ps1')) {
         if (-not (Test-Path -LiteralPath (Join-Path $supportRoot $required) -PathType Leaf)) {
             throw "required LAN support file is absent from checkout: $required"
         }
+    }
+    $checkoutPlayerRoot = [IO.Path]::GetFullPath((Join-Path $root $StateContext.Compatibility.player_relative_path))
+    if (-not $checkoutPlayerRoot.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $checkoutPlayerRoot -PathType Container) -or
+        ((Get-Item -LiteralPath $checkoutPlayerRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'versioned player directory is absent from the approved checkout'
+    }
+    foreach ($playerFile in @('MANIFEST.sha256.json', 'lan-launcher.tsv')) {
+        $path = Join-Path $checkoutPlayerRoot $playerFile
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "versioned player file is absent from the approved checkout: $playerFile"
+        }
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $checkoutPlayerRoot 'MANIFEST.sha256.json') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $StateContext.Version.player_manifest_sha256 -or
+        (Get-FileHash -LiteralPath (Join-Path $checkoutPlayerRoot 'lan-launcher.tsv') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $StateContext.Version.launcher_contract_sha256) {
+        throw 'external player state differs from the exact versioned checkout player'
     }
     return [pscustomobject]@{
         CheckoutRoot = $root
@@ -485,4 +521,35 @@ function Get-TeremoqGitCheckoutContext {
         SupportRoot = $supportRoot
         FetchUrl = $fetchUrls[0]
     }
+}
+
+function Get-TeremoqGitBootstrapCheckoutContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$CheckoutRoot,
+        [Parameter(Mandatory = $true)][string]$RepositoryUrl,
+        [Parameter(Mandatory = $true)][string]$RepositoryRef,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit,
+        [Parameter(Mandatory = $true)][string]$RepositorySubdirectory
+    )
+    Assert-TeremoqApprovedGitBootstrapParameters -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
+    $root = [IO.Path]::GetFullPath($CheckoutRoot)
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'CheckoutRoot must exist' }
+    $item = Get-Item -LiteralPath $root -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'CheckoutRoot may not be a reparse point' }
+    $topLevel = [IO.Path]::GetFullPath((Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('rev-parse', '--show-toplevel')))
+    if ($topLevel -cne $root) { throw 'CheckoutRoot is not the Git repository root' }
+    $status = Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
+    if (-not [string]::IsNullOrEmpty($status)) { throw 'Git checkout must be clean, including untracked files' }
+    $remotes = @(Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('remote') -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($remotes.Count -ne 1 -or $remotes[0] -cne 'origin') { throw 'Git checkout must expose exactly one remote named origin' }
+    $fetchUrls = @(Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('config', '--get-all', 'remote.origin.url') -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($fetchUrls.Count -ne 1 -or $fetchUrls[0] -cne $RepositoryUrl) { throw 'Git remote URL differs from the approved client repository URL' }
+    $pushUrls = @(Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('config', '--get-all', 'remote.origin.pushurl') -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($pushUrls.Count -gt 1 -or ($pushUrls.Count -eq 1 -and $pushUrls[0] -cne $fetchUrls[0])) { throw 'Git push URL differs from the approved client repository URL' }
+    $branch = Get-TeremoqRepositoryBranchName -RepositoryRef $RepositoryRef
+    if ((Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')) -cne $branch) { throw 'Git checkout is not on the approved LAN branch' }
+    if ((Invoke-TeremoqGit -CheckoutRoot $root -Arguments @('rev-parse', 'HEAD')) -cne $ExpectedCommit) { throw 'Git checkout HEAD differs from the approved client commit' }
+    $supportRoot = [IO.Path]::GetFullPath((Join-Path $root $RepositorySubdirectory))
+    if (-not $supportRoot.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $supportRoot -PathType Container)) { throw 'approved repository_subdirectory is absent from the checkout' }
+    return [pscustomobject]@{ CheckoutRoot = $root; Head = $ExpectedCommit; SupportRoot = $supportRoot }
 }

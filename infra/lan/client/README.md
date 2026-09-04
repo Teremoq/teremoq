@@ -3,22 +3,23 @@
 
 # Remote LAN client checkout
 
-The LAN client no longer runs from a USB or tarball package. Code comes only
-from a reviewed Git checkout of `https://github.com/Teremoq/teremoq` on an
-explicit LAN branch ref, while every run-specific or local artifact stays
-outside that checkout in a separate state directory.
+The LAN client no longer runs from a USB or tarball package. The first action
+is a native Git clone of `https://github.com/Teremoq/teremoq` on an explicit
+LAN branch ref. No PowerShell file or compatibility file is required before
+that clone. Every run-specific or local artifact is initialized on the client,
+outside the checkout, after the exact Git commit has been validated.
 
 Current boundary:
 
 - Git checkout: reviewed scripts and support files under the repository root.
-- External state root: `VERSION.tsv`, `LAN-CONFIG.json`,
-  `CLIENT-COMPATIBILITY.tsv`, `SHA256SUMS`, `public-identity/` and `player/`.
+- External state root: locally generated `VERSION.tsv`, `LAN-CONFIG.json`,
+  `CLIENT-COMPATIBILITY.tsv`, `SHA256SUMS`, the public SHA-256 pin and a copy
+  of the player from the exact Git checkout.
 - Evidence root: deterministic per-run output only.
 
-The versioned compatibility contract already carries
-`repository_url`, `repository_ref` and `repository_subdirectory`. Today it
-points at the monorepo and `infra/lan`; a future move to `teremoq-client`
-changes that contract boundary instead of changing the operator workflow.
+Today the Git boundary points at the monorepo and `infra/lan`; a future move to
+`teremoq-client` changes only the explicit URL/ref/subdirectory parameters,
+not this operator workflow.
 
 On Windows 10/11, open a native Windows PowerShell console with Git for Windows
 already installed. Do not run the preflights from WSL interop: on this host,
@@ -36,16 +37,61 @@ $EvidenceRoot = 'C:\ABSOLUTE\PRIVATE\teremoq-lan-evidence'
 The checkout and the external state root must remain separate trees. Neither
 may contain the other.
 
-Initial installation uses the approved Git ref from
-`CLIENT-COMPATIBILITY.tsv`:
+## First installation: native Git only
+
+In an empty parent directory, set the public, reviewed values supplied by the
+approved LAN integration. `ExpectedCommit` is always the full 40-character
+commit. These commands execute no repository script until the clone itself,
+its remote, branch, HEAD and clean state have all been checked.
 
 ```powershell
-& .\infra\lan\client\Install-LanClient.ps1 `
-  -StateRoot $StateRoot -CheckoutRoot $CheckoutRoot
+$RepositoryUrl = 'https://github.com/Teremoq/teremoq'
+$RepositoryRef = 'refs/heads/EXPLICIT_LAN_BRANCH'
+$ExpectedCommit = 'FULL_40_CHARACTER_APPROVED_COMMIT'
+$RepositorySubdirectory = 'infra/lan'
+$Branch = $RepositoryRef.Substring('refs/heads/'.Length)
+
+git clone --origin origin --branch $Branch --single-branch --no-tags `
+  $RepositoryUrl $CheckoutRoot
+Set-Location $CheckoutRoot
+if ((git remote) -cne 'origin') { throw 'unexpected Git remote set' }
+if ((git remote get-url origin) -cne $RepositoryUrl) { throw 'unexpected Git remote URL' }
+if ((git rev-parse --abbrev-ref HEAD) -cne $Branch) { throw 'unexpected Git branch' }
+if ((git rev-parse HEAD) -cne $ExpectedCommit) { throw 'unexpected Git commit' }
+if (git status --porcelain=v1 --untracked-files=all) { throw 'checkout is not clean' }
 ```
 
-The script clones only from the approved repository URL and explicit
-`refs/heads/*` LAN ref, then refuses the checkout unless:
+Only after the native checks pass, initialize local state from a versioned
+player directory already inside that exact checkout. No player, certificate,
+configuration or compatibility file is copied from the server. The Web-owner
+integration supplies the reviewed relative player path; initialization blocks
+if that path is absent, altered, a reparse point or outside the checkout.
+
+```powershell
+$PlayerRelativePath = 'supervisor-web/lan-player' # exact reviewed path for the approved commit
+$RunId = 'lan-EXPLICIT-RUN-ID'
+$ServerIPv4 = 'SERVER_EXACT_RFC1918_IP'
+$PrefixLength = 24
+$Namespace = 'teremoq/live'
+$FingerprintSha256 = 'EXACT_64_LOWERCASE_HEX_RELAY_PIN'
+
+& "$CheckoutRoot\infra\lan\client\Initialize-LanClientState.ps1" `
+  -CheckoutRoot $CheckoutRoot -StateRoot $StateRoot `
+  -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef `
+  -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory `
+  -PlayerRelativePath $PlayerRelativePath -RunId $RunId `
+  -ServerIPv4 $ServerIPv4 -PrefixLength $PrefixLength -Namespace $Namespace `
+  -FingerprintSha256 $FingerprintSha256
+```
+
+The initializer refuses an existing state root instead of overwriting it. It
+builds the closed v2 compatibility contract and all deterministic hashes on the
+client, binding the exact checkout commit, protocol version, player manifest,
+launcher contract, public LAN config and pin. It does not execute the player.
+The client uses `serverCertificateHashes`, so it needs the exact SHA-256 pin,
+not a PEM certificate; no PEM is stored in or required by client state.
+
+Subsequent verification refuses the checkout unless:
 
 - `origin` is the only remote;
 - the stored fetch/push URL is exactly the approved URL;
@@ -66,7 +112,7 @@ branch drift, divergence, a fetched commit different from the approved commit,
 or any unexpected checkout layout. No downloaded code is executed before that
 validation passes.
 
-After installation or update, verify the checkout and the external state
+After initialization or update, verify the checkout and the external state
 together:
 
 ```powershell
@@ -74,21 +120,22 @@ together:
   -CheckoutRoot $CheckoutRoot -StateRoot $StateRoot
 ```
 
-`CLIENT-COMPATIBILITY.tsv` is the compatibility gate between the client checkout
-and the approved server run. Its closed keys bind:
+`CLIENT-COMPATIBILITY.tsv` is generated locally and is the compatibility gate
+between the client checkout and the approved server run. Its closed keys bind:
 
 - repository URL/ref/subdirectory;
 - the exact allowed client commit;
 - the exact source commit;
 - the player `package_version`;
-- the fixed protocol label `teremoq-lan-git-v1`; and
+- the fixed protocol label `teremoq-lan-git-v2`; and
+- the versioned player relative path; and
 - the SHA-256 of `MANIFEST.sha256.json`, `player/lan-launcher.tsv` and
   `LAN-CONFIG.json`.
 
 In the current monorepo contract, `allowed_client_commit` and `source_commit`
-must be exactly the same 40-character commit. That keeps the player artifact,
-the LAN config and the reviewed scripts on one clean integration commit. A
-future `teremoq-client` split would revise only this contract version.
+are exactly the same 40-character commit. That keeps the player artifact, LAN
+config and reviewed scripts on one clean integration commit. A future
+`teremoq-client` split revises only this contract version.
 
 Run the exact client preflight from the Git checkout:
 
@@ -167,7 +214,7 @@ those exact bytes to the deterministic evidence destination. This browser export
 is still only `local-browser-observation-user-exported`, not a cryptographic
 attestation.
 
-The external state contains no private key, capability, token, password, `.env`
-or server-side configuration. The relay leaf certificate and SHA-256 pin are
-public inspection material only. No client script installs trust globally or
-modifies Windows configuration.
+The external state contains no private key, capability, token, password, `.env`,
+PEM certificate or server-side configuration. It contains only the exact public
+SHA-256 pin needed by WebTransport and locally derived, hash-bound state. No
+client script installs trust globally or modifies Windows configuration.

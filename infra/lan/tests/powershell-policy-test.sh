@@ -112,7 +112,7 @@ printf '{"schema_version":1,"run_id":"%s","source_commit":"%s","relay_url":"http
 config_sha="$(sha256sum "${scratch}/package/LAN-CONFIG.json" | awk '{print $1}')"
 printf 'schema_version\t1\npackage_version\t0.1.0-lan\nrun_id\t%s\nsource_commit\t%s\nserver_ipv4\t192.168.77.10\nmoq_url\thttps://192.168.77.10:14433/watch\nplayer_manifest_sha256\t%s\nlauncher_contract_sha256\t%s\nlan_config_sha256\t%s\nplayer_evidence\tnot_measured\nload_launcher_status\tready\n' \
     "${run_id}" "${commit}" "$(printf 'c%.0s' {1..64})" "$(printf 'd%.0s' {1..64})" "${config_sha}" >"${scratch}/package/VERSION.tsv"
-printf 'schema_version\t1\nrepository_url\thttps://github.com/Teremoq/teremoq\nrepository_ref\trefs/heads/codex/lan-e2e-lab\nrepository_subdirectory\tinfra/lan\nallowed_client_commit\t%s\nsource_commit\t%s\npackage_version\t0.1.0-lan\nclient_protocol_version\tteremoq-lan-git-v1\nplayer_manifest_sha256\t%s\nlauncher_contract_sha256\t%s\nlan_config_sha256\t%s\n' \
+printf 'schema_version\t1\nrepository_url\thttps://github.com/Teremoq/teremoq\nrepository_ref\trefs/heads/codex/lan-e2e-lab\nrepository_subdirectory\tinfra/lan\nplayer_relative_path\tsupervisor-web/lan-player\nallowed_client_commit\t%s\nsource_commit\t%s\npackage_version\t0.1.0-lan\nclient_protocol_version\tteremoq-lan-git-v2\nplayer_manifest_sha256\t%s\nlauncher_contract_sha256\t%s\nlan_config_sha256\t%s\n' \
     "${commit}" "${commit}" "$(printf 'c%.0s' {1..64})" "$(printf 'd%.0s' {1..64})" "${config_sha}" >"${scratch}/package/CLIENT-COMPATIBILITY.tsv"
 mkdir -p -- "${scratch}/package/public-identity" "${scratch}/package/player"
 cp -- "${scratch}/package/public-fingerprint.txt" "${scratch}/package/public-identity/relay-cert.sha256"
