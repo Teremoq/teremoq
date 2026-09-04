@@ -9,24 +9,86 @@ $policy = Join-Path $PSScriptRoot 'assert-windows-path-policy.ps1'
 $root = Join-Path ([IO.Path]::GetTempPath()) ("teremoq-path-canary-" + [guid]::NewGuid().ToString('N'))
 $originalLocation = Get-Location
 
-function New-Junction([string]$Link, [string]$Target) {
-    $output = & cmd.exe /d /s /c "mklink /J `"$Link`" `"$Target`"" 2>&1
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $Link -PathType Container)) {
-        throw "junction canary setup failed: $output"
+function Assert-SafeCmdPath([string]$Value) {
+    if (-not [IO.Path]::IsPathRooted($Value) -or $Value.Length -gt 1024 -or
+        $Value -match '[\x00-\x1f"&|<>^%!]') {
+        throw 'mklink path is outside the closed canary contract'
     }
 }
 
-function New-DirectorySymlink([string]$Link, [string]$Target) {
-    $created = $false
+function Invoke-Mklink([string]$Mode, [string]$Link, [string]$Target) {
+    if ($Mode -ne '/J' -and $Mode -ne '/D') { throw 'mklink mode is outside contract' }
+    Assert-SafeCmdPath $Link
+    Assert-SafeCmdPath $Target
+
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $startInfo.Arguments = '/d /s /c "mklink ' + $Mode + ' "' + $Link + '" "' + $Target + '""'
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $startInfo
     try {
-        & cmd.exe /d /s /c "mklink /D `"$Link`" `"$Target`"" 2>$null | Out-Null
-        $created = $LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $Link -PathType Container)
-    } catch { $created = $false }
-    if ($created) { return 'directory-symlink' }
-    New-Junction $Link $Target
-    if (-not (Test-Path -LiteralPath $Link -PathType Container)) {
-        throw 'symlink privilege unavailable and reparse fallback setup failed'
+        if (-not $process.Start()) { throw 'cmd/mklink process did not start' }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(10000)) {
+            try { $process.Kill() } catch {}
+            throw 'cmd/mklink timed out'
+        }
+        if (-not $stdoutTask.Wait(2000) -or -not $stderrTask.Wait(2000)) {
+            throw 'cmd/mklink output did not close'
+        }
+        $output = [string]$stdoutTask.Result + [string]$stderrTask.Result
+        if ($output.Length -gt 8192) { throw 'cmd/mklink output exceeded limit' }
+        return [pscustomobject]@{
+            ExitCode = [int]$process.ExitCode
+            Output = $output.Trim()
+        }
+    } finally {
+        $process.Dispose()
     }
+}
+
+function Assert-ReparseDirectory([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        throw 'mklink did not create a directory entry'
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+        throw 'mklink entry is not a reparse point'
+    }
+}
+
+function New-Junction([string]$Link, [string]$Target) {
+    $result = Invoke-Mklink '/J' $Link $Target
+    if ($result.ExitCode -ne 0) {
+        throw "junction canary setup failed with exit $($result.ExitCode): $($result.Output)"
+    }
+    Assert-ReparseDirectory $Link
+}
+
+function Assert-MklinkFailureCaptured([string]$ExistingLink, [string]$Target) {
+    $result = Invoke-Mklink '/J' $ExistingLink $Target
+    if ($result.ExitCode -eq 0) {
+        throw 'duplicate mklink unexpectedly succeeded; failure canary is invalid'
+    }
+    Assert-ReparseDirectory $ExistingLink
+}
+
+function New-DirectorySymlink([string]$Link, [string]$Target) {
+    $result = Invoke-Mklink '/D' $Link $Target
+    if ($result.ExitCode -eq 0) {
+        Assert-ReparseDirectory $Link
+        return 'directory-symlink'
+    }
+    if (Test-Path -LiteralPath $Link) {
+        throw 'failed symlink command left an unexpected path'
+    }
+    New-Junction $Link $Target
     return 'junction-reparse-fallback'
 }
 
@@ -49,6 +111,7 @@ try {
 
     $parentJunction = Join-Path $root 'junction-parent'
     New-Junction $parentJunction $checkout
+    Assert-MklinkFailureCaptured $parentJunction $checkout
     Assert-Rejected (Join-Path $parentJunction 'generated-player') $true
 
     $intermediateJunction = Join-Path $state 'junction-intermediate'
@@ -67,7 +130,9 @@ try {
         (Join-Path $root 'state\junction-intermediate'),
         (Join-Path $root 'junction-parent')
     )) {
-        if (Test-Path -LiteralPath $link) { & cmd.exe /d /s /c "rmdir `"$link`"" | Out-Null }
+        if (Test-Path -LiteralPath $link) {
+            [IO.Directory]::Delete($link, $false)
+        }
     }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
     Set-Location -LiteralPath $originalLocation

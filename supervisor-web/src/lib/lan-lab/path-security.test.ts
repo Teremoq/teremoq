@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,6 +29,20 @@ afterEach(() => {
 });
 
 describe("paths externos fijados y sin reparse ancestral", () => {
+  it("el canario PS5 obtiene ExitCode del proceso y verifica el reparse real", () => {
+    const script = readFileSync(join(
+      process.cwd(),
+      "scripts",
+      "test-windows-path-policy.ps1",
+    ), "utf8");
+    expect(script).not.toContain("$LASTEXITCODE");
+    expect(script).toContain("Diagnostics.ProcessStartInfo");
+    expect(script).toContain("$process.ExitCode");
+    expect(script).toContain("[IO.FileAttributes]::ReparsePoint");
+    expect(script).toContain("$process.WaitForExit(10000)");
+    expect(script).toContain("Assert-MklinkFailureCaptured $parentJunction $checkout");
+  });
+
   it("acepta y revalida una cadena real estable", async () => {
     const root = tempRoot();
     const state = join(root, "state", "players");
