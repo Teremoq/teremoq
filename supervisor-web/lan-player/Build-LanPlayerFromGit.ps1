@@ -14,6 +14,12 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
+# Windows PowerShell 5 otherwise formats native diagnostics with the active OEM
+# code page, while the bounded parent process deliberately accepts UTF-8 only.
+$utf8NoBom = New-Object Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+
 if (-not [IO.Path]::IsPathRooted($CheckoutRoot) -or
     -not [IO.Path]::IsPathRooted($StateRoot) -or
     $RepositoryUrl -cne 'https://github.com/Teremoq/teremoq' -or

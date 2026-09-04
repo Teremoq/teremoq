@@ -5,6 +5,7 @@ set -Eeuo pipefail
 
 TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(cd -- "${TEST_DIR}/.." && pwd -P)"
+REPO_ROOT="$(cd -- "${ROOT}/../.." && pwd -P)"
 policy_commit="$(printf 'a%.0s' {1..40})"
 if ! command -v powershell.exe >/dev/null 2>&1 || ! command -v wslpath >/dev/null 2>&1; then
     printf 'lan-powershell-policy-test: skipped (Windows PowerShell runtime unavailable)\n'
@@ -25,6 +26,7 @@ for file in "${TEST_DIR}"/Run-GitClientE2E.ps1 "${TEST_DIR}"/client-distribution
 done
 grep -Fq 'StateRoot must be absent; prebuilt or partially built state is not accepted' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq 'Invoke-TeremoqBoundedNativeProcess' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
+grep -Fq '[Console]::OutputEncoding = $utf8NoBom' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq 'BuilderReceiptPath' "${ROOT}/client/Initialize-LanClientState.ps1"
 if rg -n '^\s*\$[A-Za-z0-9_]+\.ArgumentList\b' "${ROOT}/client"/*.ps1 >/dev/null; then
     printf 'powershell-policy-test: client runner uses ProcessStartInfo.ArgumentList, unsupported by Windows PowerShell 5\n' >&2

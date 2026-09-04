@@ -36,6 +36,19 @@ param([string]$First, [string]$Second)
     $warning = Invoke-TeremoqBoundedNativeProcess -FilePath $nativeShell -WorkingDirectory $scratch `
         -Arguments @('-NoProfile', '-NonInteractive', '-File', $warningScript) -TimeoutMilliseconds 5000 -StdoutMaxBytes 1024 -StderrMaxBytes 1024
     if ($warning.ExitCode -ne 0 -or $warning.Stdout -ne 'ok' -or $warning.Stderr -ne 'npm warning fixture') { throw 'bounded successful stderr fixture was not preserved' }
+    $utf8Script = Join-Path $scratch 'utf8.ps1'
+    Set-Content -LiteralPath $utf8Script -Encoding UTF8 -Value @'
+$utf8NoBom = New-Object Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+[Console]::Out.Write("compilación válida")
+[Console]::Error.Write("página con espacio no separable")
+'@
+    $utf8 = Invoke-TeremoqBoundedNativeProcess -FilePath $nativeShell -WorkingDirectory $scratch `
+        -Arguments @('-NoProfile', '-NonInteractive', '-File', $utf8Script) -TimeoutMilliseconds 5000 -StdoutMaxBytes 1024 -StderrMaxBytes 1024
+    if ($utf8.ExitCode -ne 0 -or $utf8.Stdout -cne 'compilación válida' -or $utf8.Stderr -cne 'página con espacio no separable') {
+        throw 'PowerShell 5 child output was not emitted and decoded as strict UTF-8'
+    }
     $floodScript = Join-Path $scratch 'flood.ps1'
     Set-Content -LiteralPath $floodScript -Encoding UTF8 -Value "[Console]::Out.Write(('x' * 140000)); [Console]::Error.Write(('y' * 140000))"
     $watch = [Diagnostics.Stopwatch]::StartNew()
