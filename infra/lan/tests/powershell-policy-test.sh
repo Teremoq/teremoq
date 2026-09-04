@@ -23,6 +23,9 @@ for file in "${TEST_DIR}"/Run-GitClientE2E.ps1 "${TEST_DIR}"/client-distribution
         '$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile($env:TEREMOQ_PS_PARSE_FILE,[ref]$tokens,[ref]$errors) > $null; if($errors.Count -ne 0){$errors | ForEach-Object {Write-Error $_}; exit 1}' \
         >/dev/null
 done
+grep -Fq 'StateRoot must be absent; prebuilt or partially built state is not accepted' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
+grep -Fq 'Invoke-TeremoqBoundedNativeProcess' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
+grep -Fq 'BuilderReceiptPath' "${ROOT}/client/Initialize-LanClientState.ps1"
 if rg -n '^\s*\$[A-Za-z0-9_]+\.ArgumentList\b' "${ROOT}/client"/*.ps1 >/dev/null; then
     printf 'powershell-policy-test: client runner uses ProcessStartInfo.ArgumentList, unsupported by Windows PowerShell 5\n' >&2
     exit 1

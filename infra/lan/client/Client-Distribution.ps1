@@ -392,7 +392,7 @@ function Get-TeremoqLanStateContext {
     $fingerprint = (Read-TeremoqBoundedUtf8File -Path (Join-Path $root 'public-identity/relay-cert.sha256') -MaxBytes 128).Trim()
     if ($fingerprint -cnotmatch '^[0-9a-f]{64}$') { throw 'invalid relay certificate fingerprint' }
     $lanConfigPath = Join-Path $root 'LAN-CONFIG.json'
-    if ((Get-FileHash -LiteralPath $lanConfigPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $version.lan_config_sha256) {
+    if ((Get-TeremoqBoundedFileSha256 -Path $lanConfigPath -MaxBytes 512) -cne $version.lan_config_sha256) {
         throw 'LAN-CONFIG.json hash mismatch'
     }
     $lanConfig = (Read-TeremoqBoundedUtf8File -Path $lanConfigPath -MaxBytes 512) | ConvertFrom-Json
@@ -424,8 +424,8 @@ function Get-TeremoqLanStateContext {
     }
     $playerManifest = Assert-TeremoqNonReparseFilePath -Path $playerManifest
     $launcherContract = Assert-TeremoqNonReparseFilePath -Path $launcherContract
-    if ((Get-FileHash -LiteralPath $playerManifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne $version.player_manifest_sha256 -or
-        (Get-FileHash -LiteralPath $launcherContract -Algorithm SHA256).Hash.ToLowerInvariant() -cne $version.launcher_contract_sha256) {
+    if ((Get-TeremoqBoundedFileSha256 -Path $playerManifest -MaxBytes 1048576) -cne $version.player_manifest_sha256 -or
+        (Get-TeremoqBoundedFileSha256 -Path $launcherContract -MaxBytes 4096) -cne $version.launcher_contract_sha256) {
         throw 'player manifest or launcher contract hash mismatch'
     }
     $manifest = (Read-TeremoqBoundedUtf8File -Path $playerManifest -MaxBytes 1048576) | ConvertFrom-Json
@@ -453,7 +453,7 @@ function Get-TeremoqLanStateContext {
     if (-not $launcherPath.StartsWith([IO.Path]::GetFullPath($playerRoot), [StringComparison]::OrdinalIgnoreCase) -or
         -not (Test-Path -LiteralPath $launcherPath -PathType Leaf) -or
         ((Get-Item -LiteralPath $launcherPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-        (Get-FileHash -LiteralPath $launcherPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $launcherValues.launcher_sha256) {
+        (Get-TeremoqBoundedFileSha256 -Path (Assert-TeremoqNonReparseFilePath -Path $launcherPath) -MaxBytes 1048576) -cne $launcherValues.launcher_sha256) {
         throw 'player launcher artifact/checksum mismatch'
     }
     $forbidden = Get-ChildItem -LiteralPath $root -Recurse -Force -File | Where-Object {
@@ -477,7 +477,7 @@ function Get-TeremoqLanStateContext {
         if (((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "manifest file may not be a reparse point: $relative"
         }
-        if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected) {
+        if ((Get-TeremoqBoundedFileSha256 -Path (Assert-TeremoqNonReparseFilePath -Path $path) -MaxBytes 1048576) -cne $expected) {
             throw "checksum mismatch: $relative"
         }
         $manifestFiles[$relative] = $true
@@ -628,7 +628,7 @@ function Get-TeremoqWebPlayerInventorySha256 {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -gt 104857600) { throw 'Web player inventory contains unsafe file' }
     }
     $inventory = @($items | ForEach-Object {
-        [ordered]@{ path = $_.FullName.Substring($root.Length).TrimStart('\\','/').Replace('\\','/'); bytes = [Int64]$_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+        [ordered]@{ path = $_.FullName.Substring($root.Length).TrimStart('\\','/').Replace('\\','/'); bytes = [Int64]$_.Length; sha256 = (Get-TeremoqBoundedFileSha256 -Path (Assert-TeremoqNonReparseFilePath -Path $_.FullName) -MaxBytes 1048576) }
     } | Sort-Object @{ Expression = { if ($_.path -eq 'MANIFEST.sha256.json') { 1 } else { 0 } } }, @{ Expression = { $_.path } })
     $json = (ConvertTo-Json -InputObject $inventory -Compress -Depth 3) + "`n"
     $encoding = New-Object Text.UTF8Encoding($false)
