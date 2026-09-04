@@ -312,7 +312,7 @@ function Get-TeremoqLanStateContext {
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'StateRoot must exist' }
     $rootItem = Get-Item -LiteralPath $root -Force
     if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'StateRoot may not be a reparse point' }
-    foreach ($required in @('VERSION.tsv', 'LAN-CONFIG.json', 'CLIENT-COMPATIBILITY.tsv', 'SHA256SUMS', 'public-identity/relay-cert.sha256', 'player')) {
+    foreach ($required in @('VERSION.tsv', 'LAN-CONFIG.json', 'CLIENT-COMPATIBILITY.tsv', 'SHA256SUMS', 'public-identity/relay-cert.sha256')) {
         if (-not (Test-Path -LiteralPath (Join-Path $root $required))) { throw "missing client state artifact: $required" }
     }
     $versionAllowed = @('schema_version', 'package_version', 'run_id', 'source_commit', 'server_ipv4', 'moq_url', 'player_manifest_sha256', 'launcher_contract_sha256', 'lan_config_sha256', 'player_evidence', 'load_launcher_status')
@@ -378,7 +378,8 @@ function Get-TeremoqLanStateContext {
         @($lanConfig.namespace.Split('/') | Where-Object { $_ -in @('.', '..') }).Count -ne 0) {
         throw 'LAN-CONFIG.json is outside the closed LAN client policy'
     }
-    $playerRoot = Join-Path $root 'player'
+    $playerRoot = [IO.Path]::GetFullPath((Join-Path $root $compatibility.player_relative_path))
+    if (-not $playerRoot.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'player path escapes StateRoot' }
     $playerItem = Get-Item -LiteralPath $playerRoot -Force
     if (-not $playerItem.PSIsContainer -or ($playerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'player must be a regular directory' }
     $playerManifest = Join-Path $playerRoot 'MANIFEST.sha256.json'
@@ -419,6 +420,7 @@ function Get-TeremoqLanStateContext {
         throw 'player launcher artifact/checksum mismatch'
     }
     $forbidden = Get-ChildItem -LiteralPath $root -Recurse -Force -File | Where-Object {
+        $_.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/') -notmatch '^\.teremoq-web-build/' -and
         $_.Name -match '(?i)(\.key$|\.p12$|\.pfx$|^id_rsa$|^\.env$|password|secret|token)'
     }
     if ($forbidden) { throw 'forbidden credential-like file in client state' }
@@ -445,6 +447,7 @@ function Get-TeremoqLanStateContext {
     }
     foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -Force -File) {
         $relative = $file.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+        if ($relative -match '^\.teremoq-web-build/') { continue }
         if ($relative -ne 'SHA256SUMS' -and -not $manifestFiles.ContainsKey($relative)) { throw "unlisted client state file: $relative" }
     }
     return [pscustomobject]@{
@@ -499,21 +502,6 @@ function Get-TeremoqGitCheckoutContext {
         if (-not (Test-Path -LiteralPath (Join-Path $supportRoot $required) -PathType Leaf)) {
             throw "required LAN support file is absent from checkout: $required"
         }
-    }
-    $checkoutPlayerRoot = [IO.Path]::GetFullPath((Join-Path $root $StateContext.Compatibility.player_relative_path))
-    if (-not $checkoutPlayerRoot.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $checkoutPlayerRoot -PathType Container) -or
-        ((Get-Item -LiteralPath $checkoutPlayerRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'versioned player directory is absent from the approved checkout'
-    }
-    foreach ($playerFile in @('MANIFEST.sha256.json', 'lan-launcher.tsv')) {
-        $path = Join-Path $checkoutPlayerRoot $playerFile
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "versioned player file is absent from the approved checkout: $playerFile"
-        }
-    }
-    if ((Get-FileHash -LiteralPath (Join-Path $checkoutPlayerRoot 'MANIFEST.sha256.json') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $StateContext.Version.player_manifest_sha256 -or
-        (Get-FileHash -LiteralPath (Join-Path $checkoutPlayerRoot 'lan-launcher.tsv') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $StateContext.Version.launcher_contract_sha256) {
-        throw 'external player state differs from the exact versioned checkout player'
     }
     return [pscustomobject]@{
         CheckoutRoot = $root

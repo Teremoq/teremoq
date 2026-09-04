@@ -26,22 +26,24 @@ if ($RunId -cnotmatch '^lan-[a-z0-9][a-z0-9-]{0,31}$' -or
     $Namespace -cnotmatch '^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$' -or
     @($Namespace.Split('/') | Where-Object { $_ -in @('.', '..') }).Count -ne 0 -or
     $FingerprintSha256 -cnotmatch '^[0-9a-f]{64}$' -or
-    -not (Test-TeremoqSafeRelativeRepositorySubdirectory -Value $PlayerRelativePath)) {
+    $PlayerRelativePath -cne ("players/{0}" -f $ExpectedCommit)) {
     throw 'local client state parameters are outside the closed LAN policy'
 }
 $checkout = Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $CheckoutRoot -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
 $state = [IO.Path]::GetFullPath($StateRoot)
-if (Test-Path -LiteralPath $state) { throw 'StateRoot must not already exist; initialization never overwrites local state' }
-$parent = Split-Path -Parent $state
-if (-not (Test-Path -LiteralPath $parent -PathType Container) -or ((Get-Item -LiteralPath $parent -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-    throw 'StateRoot parent must already exist and may not be a reparse point'
+if (-not (Test-Path -LiteralPath $state -PathType Container) -or ((Get-Item -LiteralPath $state -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'StateRoot must already be the regular external root produced by the Web Git builder'
 }
+$parent = Split-Path -Parent $state
 Assert-TeremoqRootsSeparated -CheckoutRoot $checkout.CheckoutRoot -StateRoot $state
-$playerRoot = [IO.Path]::GetFullPath((Join-Path $checkout.CheckoutRoot $PlayerRelativePath))
-if (-not $playerRoot.StartsWith($checkout.CheckoutRoot, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $playerRoot -PathType Container) -or
+$playerRoot = [IO.Path]::GetFullPath((Join-Path $state $PlayerRelativePath))
+if (-not $playerRoot.StartsWith($state, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $playerRoot -PathType Container) -or
     ((Get-Item -LiteralPath $playerRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
     (Get-ChildItem -LiteralPath $playerRoot -Recurse -Force | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })) {
-    throw 'PlayerRelativePath must resolve to a regular versioned directory inside the clean checkout'
+    throw 'PlayerRelativePath must resolve to the regular Web-built player under StateRoot'
+}
+foreach ($required in @('.teremoq-web-build/generations/' + $ExpectedCommit + '.tsv', 'players')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $state $required))) { throw 'Web builder provenance is absent from StateRoot' }
 }
 foreach ($required in @('MANIFEST.sha256.json', 'lan-launcher.tsv')) {
     if (-not (Test-Path -LiteralPath (Join-Path $playerRoot $required) -PathType Leaf)) { throw "versioned player artifact is incomplete: $required" }
@@ -56,7 +58,7 @@ if ($manifest.schema_version -ne 1 -or $manifest.artifact -cne 'teremoq-lan-lab-
 $scratch = Join-Path $parent ('.' + [IO.Path]::GetFileName($state) + '.tmp.' + [Guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Path (Join-Path $scratch 'public-identity') -Force | Out-Null
-    Copy-Item -LiteralPath $playerRoot -Destination (Join-Path $scratch 'player') -Recurse -Force
+    # The Web builder already owns StateRoot\players\<commit>; Platform never copies it.
     [IO.File]::WriteAllText((Join-Path $scratch 'public-identity\relay-cert.sha256'), "$FingerprintSha256`n", (New-Object Text.UTF8Encoding($false)))
     $lanConfig = [ordered]@{ schema_version = 1; run_id = $RunId; source_commit = $ExpectedCommit; relay_url = "https://${ServerIPv4}:14433/watch"; fingerprint_sha256 = $FingerprintSha256; prefix_length = $PrefixLength; namespace = $Namespace }
     $lanConfigText = ($lanConfig | ConvertTo-Json -Compress) + "`n"
@@ -74,15 +76,18 @@ try {
         "player_manifest_sha256`t$playerManifestSha", "launcher_contract_sha256`t$launcherContractSha", "lan_config_sha256`t$lanConfigSha", "player_evidence`tnot_measured", "load_launcher_status`tready"
     ) -join "`n"
     [IO.File]::WriteAllText((Join-Path $scratch 'VERSION.tsv'), $version + "`n", (New-Object Text.UTF8Encoding($false)))
-    $hashLines = Get-ChildItem -LiteralPath $scratch -Recurse -Force -File | Sort-Object { $_.FullName.Substring($scratch.Length).Replace('\', '/') } | ForEach-Object {
-        $relative = $_.FullName.Substring($scratch.Length).TrimStart('\', '/').Replace('\', '/')
-        "$(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLowerInvariant() })  $relative"
-    }
+    $hashItems = @()
+    $hashItems += Get-ChildItem -LiteralPath $scratch -Recurse -Force -File | ForEach-Object { [pscustomobject]@{ Path = $_.FullName; Relative = $_.FullName.Substring($scratch.Length).TrimStart('\', '/').Replace('\', '/') } }
+    $hashItems += Get-ChildItem -LiteralPath $playerRoot -Recurse -Force -File | ForEach-Object { [pscustomobject]@{ Path = $_.FullName; Relative = $_.FullName.Substring($state.Length).TrimStart('\', '/').Replace('\', '/') } }
+    $hashLines = $hashItems | Sort-Object Relative | ForEach-Object { "$(Get-FileHash -LiteralPath $_.Path -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLowerInvariant() })  $($_.Relative)" }
     [IO.File]::WriteAllText((Join-Path $scratch 'SHA256SUMS'), ($hashLines -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
-    Move-Item -LiteralPath $scratch -Destination $state
+    foreach ($name in @('public-identity', 'LAN-CONFIG.json', 'CLIENT-COMPATIBILITY.tsv', 'VERSION.tsv', 'SHA256SUMS')) {
+        if (Test-Path -LiteralPath (Join-Path $state $name)) { throw "StateRoot already contains Platform state: $name" }
+        Move-Item -LiteralPath (Join-Path $scratch $name) -Destination (Join-Path $state $name)
+    }
     $verified = Get-TeremoqLanStateContext -StateRoot $state
     if ($verified.Compatibility.allowed_client_commit -cne $checkout.Head) { throw 'initialized state does not bind the exact clean checkout' }
-    Write-Output ("Teremoq LAN external client state initialized at {0} from versioned checkout commit {1}; no artifact was transferred." -f $verified.StateRoot, $checkout.Head)
+    Write-Output ("Teremoq LAN external client state initialized at {0} from Web-built player commit {1}; no artifact was transferred." -f $verified.StateRoot, $checkout.Head)
 } finally {
     if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
 }

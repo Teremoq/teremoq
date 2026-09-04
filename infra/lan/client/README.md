@@ -61,14 +61,16 @@ if ((git rev-parse HEAD) -cne $ExpectedCommit) { throw 'unexpected Git commit' }
 if (git status --porcelain=v1 --untracked-files=all) { throw 'checkout is not clean' }
 ```
 
-Only after the native checks pass, initialize local state from a versioned
-player directory already inside that exact checkout. No player, certificate,
-configuration or compatibility file is copied from the server. The Web-owner
-integration supplies the reviewed relative player path; initialization blocks
-if that path is absent, altered, a reparse point or outside the checkout.
+Only after the native checks pass, run the versioned Web builder from that
+exact checkout. It performs two reproducible builds and promotes its result
+only under the external `StateRoot`; no player, certificate, configuration or
+compatibility file is copied from the server.
 
 ```powershell
-$PlayerRelativePath = 'supervisor-web/lan-player' # exact reviewed path for the approved commit
+$Build = & "$CheckoutRoot\supervisor-web\lan-player\Build-LanPlayerFromGit.ps1" `
+  -CheckoutRoot $CheckoutRoot -StateRoot $StateRoot `
+  -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -SourceCommit $ExpectedCommit
+$PlayerRelativePath = ($Build | ConvertFrom-Json).player_relative_path
 $RunId = 'lan-EXPLICIT-RUN-ID'
 $ServerIPv4 = 'SERVER_EXACT_RFC1918_IP'
 $PrefixLength = 24
@@ -84,12 +86,12 @@ $FingerprintSha256 = 'EXACT_64_LOWERCASE_HEX_RELAY_PIN'
   -FingerprintSha256 $FingerprintSha256
 ```
 
-The initializer refuses an existing state root instead of overwriting it. It
-builds the closed v2 compatibility contract and all deterministic hashes on the
-client, binding the exact checkout commit, protocol version, player manifest,
-launcher contract, public LAN config and pin. It does not execute the player.
-The client uses `serverCertificateHashes`, so it needs the exact SHA-256 pin,
-not a PEM certificate; no PEM is stored in or required by client state.
+The builder emits a closed JSON result with `players/<source_commit>` only after
+byte-identical builds; Platform resolves that path solely below `StateRoot` and
+requires its Web provenance and manifest/launcher hashes. The initializer then
+writes the closed v2 compatibility contract and local hashes without executing
+the player. The client uses `serverCertificateHashes`, so it needs the exact
+SHA-256 pin, not a PEM certificate; no PEM is stored in or required by state.
 
 Subsequent verification refuses the checkout unless:
 
