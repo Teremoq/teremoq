@@ -40,6 +40,16 @@ try {
     $expectedRaw = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
     if ((Get-TeremoqBoundedFileSha256 -Path $binary -MaxBytes 104857600) -cne $expectedRaw) { throw 'raw binary SHA-256 was decoded or changed' }
     try { Get-TeremoqBoundedFileSha256 -Path $binary -MaxBytes 1048576 | Out-Null; throw 'oversized bounded binary accepted' } catch { if ($_.Exception.Message -match 'oversized bounded binary accepted') { throw } }
+    $player = Join-Path $root 'players\fixture'
+    New-Item -ItemType Directory -Path $player -Force | Out-Null
+    Copy-Item -LiteralPath $binary -Destination (Join-Path $player 'bundle.js')
+    [IO.File]::WriteAllText((Join-Path $player 'MANIFEST.sha256.json'), "{}`n", (New-Object Text.UTF8Encoding($false)))
+    $inventory = Get-TeremoqWebPlayerInventorySha256 -PlayerRoot $player
+    if ($inventory -cnotmatch '^[0-9a-f]{64}$') { throw 'real player inventory did not hash >1 MiB file' }
+    $sparse = Join-Path $player 'too-large.bin'
+    $sparseHandle = New-Object IO.FileStream($sparse, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $sparseHandle.SetLength(104857601) } finally { $sparseHandle.Dispose() }
+    try { Get-TeremoqWebPlayerInventorySha256 -PlayerRoot $player | Out-Null; throw 'inventory accepted sparse file over 100 MiB' } catch { if ($_.Exception.Message -match 'inventory accepted sparse file') { throw } }
     $target = Join-Path $root 'target'
     $alias = Join-Path $root 'alias'
     New-Item -ItemType Directory -Path $target -Force | Out-Null

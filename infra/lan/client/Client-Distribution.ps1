@@ -16,14 +16,13 @@ function Read-TeremoqBoundedUtf8File {
     if ($item.Length -gt $MaxBytes) { throw "file exceeds ${MaxBytes} bytes: $Path" }
     [void](Assert-TeremoqNonReparseFilePath -Path $item.FullName)
     $initialLength = $item.Length
-    $initialWrite = $item.LastWriteTimeUtc.Ticks
     $stream = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
     try {
         $buffer = New-Object byte[] ($initialLength + 1)
         $read = $stream.Read($buffer, 0, $buffer.Length)
-        $final = Get-Item -LiteralPath $item.FullName -Force
-        if ($read -ne $initialLength -or $stream.ReadByte() -ne -1 -or $final.Length -ne $initialLength -or $final.LastWriteTimeUtc.Ticks -ne $initialWrite -or
-            ($final.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "file changed while reading: $Path" }
+        # Length and LastWriteTimeUtc here are queried from the already-open
+        # FileStream; never reopen a pathname to decide which object was parsed.
+        if ($read -ne $initialLength -or $stream.ReadByte() -ne -1 -or $stream.Length -ne $initialLength -or $stream.SafeFileHandle.IsInvalid) { throw "file changed while reading: $Path" }
         $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
         return $strictUtf8.GetString($buffer, 0, $read)
     } finally {
@@ -59,7 +58,6 @@ function Get-TeremoqBoundedFileSha256 {
     $item = Get-Item -LiteralPath $resolved -Force
     if ($item.Length -gt $MaxBytes) { throw "file exceeds ${MaxBytes} bytes: $Path" }
     $length = $item.Length
-    $write = $item.LastWriteTimeUtc.Ticks
     $stream = [IO.File]::Open($resolved, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
     $hash = [Security.Cryptography.SHA256]::Create()
     try {
@@ -71,9 +69,7 @@ function Get-TeremoqBoundedFileSha256 {
             [void]$hash.TransformBlock($buffer, 0, $read, $buffer, 0)
         }
         [void]$hash.TransformFinalBlock((New-Object byte[] 0), 0, 0)
-        $final = Get-Item -LiteralPath $resolved -Force
-        if ($total -ne $length -or $final.Length -ne $length -or $final.LastWriteTimeUtc.Ticks -ne $write -or
-            ($final.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "file changed while hashing: $Path" }
+        if ($total -ne $length -or $stream.Length -ne $length -or $stream.SafeFileHandle.IsInvalid) { throw "file changed while hashing: $Path" }
         return ([BitConverter]::ToString($hash.Hash) -replace '-', '').ToLowerInvariant()
     } finally { $stream.Dispose(); $hash.Dispose() }
 }
@@ -646,7 +642,7 @@ function Get-TeremoqWebPlayerInventorySha256 {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -gt 104857600) { throw 'Web player inventory contains unsafe file' }
     }
     $inventory = @($items | ForEach-Object {
-        [ordered]@{ path = $_.FullName.Substring($root.Length).TrimStart('\\','/').Replace('\\','/'); bytes = [Int64]$_.Length; sha256 = (Get-TeremoqBoundedFileSha256 -Path (Assert-TeremoqNonReparseFilePath -Path $_.FullName) -MaxBytes 104857600) }
+        [ordered]@{ path = $_.FullName.Substring($root.Length).TrimStart([char[]]@('\','/')).Replace('\','/'); bytes = [Int64]$_.Length; sha256 = (Get-TeremoqBoundedFileSha256 -Path (Assert-TeremoqNonReparseFilePath -Path $_.FullName) -MaxBytes 104857600) }
     } | Sort-Object @{ Expression = { if ($_.path -eq 'MANIFEST.sha256.json') { 1 } else { 0 } } }, @{ Expression = { $_.path } })
     $json = (ConvertTo-Json -InputObject $inventory -Compress -Depth 3) + "`n"
     $encoding = New-Object Text.UTF8Encoding($false)
