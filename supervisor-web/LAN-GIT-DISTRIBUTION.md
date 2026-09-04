@@ -10,6 +10,11 @@
   `StateRoot` exterior al checkout.
 - El flujo falla cerrado si URL/ref/HEAD/árbol/limpieza, hashes de
   `package-lock.json` y `package.json`, Node 22.x o npm 10.x no coinciden.
+- Checkout, StateRoot, cache, generaciones, players, worktrees y paquetes se
+  fijan por identidad y `realpath`, inspeccionando todos sus ancestros. En
+  Windows una política adicional abre cada directorio con un handle Win32,
+  compara `GetFinalPathNameByHandleW` y rechaza cualquier atributo
+  `ReparsePoint`; se revalida antes de consumo, build, comparación y promoción.
 - El cache de descargas npm se selecciona por SHA-256 del lock. Un lock igual se
   reutiliza; un lock distinto se bloquea hasta que el operador declara
   `-RefreshDependencies`. Cada construcción sigue usando `npm ci` en un
@@ -84,8 +89,11 @@ $Ref = (git -C $Checkout symbolic-ref --quiet HEAD).Trim()
 ```
 
 El primer `npm ci` descarga exclusivamente las dependencias fijadas por el lock
-desde sus orígenes públicos. El constructor fuerza un `.npmrc` vacío exterior
-para no consumir configuración o credenciales npm del operador. No se usa
+desde sus orígenes públicos. El constructor fuerza `userconfig` y
+`globalconfig` vacíos, registry público exacto, prefix/cache exteriores y
+HOME/USERPROFILE/APPDATA/LOCALAPPDATA aislados; elimina variables npm/proxy del
+operador, rechaza `.npmrc` en checkout/proyecto y comprueba con npm 10 su
+configuración efectiva antes de cada instalación. No se usa
 `--offline` en la primera instalación salvo que el cache hash-bound ya haya
 sido aprovisionado por un mecanismo revisado.
 
@@ -151,3 +159,16 @@ no se sobrescribe. El flujo no selecciona configuración LAN, no compone
 evidencia y no concede capacidades; esas tareas siguen en Platform. Una futura
 extracción a `teremoq-client` reutilizará este contrato de fuente/lock/salida,
 pero este cambio no crea ni supone ese repositorio.
+
+Canarios locales relevantes:
+
+```powershell
+& .\supervisor-web\scripts\test-windows-path-policy.ps1
+```
+
+El canario crea junction padre, junction intermedio y un symlink de directorio
+si el host concede el privilegio; si no, exige un tercer junction como reparse
+leaf y lo etiqueta explícitamente. Los tests Vitest cubren además symlinks en
+cada posición, sustitución posterior de inode/handle y un global npmrc hostil
+con registry, proxy y token señuelo. `generation.tsv` conserva exactamente sus
+claves anteriores; no cambia el parser contractual de Platform.

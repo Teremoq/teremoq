@@ -137,7 +137,9 @@ El checkout sólo versiona el contrato y el launcher pequeño de
 Git: `Build-LanPlayerFromGit.ps1` valida URL, ref, HEAD, limpieza, lock y
 Node/npm; crea dos worktrees efímeros; ejecuta dos veces `npm ci`, `build:lan` y
 `package:lan`; exige igualdad byte a byte y promueve el resultado únicamente a
-un `StateRoot` exterior. Los comandos de clone, actualización, construcción y
+un `StateRoot` exterior. Toda la cadena de paths se fija y revalida sin
+junctions/reparse; npm usa perfiles, userconfig y globalconfig aislados. Los
+comandos de clone, actualización, construcción y
 refresco explícito de dependencias están documentados en
 [`LAN-GIT-DISTRIBUTION.md`](LAN-GIT-DISTRIBUTION.md).
 

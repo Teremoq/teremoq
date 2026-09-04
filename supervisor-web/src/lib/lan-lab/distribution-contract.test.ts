@@ -120,6 +120,12 @@ describe("contrato de distribución Git del player LAN", () => {
     expect(() => validateToolVersions("v22.14.0", "11.0.0", contract)).toThrow();
     expect(() => assertExternalStateRoot(checkout, `${checkout}/state`)).toThrow();
     expect(assertExternalStateRoot(checkout, "/external/state")).toBe("/external/state");
+    expect(() => assertExternalStateRoot(
+      checkout,
+      "/external/alias/state",
+      checkout,
+      `${checkout}/state`,
+    )).toThrow();
   });
 
   it("reutiliza sólo el lock idéntico y bloquea cambios sin refresh", () => {

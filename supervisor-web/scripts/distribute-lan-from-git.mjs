@@ -21,6 +21,19 @@ import {
   verifyContractFiles,
   verifyDistributionSource,
 } from "./distribution-contract.mjs";
+import {
+  buildIsolatedNpmEnvironment,
+  rejectProjectNpmConfiguration,
+  requireEmptyRegularNpmConfig,
+  verifyEffectiveNpmConfiguration,
+} from "./npm-isolation.mjs";
+import {
+  pinSecureDirectoryPath,
+  pinSecureRegularFile,
+  revalidateSecureDirectoryPin,
+  revalidateSecureDirectoryPins,
+  revalidateSecureRegularFilePin,
+} from "./path-security.mjs";
 
 const scriptRoot = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptRoot, "..");
@@ -35,15 +48,44 @@ const npmVersion = execFileSync(process.execPath, [npmCli, "--version"], {
   maxBuffer: 16_384,
 }).trim();
 const runtime = validateToolVersions(process.version, npmVersion, contract);
+const checkoutPin = await pinSecureDirectoryPath(request.checkoutRoot);
+const projectPin = await pinSecureDirectoryPath(projectRoot);
+await revalidateSecureDirectoryPins(checkoutPin, projectPin);
 const source = verifyDistributionSource(projectRoot, request, contract);
+await revalidateSecureDirectoryPins(checkoutPin, projectPin);
+await rejectProjectNpmConfiguration(source.checkoutRoot, projectRoot);
 const files = await verifyContractFiles(projectRoot, contract);
-const stateRoot = assertExternalStateRoot(source.checkoutRoot, request.stateRoot);
-await ensureRoot(stateRoot);
+assertExternalStateRoot(source.checkoutRoot, request.stateRoot);
+await pinSecureDirectoryPath(request.stateRoot, { allowMissing: true });
+await mkdir(request.stateRoot, { recursive: true });
+const statePin = await pinSecureDirectoryPath(request.stateRoot);
+const stateRoot = assertExternalStateRoot(
+  source.checkoutRoot,
+  request.stateRoot,
+  checkoutPin.realPath,
+  statePin.realPath,
+);
 const buildStateRoot = join(stateRoot, ".teremoq-web-build");
 const playersRoot = join(stateRoot, "players");
-await Promise.all([mkdir(buildStateRoot, { recursive: true }), mkdir(playersRoot, { recursive: true })]);
-await rejectSymlink(buildStateRoot);
-await rejectSymlink(playersRoot);
+await revalidateSecureDirectoryPin(statePin);
+await Promise.all([
+  mkdir(buildStateRoot, { recursive: true }),
+  mkdir(playersRoot, { recursive: true }),
+]);
+const buildStatePin = await pinSecureDirectoryPath(buildStateRoot);
+const playersPin = await pinSecureDirectoryPath(playersRoot);
+const generationRoot = join(buildStateRoot, "generations");
+const npmCacheRoot = join(buildStateRoot, "npm-cache");
+const npmIsolationRoot = join(buildStateRoot, "npm-isolation");
+await revalidateSecureDirectoryPins(statePin, buildStatePin, playersPin);
+await Promise.all([
+  mkdir(generationRoot, { recursive: true }),
+  mkdir(npmCacheRoot, { recursive: true }),
+  mkdir(npmIsolationRoot, { recursive: true }),
+]);
+const generationPin = await pinSecureDirectoryPath(generationRoot);
+const npmCachePin = await pinSecureDirectoryPath(npmCacheRoot);
+const npmIsolationPin = await pinSecureDirectoryPath(npmIsolationRoot);
 const finalPlayerRoot = join(playersRoot, source.sourceCommit);
 await requireAbsent(finalPlayerRoot, "ya existe una generación player para source_commit");
 
@@ -59,50 +101,117 @@ const sourceUpdate = compareSourceUpdate(
   previousState?.sourceCommit ?? null,
   source.sourceCommit,
 );
-const cacheRoot = join(buildStateRoot, "npm-cache", files.lockSha256);
+const cacheRoot = join(npmCacheRoot, files.lockSha256);
+await revalidateSecureDirectoryPins(buildStatePin, npmCachePin);
 await mkdir(cacheRoot, { recursive: true });
-await rejectSymlink(cacheRoot);
-const emptyNpmConfig = join(buildStateRoot, "empty.npmrc");
-try {
-  await writeFile(emptyNpmConfig, "", { encoding: "utf8", flag: "wx" });
-} catch (cause) {
-  if (!cause || typeof cause !== "object" || !("code" in cause) || cause.code !== "EEXIST") {
-    throw cause;
-  }
-}
-const emptyNpmConfigStat = await lstat(emptyNpmConfig);
-if (!emptyNpmConfigStat.isFile() || emptyNpmConfigStat.isSymbolicLink() ||
-    emptyNpmConfigStat.size !== 0) {
-  throw new Error("config npm aislada fuera de contrato");
-}
-const childEnv = buildChildEnvironment(cacheRoot, emptyNpmConfig);
+const cachePin = await pinSecureDirectoryPath(cacheRoot);
+const isolationPaths = {
+  home: join(npmIsolationRoot, "home"),
+  userProfile: join(npmIsolationRoot, "user-profile"),
+  appData: join(npmIsolationRoot, "app-data"),
+  localAppData: join(npmIsolationRoot, "local-app-data"),
+  prefix: join(npmIsolationRoot, "prefix"),
+  userConfig: join(npmIsolationRoot, "empty-user.npmrc"),
+  globalConfig: join(npmIsolationRoot, "empty-global.npmrc"),
+  cache: cacheRoot,
+};
+await revalidateSecureDirectoryPin(npmIsolationPin);
+await Promise.all([
+  mkdir(isolationPaths.home, { recursive: true }),
+  mkdir(isolationPaths.userProfile, { recursive: true }),
+  mkdir(isolationPaths.appData, { recursive: true }),
+  mkdir(isolationPaths.localAppData, { recursive: true }),
+  mkdir(isolationPaths.prefix, { recursive: true }),
+]);
+const isolationPins = await Promise.all([
+  pinSecureDirectoryPath(isolationPaths.home),
+  pinSecureDirectoryPath(isolationPaths.userProfile),
+  pinSecureDirectoryPath(isolationPaths.appData),
+  pinSecureDirectoryPath(isolationPaths.localAppData),
+  pinSecureDirectoryPath(isolationPaths.prefix),
+]);
+await revalidateSecureDirectoryPins(npmIsolationPin, ...isolationPins);
+await Promise.all([
+  createEmptyNpmConfig(isolationPaths.userConfig),
+  createEmptyNpmConfig(isolationPaths.globalConfig),
+]);
+await Promise.all([
+  requireEmptyRegularNpmConfig(isolationPaths.userConfig),
+  requireEmptyRegularNpmConfig(isolationPaths.globalConfig),
+]);
+const npmConfigPins = await Promise.all([
+  pinSecureRegularFile(isolationPaths.userConfig, 0),
+  pinSecureRegularFile(isolationPaths.globalConfig, 0),
+]);
+const childEnv = buildIsolatedNpmEnvironment(process.env, isolationPaths);
 
+await revalidateSecureDirectoryPins(buildStatePin, cachePin, npmIsolationPin, ...isolationPins);
 const temporaryRoot = await mkdtemp(join(buildStateRoot, "run-"));
+const temporaryPin = await pinSecureDirectoryPath(temporaryRoot);
 const checkoutRoots = [join(temporaryRoot, "checkout-a"), join(temporaryRoot, "checkout-b")];
 const packageRoots = [join(temporaryRoot, "package-a"), join(temporaryRoot, "package-b")];
 const activeWorktrees = [];
+const activeWorktreePins = new Map();
+const packagePins = [];
 let promoted = false;
+let temporaryRemoved = false;
 let primaryFailure = null;
 const cleanupFailures = [];
 let finalProvenance = null;
 try {
   for (let index = 0; index < checkoutRoots.length; index += 1) {
     const checkout = checkoutRoots[index];
+    await revalidateSecureDirectoryPins(
+      checkoutPin, projectPin, statePin, buildStatePin, cachePin, temporaryPin,
+      npmIsolationPin, ...isolationPins,
+    );
+    await pinSecureDirectoryPath(checkout, { allowMissing: true });
     runGit(source.checkoutRoot, ["worktree", "add", "--detach", checkout, source.sourceCommit]);
     activeWorktrees.push(checkout);
+    const worktreePin = await pinSecureDirectoryPath(checkout);
+    activeWorktreePins.set(checkout, worktreePin);
     const workspace = join(checkout, contract.source_subdirectory);
+    const workspacePin = await pinSecureDirectoryPath(workspace);
+    await rejectProjectNpmConfiguration(checkout, workspace);
+    await Promise.all([
+      requireEmptyRegularNpmConfig(isolationPaths.userConfig),
+      requireEmptyRegularNpmConfig(isolationPaths.globalConfig),
+      ...npmConfigPins.map((pin) => revalidateSecureRegularFilePin(pin)),
+    ]);
+    verifyEffectiveNpmConfiguration(npmCli, workspace, childEnv);
     const ciArguments = [
       "ci", "--cache", cacheRoot, "--no-audit", "--no-fund", "--prefer-offline",
     ];
     if (request.offline) ciArguments.push("--offline");
+    await revalidateSecureDirectoryPins(
+      checkoutPin, statePin, buildStatePin, cachePin, temporaryPin,
+      worktreePin, workspacePin, npmIsolationPin, ...isolationPins,
+    );
+    await Promise.all(npmConfigPins.map((pin) => revalidateSecureRegularFilePin(pin)));
     runNpm(npmCli, ciArguments, workspace, 900_000, childEnv);
+    await revalidateSecureDirectoryPins(
+      checkoutPin, statePin, buildStatePin, cachePin, temporaryPin,
+      worktreePin, workspacePin, npmIsolationPin, ...isolationPins,
+    );
+    await Promise.all(npmConfigPins.map((pin) => revalidateSecureRegularFilePin(pin)));
     runNpm(npmCli, ["run", contract.build_script], workspace, 900_000, childEnv);
+    await revalidateSecureDirectoryPins(
+      checkoutPin, statePin, buildStatePin, cachePin, temporaryPin,
+      worktreePin, workspacePin, npmIsolationPin, ...isolationPins,
+    );
+    await Promise.all(npmConfigPins.map((pin) => revalidateSecureRegularFilePin(pin)));
+    await pinSecureDirectoryPath(packageRoots[index], { allowMissing: true });
     runNpm(npmCli, [
       "run", contract.package_script, "--", "--output", packageRoots[index],
       "--source-commit", source.sourceCommit,
     ], workspace, 900_000, childEnv);
+    packagePins[index] = await pinSecureDirectoryPath(packageRoots[index]);
   }
 
+  await revalidateSecureDirectoryPins(
+    checkoutPin, statePin, buildStatePin, playersPin, generationPin, cachePin,
+    temporaryPin, packagePins[0], packagePins[1], npmIsolationPin, ...isolationPins,
+  );
   const inventory = await compareDirectories(packageRoots[0], packageRoots[1]);
   const manifestSha256 = await sha256File(join(packageRoots[0], "MANIFEST.sha256.json"));
   const launcherContractSha256 = await sha256File(join(packageRoots[0], "lan-launcher.tsv"));
@@ -111,11 +220,15 @@ try {
     .digest("hex");
   while (activeWorktrees.length > 0) {
     const checkout = activeWorktrees.at(-1);
+    await revalidateSecureDirectoryPins(checkoutPin, activeWorktreePins.get(checkout));
     runGit(source.checkoutRoot, ["worktree", "remove", "--force", checkout]);
+    activeWorktreePins.delete(checkout);
     activeWorktrees.pop();
   }
-  const generationRoot = join(buildStateRoot, "generations");
-  await mkdir(generationRoot, { recursive: true });
+  await revalidateSecureDirectoryPins(
+    checkoutPin, statePin, buildStatePin, playersPin, generationPin, cachePin,
+    temporaryPin, packagePins[0], packagePins[1], npmIsolationPin, ...isolationPins,
+  );
   const provenance = [
     "schema_version\t1",
     `repository_url\t${request.repositoryUrl}`,
@@ -153,9 +266,17 @@ try {
   finalProvenance = join(generationRoot, `${source.sourceCommit}.tsv`);
   await writeFile(stagedProvenance, provenance, { flag: "wx" });
   await requireAbsent(finalProvenance, "ya existe procedencia para source_commit");
+  await pinSecureDirectoryPath(finalPlayerRoot, { allowMissing: true });
+  await revalidateSecureDirectoryPins(
+    statePin, buildStatePin, playersPin, generationPin, temporaryPin, packagePins[0],
+  );
   await rename(packageRoots[0], finalPlayerRoot);
+  const finalPlayerPin = await pinSecureDirectoryPath(finalPlayerRoot);
+  await revalidateSecureDirectoryPins(finalPlayerPin, generationPin, temporaryPin);
   await rename(stagedProvenance, finalProvenance);
+  await revalidateSecureDirectoryPins(finalPlayerPin, generationPin, temporaryPin);
   await rm(temporaryRoot, { recursive: true, force: true });
+  temporaryRemoved = true;
   promoted = true;
   process.stdout.write(`${JSON.stringify({
     status: "built-from-clean-git-source",
@@ -175,16 +296,37 @@ try {
   primaryFailure = cause;
 } finally {
   for (const checkout of activeWorktrees.reverse()) {
-    try { runGit(source.checkoutRoot, ["worktree", "remove", "--force", checkout]); }
+    try {
+      await revalidateSecureDirectoryPins(checkoutPin, activeWorktreePins.get(checkout));
+      runGit(source.checkoutRoot, ["worktree", "remove", "--force", checkout]);
+    }
     catch { cleanupFailures.push("worktree"); }
   }
-  try { await rm(temporaryRoot, { recursive: true, force: true }); }
-  catch { cleanupFailures.push("temporary-root"); }
+  if (!temporaryRemoved) {
+    try {
+      await revalidateSecureDirectoryPin(temporaryPin);
+      await rm(temporaryRoot, { recursive: true, force: true });
+    }
+    catch { cleanupFailures.push("temporary-root"); }
+  }
   if (!promoted) {
-    try { await rm(finalPlayerRoot, { recursive: true, force: true }); }
+    try {
+      if (await pathExists(finalPlayerRoot)) {
+        const unpromotedPin = await pinSecureDirectoryPath(finalPlayerRoot);
+        await revalidateSecureDirectoryPins(playersPin, unpromotedPin);
+        await rm(finalPlayerRoot, { recursive: true, force: true });
+      }
+    }
     catch { cleanupFailures.push("unpromoted-player"); }
     if (finalProvenance !== null) {
-      try { await rm(finalProvenance, { force: true }); }
+      try {
+        await revalidateSecureDirectoryPin(generationPin);
+        if (await pathExists(finalProvenance)) {
+          const provenancePin = await pinSecureRegularFile(finalProvenance);
+          await revalidateSecureRegularFilePin(provenancePin);
+          await rm(finalProvenance, { force: true });
+        }
+      }
       catch { cleanupFailures.push("unpromoted-provenance"); }
     }
   }
@@ -250,23 +392,6 @@ function runNpm(npmCli, args, cwd, timeout, env) {
   if (result.error || result.status !== 0) throw new Error("npm/build/package local falló");
 }
 
-function buildChildEnvironment(cacheRoot, userConfigPath) {
-  const env = Object.create(null);
-  for (const key of [
-    "PATH", "Path", "SystemRoot", "SYSTEMROOT", "ComSpec", "PATHEXT",
-    "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "HOME", "USERPROFILE",
-    "APPDATA", "LOCALAPPDATA",
-  ]) {
-    if (typeof process.env[key] === "string") env[key] = process.env[key];
-  }
-  env.CI = "1";
-  env.NO_COLOR = "1";
-  env.npm_config_cache = cacheRoot;
-  env.npm_config_userconfig = userConfigPath;
-  env.NPM_CONFIG_USERCONFIG = userConfigPath;
-  return env;
-}
-
 async function replaceDependencyState(path, contents, temporaryRoot) {
   const candidate = join(temporaryRoot, "dependency-state.tsv");
   await writeFile(candidate, contents, { encoding: "utf8", flag: "wx" });
@@ -320,19 +445,26 @@ async function readPreviousState(path) {
   }
 }
 
-async function ensureRoot(path) {
+async function createEmptyNpmConfig(path) {
   try {
-    await rejectSymlink(path);
+    await writeFile(path, "", { encoding: "utf8", flag: "wx" });
   } catch (cause) {
-    if (!cause || typeof cause !== "object" || !("code" in cause) || cause.code !== "ENOENT") throw cause;
-    await mkdir(path, { recursive: true });
-    await rejectSymlink(path);
+    if (!cause || typeof cause !== "object" || !("code" in cause) || cause.code !== "EEXIST") {
+      throw cause;
+    }
   }
 }
 
-async function rejectSymlink(path) {
-  const stat = await lstat(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("raíz externa no es directorio regular");
+async function pathExists(path) {
+  try {
+    await lstat(path);
+    return true;
+  } catch (cause) {
+    if (cause && typeof cause === "object" && "code" in cause && cause.code === "ENOENT") {
+      return false;
+    }
+    throw cause;
+  }
 }
 
 async function requireAbsent(path, message) {

@@ -171,14 +171,23 @@ export function compareSourceUpdate(
   });
 }
 
-export function assertExternalStateRoot(checkoutRoot, stateRoot) {
-  const checkout = normalizeRoot(checkoutRoot);
-  const state = normalizeRoot(stateRoot);
-  if (checkout === state || state.startsWith(`${checkout}${sep}`) ||
-      checkout.startsWith(`${state}${sep}`)) {
+export function assertExternalStateRoot(
+  checkoutRoot,
+  stateRoot,
+  resolvedCheckoutRoot = checkoutRoot,
+  resolvedStateRoot = stateRoot,
+) {
+  const pairs = [
+    [normalizeRoot(checkoutRoot), normalizeRoot(stateRoot)],
+    [normalizeRoot(resolvedCheckoutRoot), normalizeRoot(resolvedStateRoot)],
+  ];
+  if (pairs.some(([checkout, state]) => (
+    checkout === state || state.startsWith(`${checkout}${sep}`) ||
+    checkout.startsWith(`${state}${sep}`)
+  ))) {
     throw new Error("StateRoot debe estar separado del checkout");
   }
-  return state;
+  return resolve(resolvedStateRoot);
 }
 
 export async function verifyContractFiles(projectRoot, contract) {
