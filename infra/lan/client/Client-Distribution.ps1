@@ -320,6 +320,14 @@ function Get-TeremoqNonReparseDirectoryPath {
     return $item.FullName
 }
 
+function Assert-TeremoqNonReparseFilePath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'file may not be a reparse point' }
+    [void](Get-TeremoqNonReparseDirectoryPath -Path (Split-Path -Parent $item.FullName))
+    return $item.FullName
+}
+
 function Get-TeremoqLanStateContext {
     param([Parameter(Mandatory = $true)][string]$StateRoot)
     $root = Get-TeremoqNonReparseDirectoryPath -Path $StateRoot
@@ -401,6 +409,8 @@ function Get-TeremoqLanStateContext {
     if (-not (Test-Path -LiteralPath $playerManifest -PathType Leaf) -or -not (Test-Path -LiteralPath $launcherContract -PathType Leaf)) {
         throw 'player manifest or launcher contract is missing'
     }
+    $playerManifest = Assert-TeremoqNonReparseFilePath -Path $playerManifest
+    $launcherContract = Assert-TeremoqNonReparseFilePath -Path $launcherContract
     if ((Get-FileHash -LiteralPath $playerManifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne $version.player_manifest_sha256 -or
         (Get-FileHash -LiteralPath $launcherContract -Algorithm SHA256).Hash.ToLowerInvariant() -cne $version.launcher_contract_sha256) {
         throw 'player manifest or launcher contract hash mismatch'
@@ -567,6 +577,7 @@ function Get-TeremoqWebGenerationContext {
     $generation = Join-Path $StateRoot ('.teremoq-web-build\generations\' + $Checkout.Head + '.tsv')
     [void](Get-TeremoqNonReparseDirectoryPath -Path (Split-Path -Parent $generation))
     [void](Get-TeremoqNonReparseDirectoryPath -Path (Split-Path -Parent ([IO.Path]::GetFullPath((Join-Path $StateRoot $PlayerRelativePath)))))
+    $generation = Assert-TeremoqNonReparseFilePath -Path $generation
     $allowed = @('schema_version','repository_url','repository_ref','source_commit','source_tree','source_contract_sha256','package_lock_sha256','package_json_sha256','node_version','npm_version','dependency_mode','previous_source_commit','source_diff_files','source_diff_sha256','independent_builds','byte_identical','player_manifest_sha256','launcher_contract_sha256','inventory_sha256','player_relative_path')
     $values = Read-TeremoqClosedTsv -Path $generation -MaxBytes 8192 -AllowedKeys $allowed -Label 'Web generation provenance'
     $project = Join-Path $Checkout.CheckoutRoot 'supervisor-web'

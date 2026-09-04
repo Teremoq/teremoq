@@ -14,7 +14,11 @@ Set-StrictMode -Version 3.0
 
 $checkout = [IO.Path]::GetFullPath($CheckoutRoot)
 Assert-TeremoqApprovedGitBootstrapParameters -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
-if (Test-Path -LiteralPath $checkout) { throw 'CheckoutRoot already exists; use Update-LanClient.ps1 for an existing checkout' }
+if (Test-Path -LiteralPath $checkout) {
+    $existing = Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $checkout -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
+    Write-Output ("Teremoq LAN Git checkout already validates at {0} for commit {1}; no overwrite occurred." -f $existing.CheckoutRoot, $existing.Head)
+    exit 0
+}
 $parent = Split-Path -Parent $checkout
 if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw 'CheckoutRoot parent directory must already exist' }
 if (((Get-Item -LiteralPath $parent -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'CheckoutRoot parent may not be a reparse point' }
