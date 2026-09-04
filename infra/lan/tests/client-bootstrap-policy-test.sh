@@ -17,9 +17,20 @@ grep -Fq "@('merge-base', '--is-ancestor', \$ExpectedCommit, \$remoteTip)" "${bo
 grep -Fq "@('checkout', '--quiet', '-b', \$Branch, \$ExpectedCommit)" "${bootstrap}"
 grep -Fq "@('status', '--porcelain=v1', '--untracked-files=all')" "${bootstrap}"
 grep -Fq "\$env:GIT_CONFIG_NOSYSTEM = '1'" "${bootstrap}"
-grep -Fq "'core.hooksPath' = \$emptyHooks" "${bootstrap}"
+grep -Fq "'core.hooksPath' = \$disabledGitPath" "${bootstrap}"
 grep -Fq "\$env:GIT_TERMINAL_PROMPT = '0'" "${bootstrap}"
-grep -Fq '[IO.Directory]::Move($stagingCheckout, $checkoutRoot)' "${bootstrap}"
+grep -Fq 'GetFinalPathNameByHandle' "${bootstrap}"
+grep -Fq 'Get-LockedGitBlobId -Stream $stream' "${bootstrap}"
+grep -Fq 'Open-VerifiedCommitFiles -CheckoutRoot $checkoutRoot -Commit $ExpectedCommit' "${bootstrap}"
+grep -Fq 'El checkout cambio mientras se bloqueaban los archivos aprobados' "${bootstrap}"
+grep -Fq 'Get-ProcessEnvironmentSnapshot' "${bootstrap}"
+grep -Fq 'Restore-ProcessEnvironment -Snapshot $environmentSnapshot' "${bootstrap}"
+grep -Fq "'.bootstrap-lock-'" "${bootstrap}"
+grep -Fq 'Assert-LockedHandlePath -Stream $rootLockStream' "${bootstrap}"
+if grep -Fq '[IO.Directory]::Move(' "${bootstrap}"; then
+    printf 'client-bootstrap-policy-test: checkout publication must not move unlocked trees\n' >&2
+    exit 1
+fi
 grep -Fq '[IO.FileMode]::CreateNew' "${bootstrap}"
 grep -Fq 'Prepare-LanClientFromGit.ps1' "${bootstrap}"
 grep -Fq 'Verify-Package.ps1' "${bootstrap}"
@@ -28,6 +39,25 @@ grep -Fq 'Preflight-Client.ps1' "${bootstrap}"
 if grep -Eiq 'gmail|correo|usb|invoke-webrequest|curl\.exe|wsl\.exe|netsh|firewall|remove-item|private.?key|password|capability' "${bootstrap}"; then
     printf 'client-bootstrap-policy-test: prohibited transport, mutation, or secret term found\n' >&2
     exit 1
+fi
+
+if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
+    fixture="$ROOT/tests/client-bootstrap-primitives-fixture.ps1"
+    expected_blob="$(git -C "$ROOT/../.." rev-parse \
+        7d19febedd91bfa30f58a577865bbd6b5b8b3f7a:supervisor-web/package.json)"
+    bootstrap_path="$(wslpath -w "$bootstrap")"
+    fixture_path="$(wslpath -w "$fixture")"
+    blob_path="$(wslpath -w "$ROOT/../../supervisor-web/package.json")"
+    TEREMOQ_BOOTSTRAP_PATH="$bootstrap_path" \
+    TEREMOQ_FIXTURE_PATH="$fixture_path" \
+    TEREMOQ_BLOB_PATH="$blob_path" \
+    TEREMOQ_EXPECTED_BLOB="$expected_blob" \
+    WSLENV="TEREMOQ_BOOTSTRAP_PATH:TEREMOQ_FIXTURE_PATH:TEREMOQ_BLOB_PATH:TEREMOQ_EXPECTED_BLOB" \
+        powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+        -File "$fixture_path" \
+        -BootstrapPath "$bootstrap_path" \
+        -BlobPath "$blob_path" \
+        -ExpectedBlob "$expected_blob"
 fi
 
 printf 'client-bootstrap-policy-test: pass\n'

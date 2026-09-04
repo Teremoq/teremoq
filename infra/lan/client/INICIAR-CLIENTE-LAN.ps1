@@ -73,31 +73,133 @@ function Get-ExactGitOutput {
     return (Invoke-IsolatedGit -WorkingDirectory $WorkingDirectory -Arguments $Arguments).Output
 }
 
-function Open-LockedSourceFiles {
-    param([Parameter(Mandatory = $true)][string]$CheckoutRoot)
-    $roots = @(
-        (Join-Path $CheckoutRoot 'infra\lan\client'),
-        (Join-Path $CheckoutRoot 'infra\lan\windows'),
-        (Join-Path $CheckoutRoot 'supervisor-web\lan-player'),
-        (Join-Path $CheckoutRoot 'supervisor-web\scripts')
+if (-not ('TeremoqLockedFile' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public static class TeremoqLockedFile {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandle(
+        SafeFileHandle handle, StringBuilder path, uint pathLength, uint flags);
+
+    public static string FinalPath(SafeFileHandle handle) {
+        var path = new StringBuilder(32768);
+        uint length = GetFinalPathNameByHandle(handle, path, (uint)path.Capacity, 0);
+        if (length == 0 || length >= path.Capacity) {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        string value = path.ToString();
+        if (value.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) {
+            return @"\\" + value.Substring(8);
+        }
+        if (value.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)) {
+            return value.Substring(4);
+        }
+        return value;
+    }
+}
+'@
+}
+
+function Assert-LockedHandlePath {
+    param([Parameter(Mandatory = $true)][IO.FileStream]$Stream,
+          [Parameter(Mandatory = $true)][string]$ExpectedPath)
+    $expected = [IO.Path]::GetFullPath($ExpectedPath)
+    $actual = [IO.Path]::GetFullPath([TeremoqLockedFile]::FinalPath($Stream.SafeFileHandle))
+    if (-not $actual.Equals($expected, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "El archivo abierto fue redirigido o sustituido: $expected"
+    }
+}
+
+function Get-LockedGitBlobId {
+    param([Parameter(Mandatory = $true)][IO.FileStream]$Stream)
+    if ($Stream.Length -gt 4194304) { throw 'Un archivo fuente supera el limite de 4 MiB' }
+    $position = $Stream.Position
+    $Stream.Position = 0
+    $sha1 = [Security.Cryptography.SHA1]::Create()
+    try {
+        $header = [Text.Encoding]::ASCII.GetBytes("blob $($Stream.Length)" + [char]0)
+        [void]$sha1.TransformBlock($header, 0, $header.Length, $header, 0)
+        $buffer = New-Object byte[] 65536
+        while (($read = $Stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            [void]$sha1.TransformBlock($buffer, 0, $read, $buffer, 0)
+        }
+        [void]$sha1.TransformFinalBlock((New-Object byte[] 0), 0, 0)
+        return (($sha1.Hash | ForEach-Object { $_.ToString('x2') }) -join '')
+    } finally {
+        $sha1.Dispose()
+        $Stream.Position = $position
+    }
+}
+
+function Open-VerifiedCommitFiles {
+    param([Parameter(Mandatory = $true)][string]$CheckoutRoot,
+          [Parameter(Mandatory = $true)][string]$Commit)
+    $listing = Get-ExactGitOutput -WorkingDirectory $CheckoutRoot -Arguments @(
+        'ls-tree', '-r', '--name-only', $Commit, '--',
+        'infra/lan/client', 'infra/lan/windows', 'supervisor-web'
     )
-    $paths = @($roots | ForEach-Object {
-        [void](Assert-SafePathChain -Path $_ -MustExist)
-        Get-ChildItem -LiteralPath $_ -File -Recurse -Force | Select-Object -ExpandProperty FullName
-    }) + @(
-        (Join-Path $CheckoutRoot 'supervisor-web\package.json'),
-        (Join-Path $CheckoutRoot 'supervisor-web\package-lock.json')
-    )
+    $relativePaths = @($listing -split [char]10 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($relativePaths.Count -lt 10 -or $relativePaths.Count -gt 512) {
+        throw 'El conjunto de archivos fuente no tiene una cardinalidad valida'
+    }
     $streams = New-Object Collections.Generic.List[IO.FileStream]
     try {
-        foreach ($path in ($paths | Sort-Object -Unique)) {
-            $regular = Assert-RegularFile -Path $path
-            $streams.Add([IO.File]::Open($regular, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
+        foreach ($relativePath in $relativePaths) {
+            if ($relativePath -notmatch '^[A-Za-z0-9_.+@ -]+(?:/[A-Za-z0-9_.+@ -]+)*$') {
+                throw "Git devolvio una ruta fuente no admitida: $relativePath"
+            }
+            $expectedPath = Join-Path $CheckoutRoot ($relativePath.Replace('/', '\'))
+            $regular = Assert-RegularFile -Path $expectedPath
+            $stream = [IO.File]::Open($regular, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            try {
+                Assert-LockedHandlePath -Stream $stream -ExpectedPath $regular
+                $expectedBlob = Get-ExactGitOutput -WorkingDirectory $CheckoutRoot -Arguments @(
+                    'rev-parse', ('{0}:{1}' -f $Commit, $relativePath)
+                )
+                if ((Get-LockedGitBlobId -Stream $stream) -cne $expectedBlob) {
+                    throw "El archivo abierto no coincide con el objeto Git aprobado: $relativePath"
+                }
+                $streams.Add($stream)
+            } catch {
+                $stream.Dispose()
+                throw
+            }
+        }
+        $dirtyAfterLocks = Get-ExactGitOutput -WorkingDirectory $CheckoutRoot -Arguments @(
+            'status', '--porcelain=v1', '--untracked-files=all'
+        )
+        if (-not [string]::IsNullOrEmpty($dirtyAfterLocks)) {
+            throw 'El checkout cambio mientras se bloqueaban los archivos aprobados'
         }
         return $streams
     } catch {
         foreach ($stream in $streams) { $stream.Dispose() }
         throw
+    }
+}
+
+function Get-ProcessEnvironmentSnapshot {
+    $snapshot = @{}
+    foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
+        $snapshot[[string]$entry.Key] = [string]$entry.Value
+    }
+    return $snapshot
+}
+
+function Restore-ProcessEnvironment {
+    param([Parameter(Mandatory = $true)][Collections.IDictionary]$Snapshot)
+    foreach ($name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+        if (-not $Snapshot.Contains([string]$name)) {
+            [Environment]::SetEnvironmentVariable([string]$name, $null, 'Process')
+        }
+    }
+    foreach ($entry in $Snapshot.GetEnumerator()) {
+        [Environment]::SetEnvironmentVariable([string]$entry.Key, [string]$entry.Value, 'Process')
     }
 }
 
@@ -144,124 +246,175 @@ foreach ($path in @($checkoutRoot, $stateRoot, $preflightPath)) {
     if (Test-Path -LiteralPath $path) { throw "No se sobrescribira una instalacion o evidencia existente: $path" }
 }
 
-$sessionRoot = Join-Path $root ('.bootstrap-' + [Guid]::NewGuid().ToString('N'))
-[void][IO.Directory]::CreateDirectory($sessionRoot)
-[void](Assert-SafePathChain -Path $sessionRoot -MustExist)
-$stagingCheckout = Join-Path $sessionRoot 'checkout'
-$stagingState = Join-Path $sessionRoot 'state'
-$isolatedHome = Join-Path $sessionRoot 'home'
-$emptyHooks = Join-Path $sessionRoot 'hooks'
-[void][IO.Directory]::CreateDirectory($isolatedHome)
-[void][IO.Directory]::CreateDirectory($emptyHooks)
-$emptyConfig = Join-Path $sessionRoot 'empty.gitconfig'
-$emptyAttributes = Join-Path $sessionRoot 'empty.gitattributes'
-[IO.File]::WriteAllBytes($emptyConfig, (New-Object byte[] 0))
-[IO.File]::WriteAllBytes($emptyAttributes, (New-Object byte[] 0))
-
-foreach ($entry in @(Get-ChildItem Env: | Where-Object {
-        $_.Name -like 'GIT_*' -or $_.Name -like 'GCM_*' -or $_.Name -like 'SSH_*' -or
-        $_.Name -like 'CURL_*' -or $_.Name -like 'SSL_CERT_*' -or
-        $_.Name -in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')
-    })) {
-    [Environment]::SetEnvironmentVariable($entry.Name, $null, 'Process')
-}
-$env:GIT_CONFIG_NOSYSTEM = '1'
-$env:GIT_CONFIG_SYSTEM = $emptyConfig
-$env:GIT_CONFIG_GLOBAL = $emptyConfig
-$env:GIT_TERMINAL_PROMPT = '0'
-$env:GCM_INTERACTIVE = 'Never'
-$env:HOME = $isolatedHome
-$env:USERPROFILE = $isolatedHome
-$env:XDG_CONFIG_HOME = $isolatedHome
-$env:PATH = "$(Split-Path -Parent $script:GitExecutable);$(Split-Path -Parent $nodeExecutable);$env:SystemRoot\System32;$env:SystemRoot"
-$gitConfig = [ordered]@{
-    'core.hooksPath' = $emptyHooks
-    'core.attributesFile' = $emptyAttributes
-    'core.fsmonitor' = 'false'
-    'core.autocrlf' = 'false'
-    'core.eol' = 'lf'
-    'protocol.file.allow' = 'never'
-    'protocol.ext.allow' = 'never'
-    'init.templateDir' = $emptyHooks
-}
-$env:GIT_CONFIG_COUNT = [string]$gitConfig.Count
-$index = 0
-foreach ($pair in $gitConfig.GetEnumerator()) {
-    [Environment]::SetEnvironmentVariable("GIT_CONFIG_KEY_$index", [string]$pair.Key, 'Process')
-    [Environment]::SetEnvironmentVariable("GIT_CONFIG_VALUE_$index", [string]$pair.Value, 'Process')
-    $index += 1
-}
-
-Write-Host '1/4 Descargando por Git el cliente aprobado...'
-[void](Invoke-IsolatedGit -WorkingDirectory $sessionRoot -Arguments @('init', '--quiet', '--initial-branch', $Branch, $stagingCheckout))
-[void](Invoke-IsolatedGit -WorkingDirectory $stagingCheckout -Arguments @('remote', 'add', 'origin', $RepositoryUrl))
-[void](Invoke-IsolatedGit -WorkingDirectory $stagingCheckout -Arguments @('config', 'remote.origin.fetch', "+$RepositoryRef`:refs/remotes/origin/$Branch"))
-[void](Invoke-IsolatedGit -WorkingDirectory $stagingCheckout -Arguments @('fetch', '--quiet', '--no-tags', 'origin', "+$RepositoryRef`:refs/remotes/origin/$Branch"))
-$remoteTip = Get-ExactGitOutput -WorkingDirectory $stagingCheckout -Arguments @('rev-parse', "refs/remotes/origin/$Branch")
-[void](Invoke-IsolatedGit -WorkingDirectory $stagingCheckout -Arguments @('cat-file', '-e', "$ExpectedCommit`^{commit}"))
-[void](Invoke-IsolatedGit -WorkingDirectory $stagingCheckout -Arguments @('merge-base', '--is-ancestor', $ExpectedCommit, $remoteTip))
-[void](Invoke-IsolatedGit -WorkingDirectory $stagingCheckout -Arguments @('checkout', '--quiet', '-b', $Branch, $ExpectedCommit))
-[void](Invoke-IsolatedGit -WorkingDirectory $stagingCheckout -Arguments @('branch', '--set-upstream-to', "origin/$Branch", $Branch))
-
-$remotes = @((Get-ExactGitOutput -WorkingDirectory $stagingCheckout -Arguments @('remote')) -split "`n")
-$remoteUrl = Get-ExactGitOutput -WorkingDirectory $stagingCheckout -Arguments @('remote', 'get-url', 'origin')
-$head = Get-ExactGitOutput -WorkingDirectory $stagingCheckout -Arguments @('rev-parse', 'HEAD')
-$checkedOutBranch = Get-ExactGitOutput -WorkingDirectory $stagingCheckout -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')
-$dirty = Get-ExactGitOutput -WorkingDirectory $stagingCheckout -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
-if ($remotes.Count -ne 1 -or $remotes[0] -cne 'origin' -or $remoteUrl -cne $RepositoryUrl -or
-    $head -cne $ExpectedCommit -or $checkedOutBranch -cne $Branch -or -not [string]::IsNullOrEmpty($dirty)) {
-    throw 'El checkout no coincide exactamente con la version LAN aprobada'
-}
-
-$packageJsonSha = (Get-FileHash -LiteralPath (Join-Path $stagingCheckout 'supervisor-web\package.json') -Algorithm SHA256).Hash.ToLowerInvariant()
-$packageLockSha = (Get-FileHash -LiteralPath (Join-Path $stagingCheckout 'supervisor-web\package-lock.json') -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($packageJsonSha -cne $ExpectedPackageJsonSha256 -or $packageLockSha -cne $ExpectedPackageLockSha256) {
-    throw 'Los archivos de dependencias descargados no coinciden byte a byte con el contrato aprobado'
-}
-
-$lockedSources = Open-LockedSourceFiles -CheckoutRoot $stagingCheckout
+$environmentSnapshot = Get-ProcessEnvironmentSnapshot
+$sessionRoot = $null
+$rootLockPath = $null
+$isolationStreams = New-Object Collections.Generic.List[IO.FileStream]
 try {
-    Write-Host '2/4 Construyendo y verificando el reproductor desde el checkout limpio...'
-    & (Join-Path $stagingCheckout 'infra\lan\client\Prepare-LanClientFromGit.ps1') `
-        -CheckoutRoot $stagingCheckout -StateRoot $stagingState `
-        -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef `
-        -ExpectedCommit $ExpectedCommit -RunId $RunId `
-        -ServerIPv4 $ServerIPv4 -PrefixLength 24 -Namespace 'teremoq/live' `
-        -FingerprintSha256 $FingerprintSha256
+    $rootLockPath = Join-Path $root ('.bootstrap-lock-' + [Guid]::NewGuid().ToString('N'))
+    $rootLockStream = New-Object IO.FileStream(
+        $rootLockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read
+    )
+    $isolationStreams.Add($rootLockStream)
+    Assert-LockedHandlePath -Stream $rootLockStream -ExpectedPath $rootLockPath
+    $rootLockStream.Flush($true)
 
-    Write-Host '3/4 Verificando version y compatibilidad local...'
-    & (Join-Path $stagingCheckout 'infra\lan\client\Verify-Package.ps1') `
-        -CheckoutRoot $stagingCheckout -StateRoot $stagingState
+    $sessionRoot = Join-Path $root ('.bootstrap-' + [Guid]::NewGuid().ToString('N'))
+    [void][IO.Directory]::CreateDirectory($sessionRoot)
+    [void](Assert-SafePathChain -Path $sessionRoot -MustExist)
+    $isolatedHome = Join-Path $sessionRoot 'home'
+    [void][IO.Directory]::CreateDirectory($isolatedHome)
+    $emptyConfig = Join-Path $sessionRoot 'empty.gitconfig'
+    $emptyAttributes = Join-Path $sessionRoot 'empty.gitattributes'
+    [IO.File]::WriteAllBytes($emptyConfig, (New-Object byte[] 0))
+    [IO.File]::WriteAllBytes($emptyAttributes, (New-Object byte[] 0))
+    foreach ($path in @($emptyConfig, $emptyAttributes)) {
+        $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $isolationStreams.Add($stream)
+        Assert-LockedHandlePath -Stream $stream -ExpectedPath $path
+        if ($stream.Length -ne 0) { throw 'Un archivo de aislamiento Git no esta vacio' }
+    }
+    $disabledGitPath = Join-Path $emptyConfig 'disabled'
 
-    Write-Host '4/4 Ejecutando el preflight nativo del portatil...'
-    $preflightLines = @(& (Join-Path $stagingCheckout 'infra\lan\windows\Preflight-Client.ps1') `
-        -RunId $RunId -SourceCommit $ExpectedCommit `
-        -ServerIPv4 $ServerIPv4 -ClientIPv4 $ClientIPv4 -PrefixLength 24 `
-        -NetworkProfile $networkProfile -ExpectedWslMode nat `
-        -MaximumClockOffsetMs 2000 -MinimumMtu 1280 `
-        -MinimumCpuCores 2 -MinimumMemoryMiB 2048 -MinimumDiskMiB 1024)
+    foreach ($entry in @(Get-ChildItem Env: | Where-Object {
+            $_.Name -like 'GIT_*' -or $_.Name -like 'GCM_*' -or $_.Name -like 'SSH_*' -or
+            $_.Name -like 'CURL_*' -or $_.Name -like 'SSL_CERT_*' -or
+            $_.Name -in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY')
+        })) {
+        [Environment]::SetEnvironmentVariable($entry.Name, $null, 'Process')
+    }
+    $env:GIT_CONFIG_NOSYSTEM = '1'
+    $env:GIT_CONFIG_SYSTEM = $emptyConfig
+    $env:GIT_CONFIG_GLOBAL = $emptyConfig
+    $env:GIT_TERMINAL_PROMPT = '0'
+    $env:GCM_INTERACTIVE = 'Never'
+    $env:HOME = $isolatedHome
+    $env:USERPROFILE = $isolatedHome
+    $env:XDG_CONFIG_HOME = $isolatedHome
+    $env:PATH = "$(Split-Path -Parent $script:GitExecutable);$(Split-Path -Parent $nodeExecutable);$env:SystemRoot\System32;$env:SystemRoot"
+    $gitConfig = [ordered]@{
+        'core.hooksPath' = $disabledGitPath
+        'core.attributesFile' = $emptyAttributes
+        'core.fsmonitor' = 'false'
+        'core.autocrlf' = 'false'
+        'core.eol' = 'lf'
+        'protocol.file.allow' = 'never'
+        'protocol.ext.allow' = 'never'
+        'init.templateDir' = $disabledGitPath
+    }
+    $env:GIT_CONFIG_COUNT = [string]$gitConfig.Count
+    $index = 0
+    foreach ($pair in $gitConfig.GetEnumerator()) {
+        [Environment]::SetEnvironmentVariable("GIT_CONFIG_KEY_$index", [string]$pair.Key, 'Process')
+        [Environment]::SetEnvironmentVariable("GIT_CONFIG_VALUE_$index", [string]$pair.Value, 'Process')
+        $index += 1
+    }
+
+    Write-Host '1/4 Descargando por Git el cliente aprobado...'
+    [void](Assert-SafePathChain -Path $root -MustExist)
+    foreach ($path in @($checkoutRoot, $stateRoot, $preflightPath)) {
+        if (Test-Path -LiteralPath $path) { throw "Una ruta final aparecio durante la instalacion: $path" }
+    }
+    [void](Invoke-IsolatedGit -WorkingDirectory $root -Arguments @('init', '--quiet', '--initial-branch', $Branch, $checkoutRoot))
+    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('remote', 'add', 'origin', $RepositoryUrl))
+    $fetchSpec = '+{0}:refs/remotes/origin/{1}' -f $RepositoryRef, $Branch
+    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('config', 'remote.origin.fetch', $fetchSpec))
+    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('fetch', '--quiet', '--no-tags', 'origin', $fetchSpec))
+    $remoteTip = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('rev-parse', "refs/remotes/origin/$Branch")
+    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('cat-file', '-e', ('{0}^{commit}' -f $ExpectedCommit)))
+    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('merge-base', '--is-ancestor', $ExpectedCommit, $remoteTip))
+    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('checkout', '--quiet', '-b', $Branch, $ExpectedCommit))
+    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('branch', '--set-upstream-to', "origin/$Branch", $Branch))
+
+    $remotes = @((Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('remote')) -split [char]10)
+    $remoteUrl = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('remote', 'get-url', 'origin')
+    $head = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('rev-parse', 'HEAD')
+    $checkedOutBranch = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')
+    $dirty = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('status', '--porcelain=v1', '--untracked-files=all')
+    if ($remotes.Count -ne 1 -or $remotes[0] -cne 'origin' -or $remoteUrl -cne $RepositoryUrl -or
+        $head -cne $ExpectedCommit -or $checkedOutBranch -cne $Branch -or -not [string]::IsNullOrEmpty($dirty)) {
+        throw 'El checkout no coincide exactamente con la version LAN aprobada'
+    }
+
+    $packageJsonSha = (Get-FileHash -LiteralPath (Join-Path $checkoutRoot 'supervisor-web\package.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+    $packageLockSha = (Get-FileHash -LiteralPath (Join-Path $checkoutRoot 'supervisor-web\package-lock.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($packageJsonSha -cne $ExpectedPackageJsonSha256 -or $packageLockSha -cne $ExpectedPackageLockSha256) {
+        throw 'Los archivos de dependencias descargados no coinciden byte a byte con el contrato aprobado'
+    }
+
+    $lockedSources = Open-VerifiedCommitFiles -CheckoutRoot $checkoutRoot -Commit $ExpectedCommit
+    try {
+        Write-Host '2/4 Construyendo y verificando el reproductor desde el checkout limpio...'
+        $prepareArguments = @{
+            CheckoutRoot = $checkoutRoot
+            StateRoot = $stateRoot
+            RepositoryUrl = $RepositoryUrl
+            RepositoryRef = $RepositoryRef
+            ExpectedCommit = $ExpectedCommit
+            RunId = $RunId
+            ServerIPv4 = $ServerIPv4
+            PrefixLength = 24
+            Namespace = 'teremoq/live'
+            FingerprintSha256 = $FingerprintSha256
+        }
+        & (Join-Path $checkoutRoot 'infra\lan\client\Prepare-LanClientFromGit.ps1') @prepareArguments
+
+        Write-Host '3/4 Verificando version y compatibilidad local...'
+        & (Join-Path $checkoutRoot 'infra\lan\client\Verify-Package.ps1') -CheckoutRoot $checkoutRoot -StateRoot $stateRoot
+
+        Write-Host '4/4 Ejecutando el preflight nativo del portatil...'
+        $preflightArguments = @{
+            RunId = $RunId
+            SourceCommit = $ExpectedCommit
+            ServerIPv4 = $ServerIPv4
+            ClientIPv4 = $ClientIPv4
+            PrefixLength = 24
+            NetworkProfile = $networkProfile
+            ExpectedWslMode = 'nat'
+            MaximumClockOffsetMs = 2000
+            MinimumMtu = 1280
+            MinimumCpuCores = 2
+            MinimumMemoryMiB = 2048
+            MinimumDiskMiB = 1024
+        }
+        $preflightLines = @(& (Join-Path $checkoutRoot 'infra\lan\windows\Preflight-Client.ps1') @preflightArguments)
+        $preflightJson = $preflightLines -join [Environment]::NewLine
+        try { $preflight = $preflightJson | ConvertFrom-Json } catch { throw 'El preflight no produjo JSON valido' }
+        $gate = @($preflight.checks | Where-Object { $_.check -ceq 'preflight_gate' })
+        if ($gate.Count -ne 1) { throw 'El preflight no contiene una decision unica' }
+
+        [void](Assert-SafePathChain -Path $root -MustExist)
+        [void](Assert-SafePathChain -Path $checkoutRoot -MustExist)
+        [void](Assert-SafePathChain -Path $stateRoot -MustExist)
+        if (Test-Path -LiteralPath $preflightPath) { throw "Una evidencia final aparecio durante la instalacion: $preflightPath" }
+        $utf8 = New-Object Text.UTF8Encoding($false, $true)
+        $preflightBytes = $utf8.GetBytes($preflightJson + [Environment]::NewLine)
+        $preflightStream = New-Object IO.FileStream($preflightPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            Assert-LockedHandlePath -Stream $preflightStream -ExpectedPath $preflightPath
+            $preflightStream.Write($preflightBytes, 0, $preflightBytes.Length)
+            $preflightStream.Flush($true)
+        } finally {
+            $preflightStream.Dispose()
+        }
+        if ($gate[0].status -cne 'pass' -or $gate[0].value -cne 'ready') {
+            throw "El preflight ha quedado bloqueado; conserva el informe: $preflightPath"
+        }
+    } finally {
+        foreach ($stream in $lockedSources) { $stream.Dispose() }
+    }
 } finally {
-    foreach ($stream in $lockedSources) { $stream.Dispose() }
+    foreach ($stream in $isolationStreams) { $stream.Dispose() }
+    Restore-ProcessEnvironment -Snapshot $environmentSnapshot
+    if ($sessionRoot -and (Test-Path -LiteralPath $sessionRoot)) {
+        [void](Assert-SafePathChain -Path $sessionRoot -MustExist)
+        [IO.Directory]::Delete($sessionRoot, $true)
+    }
+    if ($rootLockPath -and (Test-Path -LiteralPath $rootLockPath)) {
+        [void](Assert-RegularFile -Path $rootLockPath)
+        [IO.File]::Delete($rootLockPath)
+    }
 }
-
-$preflightJson = $preflightLines -join "`r`n"
-try { $preflight = $preflightJson | ConvertFrom-Json } catch { throw 'El preflight no produjo JSON valido' }
-$gate = @($preflight.checks | Where-Object { $_.check -ceq 'preflight_gate' })
-if ($gate.Count -ne 1) { throw 'El preflight no contiene una decision unica' }
-foreach ($path in @($checkoutRoot, $stateRoot, $preflightPath)) {
-    if (Test-Path -LiteralPath $path) { throw "Una ruta final aparecio durante la instalacion: $path" }
-}
-[IO.Directory]::Move($stagingCheckout, $checkoutRoot)
-[IO.Directory]::Move($stagingState, $stateRoot)
-& (Join-Path $checkoutRoot 'infra\lan\client\Verify-Package.ps1') -CheckoutRoot $checkoutRoot -StateRoot $stateRoot
-$utf8 = New-Object Text.UTF8Encoding($false, $true)
-$preflightBytes = $utf8.GetBytes($preflightJson + "`r`n")
-$preflightStream = New-Object IO.FileStream($preflightPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-try { $preflightStream.Write($preflightBytes, 0, $preflightBytes.Length); $preflightStream.Flush($true) } finally { $preflightStream.Dispose() }
-if ($gate[0].status -cne 'pass' -or $gate[0].value -cne 'ready') {
-    throw "El preflight ha quedado bloqueado; conserva el informe: $preflightPath"
-}
-if (Test-Path -LiteralPath $sessionRoot) { [IO.Directory]::Delete($sessionRoot, $true) }
 
 Write-Host ''
 Write-Host 'CLIENTE LAN PREPARADO Y PREFLIGHT APROBADO' -ForegroundColor Green
