@@ -53,7 +53,7 @@ function Invoke-IsolatedGit {
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $lines = @(& $script:GitExecutable -C $WorkingDirectory @Arguments 2>&1)
+        $lines = @(& $script:GitExecutable --no-replace-objects -C $WorkingDirectory @Arguments 2>&1)
         $exitCode = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previousPreference
@@ -176,6 +176,12 @@ function Open-VerifiedCommitFiles {
         if (-not [string]::IsNullOrEmpty($dirtyAfterLocks)) {
             throw 'El checkout cambio mientras se bloqueaban los archivos aprobados'
         }
+        $replaceRefsAfterLocks = Get-ExactGitOutput -WorkingDirectory $CheckoutRoot -Arguments @(
+            'for-each-ref', '--format=%(refname)', 'refs/replace'
+        )
+        if (-not [string]::IsNullOrEmpty($replaceRefsAfterLocks)) {
+            throw 'El checkout contiene objetos Git de reemplazo'
+        }
         return $streams
     } catch {
         foreach ($stream in $streams) { $stream.Dispose() }
@@ -288,6 +294,7 @@ try {
     $env:GIT_CONFIG_GLOBAL = $emptyConfig
     $env:GIT_TERMINAL_PROMPT = '0'
     $env:GCM_INTERACTIVE = 'Never'
+    $env:GIT_NO_REPLACE_OBJECTS = '1'
     $env:HOME = $isolatedHome
     $env:USERPROFILE = $isolatedHome
     $env:XDG_CONFIG_HOME = $isolatedHome
@@ -315,11 +322,35 @@ try {
     foreach ($path in @($checkoutRoot, $stateRoot, $preflightPath)) {
         if (Test-Path -LiteralPath $path) { throw "Una ruta final aparecio durante la instalacion: $path" }
     }
+    [void][IO.Directory]::CreateDirectory($checkoutRoot)
+    [void](Assert-SafePathChain -Path $checkoutRoot -MustExist)
+    $gitDirectory = Join-Path $checkoutRoot '.git'
+    [void][IO.Directory]::CreateDirectory($gitDirectory)
+    [void](Assert-SafePathChain -Path $gitDirectory -MustExist)
+    $checkoutClaimPath = Join-Path $gitDirectory 'teremoq-bootstrap-claim'
+    $checkoutClaimStream = New-Object IO.FileStream(
+        $checkoutClaimPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read
+    )
+    $isolationStreams.Add($checkoutClaimStream)
+    Assert-LockedHandlePath -Stream $checkoutClaimStream -ExpectedPath $checkoutClaimPath
+    $checkoutClaimStream.Flush($true)
+    $checkoutChildren = @(Get-ChildItem -LiteralPath $checkoutRoot -Force)
+    $gitChildren = @(Get-ChildItem -LiteralPath $gitDirectory -Force)
+    if ($checkoutChildren.Count -ne 1 -or $checkoutChildren[0].Name -cne '.git' -or
+        $gitChildren.Count -ne 1 -or $gitChildren[0].Name -cne 'teremoq-bootstrap-claim') {
+        throw 'El destino Git no estaba vacio al reclamarlo'
+    }
     [void](Invoke-IsolatedGit -WorkingDirectory $root -Arguments @('init', '--quiet', '--initial-branch', $Branch, $checkoutRoot))
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('remote', 'add', 'origin', $RepositoryUrl))
     $fetchSpec = '+{0}:refs/remotes/origin/{1}' -f $RepositoryRef, $Branch
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('config', 'remote.origin.fetch', $fetchSpec))
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('fetch', '--quiet', '--no-tags', 'origin', $fetchSpec))
+    $replaceRefs = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @(
+        'for-each-ref', '--format=%(refname)', 'refs/replace'
+    )
+    if (-not [string]::IsNullOrEmpty($replaceRefs)) {
+        throw 'El checkout contiene objetos Git de reemplazo'
+    }
     $remoteTip = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('rev-parse', "refs/remotes/origin/$Branch")
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('cat-file', '-e', ('{0}^{commit}' -f $ExpectedCommit)))
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('merge-base', '--is-ancestor', $ExpectedCommit, $remoteTip))

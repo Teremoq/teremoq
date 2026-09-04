@@ -19,6 +19,11 @@ grep -Fq "@('status', '--porcelain=v1', '--untracked-files=all')" "${bootstrap}"
 grep -Fq "\$env:GIT_CONFIG_NOSYSTEM = '1'" "${bootstrap}"
 grep -Fq "'core.hooksPath' = \$disabledGitPath" "${bootstrap}"
 grep -Fq "\$env:GIT_TERMINAL_PROMPT = '0'" "${bootstrap}"
+grep -Fq "\$env:GIT_NO_REPLACE_OBJECTS = '1'" "${bootstrap}"
+grep -Fq '& $script:GitExecutable --no-replace-objects' "${bootstrap}"
+grep -Fq "'refs/replace'" "${bootstrap}"
+grep -Fq "'teremoq-bootstrap-claim'" "${bootstrap}"
+grep -Fq 'Assert-LockedHandlePath -Stream $checkoutClaimStream' "${bootstrap}"
 grep -Fq 'GetFinalPathNameByHandle' "${bootstrap}"
 grep -Fq 'Get-LockedGitBlobId -Stream $stream' "${bootstrap}"
 grep -Fq 'Open-VerifiedCommitFiles -CheckoutRoot $checkoutRoot -Commit $ExpectedCommit' "${bootstrap}"
@@ -38,6 +43,27 @@ grep -Fq 'Preflight-Client.ps1' "${bootstrap}"
 
 if grep -Eiq 'gmail|correo|usb|invoke-webrequest|curl\.exe|wsl\.exe|netsh|firewall|remove-item|private.?key|password|capability' "${bootstrap}"; then
     printf 'client-bootstrap-policy-test: prohibited transport, mutation, or secret term found\n' >&2
+    exit 1
+fi
+
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+git -C "$scratch" init --quiet
+git -C "$scratch" config user.name 'Teremoq Test'
+git -C "$scratch" config user.email 'test@example.invalid'
+printf 'approved\n' >"$scratch/contract.txt"
+git -C "$scratch" add contract.txt
+git -C "$scratch" commit --quiet -m approved
+approved_commit="$(git -C "$scratch" rev-parse HEAD)"
+approved_blob="$(git -C "$scratch" rev-parse "$approved_commit:contract.txt")"
+printf 'replacement\n' >"$scratch/contract.txt"
+git -C "$scratch" commit --quiet -am replacement
+replacement_commit="$(git -C "$scratch" rev-parse HEAD)"
+git -C "$scratch" replace "$approved_commit" "$replacement_commit"
+replaced_blob="$(git -C "$scratch" rev-parse "$approved_commit:contract.txt")"
+isolated_blob="$(GIT_NO_REPLACE_OBJECTS=1 git --no-replace-objects -C "$scratch" rev-parse "$approved_commit:contract.txt")"
+if [[ "$replaced_blob" == "$approved_blob" || "$isolated_blob" != "$approved_blob" ]]; then
+    printf 'client-bootstrap-policy-test: Git replace isolation canary failed\n' >&2
     exit 1
 fi
 
