@@ -298,6 +298,11 @@ is preserved and rejected for manual investigation rather than deleted.
 
 ## 6. Reproducible client package and evidence
 
+`package-client.sh` is deprecated and intentionally fails: no client state,
+player, certificate or configuration is packaged or transferred from the
+server. Use the native Git clone, Web Git builder and client-local initializer
+documented in `client/README.md`.
+
 Build and package the Web player only after Rust, Web and Platform commits are
 reviewed into one clean integration branch. Capture its exact 40-character
 HEAD; never build from `origin/main` or copy an older `.next` tree:

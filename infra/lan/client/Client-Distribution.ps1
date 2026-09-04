@@ -306,9 +306,23 @@ function Assert-TeremoqRootsSeparated {
     }
 }
 
+function Get-TeremoqNonReparseDirectoryPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force
+    if (-not $item.PSIsContainer) { throw 'path must be an existing directory' }
+    $current = $item
+    while ($true) {
+        if (($current.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'directory path or ancestor may not be a junction/reparse point' }
+        $parent = $current.Parent
+        if ($null -eq $parent -or $parent.FullName -ceq $current.FullName) { break }
+        $current = $parent
+    }
+    return $item.FullName
+}
+
 function Get-TeremoqLanStateContext {
     param([Parameter(Mandatory = $true)][string]$StateRoot)
-    $root = [IO.Path]::GetFullPath($StateRoot)
+    $root = Get-TeremoqNonReparseDirectoryPath -Path $StateRoot
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'StateRoot must exist' }
     $rootItem = Get-Item -LiteralPath $root -Force
     if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'StateRoot may not be a reparse point' }
@@ -468,7 +482,7 @@ function Get-TeremoqGitCheckoutContext {
         [Parameter(Mandatory = $true)]$StateContext,
         [switch]$RequireExactHead
     )
-    $root = [IO.Path]::GetFullPath($CheckoutRoot)
+    $root = Get-TeremoqNonReparseDirectoryPath -Path $CheckoutRoot
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'CheckoutRoot must exist' }
     $item = Get-Item -LiteralPath $root -Force
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'CheckoutRoot may not be a reparse point' }
@@ -520,7 +534,7 @@ function Get-TeremoqGitBootstrapCheckoutContext {
         [Parameter(Mandatory = $true)][string]$RepositorySubdirectory
     )
     Assert-TeremoqApprovedGitBootstrapParameters -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
-    $root = [IO.Path]::GetFullPath($CheckoutRoot)
+    $root = Get-TeremoqNonReparseDirectoryPath -Path $CheckoutRoot
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'CheckoutRoot must exist' }
     $item = Get-Item -LiteralPath $root -Force
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'CheckoutRoot may not be a reparse point' }
@@ -540,4 +554,40 @@ function Get-TeremoqGitBootstrapCheckoutContext {
     $supportRoot = [IO.Path]::GetFullPath((Join-Path $root $RepositorySubdirectory))
     if (-not $supportRoot.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $supportRoot -PathType Container)) { throw 'approved repository_subdirectory is absent from the checkout' }
     return [pscustomobject]@{ CheckoutRoot = $root; Head = $ExpectedCommit; SupportRoot = $supportRoot }
+}
+
+function Get-TeremoqWebGenerationContext {
+    param(
+        [Parameter(Mandatory = $true)]$Checkout,
+        [Parameter(Mandatory = $true)][string]$StateRoot,
+        [Parameter(Mandatory = $true)][string]$PlayerRelativePath,
+        [Parameter(Mandatory = $true)][string]$PlayerManifestSha256,
+        [Parameter(Mandatory = $true)][string]$LauncherContractSha256
+    )
+    $generation = Join-Path $StateRoot ('.teremoq-web-build\generations\' + $Checkout.Head + '.tsv')
+    $allowed = @('schema_version','repository_url','repository_ref','source_commit','source_tree','source_contract_sha256','package_lock_sha256','package_json_sha256','node_version','npm_version','dependency_mode','previous_source_commit','source_diff_files','source_diff_sha256','independent_builds','byte_identical','player_manifest_sha256','launcher_contract_sha256','inventory_sha256','player_relative_path')
+    $values = Read-TeremoqClosedTsv -Path $generation -MaxBytes 8192 -AllowedKeys $allowed -Label 'Web generation provenance'
+    $project = Join-Path $Checkout.CheckoutRoot 'supervisor-web'
+    $contract = Join-Path $project 'lan-player\source-contract.tsv'
+    $lock = Join-Path $project 'package-lock.json'
+    $package = Join-Path $project 'package.json'
+    foreach ($path in @($project, $contract, $lock, $package)) {
+        if (-not (Test-Path -LiteralPath $path) -or ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Web source provenance path is absent or a reparse point' }
+    }
+    $tree = Invoke-TeremoqGit -CheckoutRoot $Checkout.CheckoutRoot -Arguments @('rev-parse', ($Checkout.Head + ':supervisor-web'))
+    if ($values.schema_version -ne '1' -or $values.repository_url -cne 'https://github.com/Teremoq/teremoq' -or
+        $values.repository_ref -cne (Invoke-TeremoqGit -CheckoutRoot $Checkout.CheckoutRoot -Arguments @('symbolic-ref','--quiet','HEAD')) -or
+        $values.source_commit -cne $Checkout.Head -or $values.source_tree -cne $tree -or
+        $values.source_contract_sha256 -cne (Get-FileHash -LiteralPath $contract -Algorithm SHA256).Hash.ToLowerInvariant() -or
+        $values.package_lock_sha256 -cne (Get-FileHash -LiteralPath $lock -Algorithm SHA256).Hash.ToLowerInvariant() -or
+        $values.package_json_sha256 -cne (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant() -or
+        $values.node_version -cnotmatch '^v22[.][0-9]+[.][0-9]+$' -or $values.npm_version -cnotmatch '^10[.][0-9]+[.][0-9]+$' -or
+        $values.independent_builds -cne '2' -or $values.byte_identical -cne 'true' -or
+        $values.player_manifest_sha256 -cne $PlayerManifestSha256 -or $values.launcher_contract_sha256 -cne $LauncherContractSha256 -or
+        $values.inventory_sha256 -cnotmatch '^[0-9a-f]{64}$' -or $values.player_relative_path -cne $PlayerRelativePath -or
+        $values.source_diff_files -cnotmatch '^[0-9]+$' -or $values.source_diff_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $values.dependency_mode -notin @('initial','reused','refreshed') -or $values.previous_source_commit -cnotmatch '^(none|[0-9a-f]{40})$') {
+        throw 'Web generation provenance is not bound to the exact clean Git source and player'
+    }
+    return $values
 }

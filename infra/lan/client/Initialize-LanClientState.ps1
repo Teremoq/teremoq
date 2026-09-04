@@ -50,6 +50,7 @@ foreach ($required in @('MANIFEST.sha256.json', 'lan-launcher.tsv')) {
 }
 $playerManifestSha = (Get-FileHash -LiteralPath (Join-Path $playerRoot 'MANIFEST.sha256.json') -Algorithm SHA256).Hash.ToLowerInvariant()
 $launcherContractSha = (Get-FileHash -LiteralPath (Join-Path $playerRoot 'lan-launcher.tsv') -Algorithm SHA256).Hash.ToLowerInvariant()
+$webGeneration = Get-TeremoqWebGenerationContext -Checkout $checkout -StateRoot $state -PlayerRelativePath $PlayerRelativePath -PlayerManifestSha256 $playerManifestSha -LauncherContractSha256 $launcherContractSha
 $manifest = (Read-TeremoqBoundedUtf8File -Path (Join-Path $playerRoot 'MANIFEST.sha256.json') -MaxBytes 1048576) | ConvertFrom-Json
 if ($manifest.schema_version -ne 1 -or $manifest.artifact -cne 'teremoq-lan-lab-standalone' -or $manifest.source_commit -cne $ExpectedCommit -or
     $manifest.package_version -isnot [string] -or $manifest.package_version -cnotmatch '^[A-Za-z0-9._-]{1,64}$') {

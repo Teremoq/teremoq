@@ -22,6 +22,7 @@ while (( $# > 0 )); do
         *) lan_die "unknown package argument: $1" ;;
     esac
 done
+lan_die 'package-client.sh is deprecated: do not package or transfer client state; use native Git clone, the Web Git builder, and Initialize-LanClientState.ps1 on the client'
 lan_load_config "${config}"
 lan_validate_config
 [[ "${repo}" == /* && -d "${repo}" ]] || lan_die 'repo must be an absolute directory'
