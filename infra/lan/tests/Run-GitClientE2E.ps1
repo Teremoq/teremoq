@@ -19,11 +19,7 @@ if ($RepositoryUrl -cne 'https://github.com/Teremoq/teremoq' -or $RepositoryRef 
 $branch = $RepositoryRef.Substring('refs/heads/'.Length)
 git clone --origin origin --branch $branch --single-branch --no-tags $RepositoryUrl $CheckoutRoot
 if ($LASTEXITCODE -ne 0) { throw 'Git clone failed' }
-& "$CheckoutRoot\infra\lan\client\Install-LanClient.ps1" -CheckoutRoot $CheckoutRoot -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory infra/lan
-& "$CheckoutRoot\supervisor-web\lan-player\Build-LanPlayerFromGit.ps1" -CheckoutRoot $CheckoutRoot -StateRoot $StateRoot -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -SourceCommit $ExpectedCommit
-$build = Get-Content -LiteralPath (Join-Path $StateRoot '.teremoq-web-build\generations\' + $ExpectedCommit + '.tsv') -Raw
-if ($build.Length -gt 8192 -or $build -notmatch "player_relative_path`tplayers/$ExpectedCommit") { throw 'Web builder output provenance missing' }
-& "$CheckoutRoot\infra\lan\client\Initialize-LanClientState.ps1" -CheckoutRoot $CheckoutRoot -StateRoot $StateRoot -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory infra/lan -PlayerRelativePath "players/$ExpectedCommit" -RunId $RunId -ServerIPv4 $ServerIPv4 -PrefixLength $PrefixLength -Namespace $Namespace -FingerprintSha256 $FingerprintSha256
+& "$CheckoutRoot\infra\lan\client\Prepare-LanClientFromGit.ps1" -CheckoutRoot $CheckoutRoot -StateRoot $StateRoot -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RunId $RunId -ServerIPv4 $ServerIPv4 -PrefixLength $PrefixLength -Namespace $Namespace -FingerprintSha256 $FingerprintSha256
 & "$CheckoutRoot\infra\lan\client\Verify-Package.ps1" -CheckoutRoot $CheckoutRoot -StateRoot $StateRoot
 & "$CheckoutRoot\infra\lan\client\Update-LanClient.ps1" -CheckoutRoot $CheckoutRoot -StateRoot $StateRoot
 Write-Output 'lan-git-client-e2e: pass'
