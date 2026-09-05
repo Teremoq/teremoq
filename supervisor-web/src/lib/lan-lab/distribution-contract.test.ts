@@ -207,6 +207,9 @@ describe("contrato de distribución Git del player LAN", () => {
     expect(launcher).not.toContain("'run', 'distribute:lan'");
     expect(orchestrator).toContain('resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")');
     expect(orchestrator).not.toContain("process.env.npm_execpath");
+    expect(orchestrator).toContain('process.platform === "win32" ? 20 : 1');
+    expect(orchestrator).toContain('["EBUSY", "EPERM"].includes(cause.code)');
+    expect(orchestrator).toContain("revalidateSecureDirectoryPins(sourcePin, destinationParentPin)");
     expect(orchestrator).toContain('"worktree", "add", "--detach"');
     expect(orchestrator).not.toMatch(/\[\s*"(?:clone|fetch|pull|push)"/);
     for (const forbidden of ["LAN-CONFIG.json", "VERSION.tsv", "EvidenceDirectory", "FingerprintPath"]) {

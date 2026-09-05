@@ -270,7 +270,7 @@ try {
   await revalidateSecureDirectoryPins(
     statePin, buildStatePin, playersPin, generationPin, temporaryPin, packagePins[0],
   );
-  await rename(packageRoots[0], finalPlayerRoot);
+  await promoteDirectory(packageRoots[0], finalPlayerRoot, packagePins[0], playersPin);
   const finalPlayerPin = await pinSecureDirectoryPath(finalPlayerRoot);
   await revalidateSecureDirectoryPins(finalPlayerPin, generationPin, temporaryPin);
   await rename(stagedProvenance, finalProvenance);
@@ -400,6 +400,23 @@ async function replaceDependencyState(path, contents, temporaryRoot) {
         !("code" in cause) || !["EEXIST", "EPERM"].includes(cause.code)) throw cause;
     await rm(path, { force: true });
     await rename(candidate, path);
+  }
+}
+
+async function promoteDirectory(source, destination, sourcePin, destinationParentPin) {
+  const attempts = process.platform === "win32" ? 20 : 1;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    await revalidateSecureDirectoryPins(sourcePin, destinationParentPin);
+    await requireAbsent(destination, "ya existe una generación player para source_commit");
+    try {
+      await rename(source, destination);
+      return;
+    } catch (cause) {
+      const retryable = process.platform === "win32" && cause && typeof cause === "object" &&
+        "code" in cause && ["EBUSY", "EPERM"].includes(cause.code);
+      if (!retryable || attempt === attempts) throw cause;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    }
   }
 }
 
