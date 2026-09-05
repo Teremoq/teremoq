@@ -116,4 +116,16 @@ with tempfile.TemporaryDirectory() as temporary:
         original.rename(root)
     assert os.stat(root / "channel-state.json").st_mode & 0o777 == 0o600
 
+    original_getfqdn = channel.socket.getfqdn
+    server = None
+    channel.socket.getfqdn = lambda _address: (_ for _ in ()).throw(AssertionError("reverse DNS lookup attempted"))
+    try:
+        server = channel.BoundedThreadingHTTPServer(("127.0.0.1", 0), channel.make_handler(state))
+        assert server.server_name == "127.0.0.1"
+        assert server.server_port == server.server_address[1]
+    finally:
+        if server is not None:
+            server.server_close()
+        channel.socket.getfqdn = original_getfqdn
+
 print("lan-interactive-channel-test: PASS")

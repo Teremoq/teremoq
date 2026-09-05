@@ -25,6 +25,7 @@ import urllib.request
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lab_runtime import parse_windows_preflight
@@ -583,6 +584,11 @@ class ChannelState:
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 4
+
+    def server_bind(self) -> None:
+        TCPServer.server_bind(self)
+        self.server_name = str(self.server_address[0])
+        self.server_port = int(self.server_address[1])
 
     def __init__(self, *arguments: Any, **keywords: Any):
         self._workers = threading.BoundedSemaphore(4)
