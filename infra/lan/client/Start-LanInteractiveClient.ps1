@@ -11,6 +11,24 @@ function ConvertTo-TeremoqLowerHex([byte[]]$Bytes) {
     return ([BitConverter]::ToString($Bytes) -replace '-', '').ToLowerInvariant()
 }
 
+function Get-TeremoqSafeAgentOutput([AllowEmptyString()][string]$Line) {
+    if ($null -eq $Line -or $Line.Length -gt 160) { return $null }
+    $connected = '[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...'
+    if ($Line -ceq $connected) { return $Line }
+    if ($Line -cnotmatch '^\[Teremoq\] Paso [1-9][0-9]{0,5} - ([A-Za-z ]{1,64}): ([a-z ]{1,32})$') {
+        return $null
+    }
+    $actions = @(
+        'Preparar y verificar el cliente', 'Comprobar el portatil',
+        'Iniciar un reproductor', 'Probar cinco espectadores',
+        'Probar diez espectadores', 'Probar veinticinco espectadores',
+        'Observar la recuperacion Wi-Fi', 'Recoger resultados', 'Detener el cliente'
+    )
+    $stages = @('orden recibida', 'en ejecucion', 'continua en ejecucion', 'completado', 'fallo comunicado al servidor')
+    if ($actions -ccontains $Matches[1] -and $stages -ccontains $Matches[2]) { return $Line }
+    return $null
+}
+
 function Assert-TeremoqNonReparseAncestors([string]$Path) {
     $current = [IO.Path]::GetFullPath($Path)
     while ($current) {
@@ -246,6 +264,7 @@ function Invoke-TeremoqPinnedNodeProcess {
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
     $startInfo.EnvironmentVariables.Clear()
     $childEnvironment = @{
         'SystemRoot' = 'C:\Windows'; 'WINDIR' = 'C:\Windows';
@@ -272,6 +291,10 @@ function Invoke-TeremoqPinnedNodeProcess {
         if (-not $process.Start()) { throw 'Pinned Node process did not start' }
         $process.StandardInput.WriteLine($InputLine)
         $process.StandardInput.Dispose()
+        while (($line = $process.StandardOutput.ReadLine()) -ne $null) {
+            $safeLine = Get-TeremoqSafeAgentOutput -Line $line
+            if ($null -ne $safeLine) { Write-Host $safeLine }
+        }
         $process.WaitForExit()
         return [int]$process.ExitCode
     } finally { $process.Dispose() }

@@ -61,6 +61,15 @@ try {
         -WorkingDirectory $root
     if ($nodeExit -ne 0) { throw 'Approved Node executable did not start' }
 
+    $safeStatus = '[Teremoq] Paso 1 - Preparar y verificar el cliente: en ejecucion'
+    if ((Get-TeremoqSafeAgentOutput -Line $safeStatus) -cne $safeStatus) {
+        throw 'Fixed local client progress was not relayed'
+    }
+    if ($null -ne (Get-TeremoqSafeAgentOutput -Line '[Teremoq] Paso 1 - C:\secret: en ejecucion') -or
+        $null -ne (Get-TeremoqSafeAgentOutput -Line '[Teremoq] Paso 1 - Preparar y verificar el cliente: token=secret')) {
+        throw 'Arbitrary agent output was relayed to the client console'
+    }
+
     $argvCanary = Join-Path $root 'argv-canary.mjs'
     $argvCanarySource = @'
 const argv = process.argv.slice(2);
