@@ -488,6 +488,41 @@ function restartUpdatedClient(context, handoff, session) {
   });
 }
 
+async function confirmUpdateTransition(channelRequest, identity, task, session, targetCommit, event, message) {
+  const terminalRequest = {
+    ...identity, sequence: task.sequence, event, action: task.action,
+    status: "complete", message: scrub(message),
+  };
+  let lastError = new Error("client update transition was not confirmed");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const terminal = await channelRequest("/v1/event", terminalRequest, session);
+      if (Object.keys(terminal).sort().join(",") !== "accepted,cancel_requested,client_commit,event,schema_version,sequence,source_commit" ||
+          terminal.schema_version !== 1 || terminal.sequence !== task.sequence || terminal.event !== event ||
+          terminal.accepted !== true || terminal.source_commit !== identity.source_commit ||
+          terminal.client_commit !== targetCommit) fail("invalid update transition response");
+      return terminal;
+    } catch (error) {
+      lastError = error instanceof Error ? error : lastError;
+      try {
+        const probeIdentity = { ...identity, client_commit: targetCommit };
+        const probe = await channelRequest("/v1/poll", probeIdentity, session);
+        if (Object.keys(probe).sort().join(",") === "action,client_commit,parameters,run_id,schema_version,sequence,source_commit" &&
+            probe.schema_version === 1 && probe.run_id === identity.run_id &&
+            probe.source_commit === identity.source_commit && probe.client_commit === targetCommit &&
+            Number.isSafeInteger(probe.sequence) && probe.parameters && typeof probe.parameters === "object" &&
+            !Array.isArray(probe.parameters)) {
+          return { schema_version: 1, sequence: task.sequence, event, accepted: true,
+            cancel_requested: false, source_commit: identity.source_commit, client_commit: targetCommit };
+        }
+      } catch {
+        // The server may still have the old identity; retry the same idempotent event.
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function main() {
   if (process.platform !== "win32" || process.versions.node.split(".")[0] !== "22") fail("agent requires native Windows and Node 22.x");
   const values = parseArguments(process.argv.slice(2));
@@ -566,19 +601,22 @@ async function main() {
       context.activeLevel = Number(task.action.split("-")[1]);
     }
     await sendQueue;
-    const terminal = await send(result.code === 0 ? "complete" : "failed", `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`);
-    process.stdout.write(`${formatLocalStatus(task.action, result.code === 0 ? "complete" : "failed", task.sequence)}\n`);
     if (task.action === "update-client" && result.code === 0) {
+      const terminal = await confirmUpdateTransition(channelRequest, identity, task, session, result.handoff?.commit || "", event++,
+        `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`);
+      process.stdout.write(`${formatLocalStatus(task.action, "complete", task.sequence)}\n`);
       if (!result.handoff || terminal.source_commit !== context.channelCommit || terminal.client_commit !== result.handoff.commit) fail("server did not confirm the client commit transition");
       await restartUpdatedClient(context, result.handoff, session);
       process.stdout.write("[Teremoq] Cliente actualizado; la sesion segura continua en la nueva version.\n");
       break;
     }
+    await send(result.code === 0 ? "complete" : "failed", `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`);
+    process.stdout.write(`${formatLocalStatus(task.action, result.code === 0 ? "complete" : "failed", task.sequence)}\n`);
     if (task.action === "stop") break;
   }
 }
 
-export { execute, formatLocalStatus, parseArguments, pinnedAgent, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout };
+export { confirmUpdateTransition, execute, formatLocalStatus, parseArguments, pinnedAgent, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });

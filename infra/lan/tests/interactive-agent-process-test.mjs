@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execute, formatLocalStatus, parseArguments, restartUpdatedClient, runProcess, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
+import { confirmUpdateTransition, execute, formatLocalStatus, parseArguments, restartUpdatedClient, runProcess, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -61,6 +61,19 @@ const restartSource = restartUpdatedClient.toString();
 expect(!restartSource.includes('"--session"') && !restartSource.includes("SESSION="), "session credential can reach child argv or environment");
 expect(restartSource.includes('stdio: ["pipe", "ignore", "ignore"]') && restartSource.includes("credential handoff timed out"),
   "session handoff is not bounded to the private stdin pipe");
+const channelCommit = "8".repeat(40);
+const targetCommit = "9".repeat(40);
+const transitionIdentity = { schema_version: 1, run_id: "lan-transition", source_commit: channelCommit, client_commit: channelCommit };
+const transitionTask = { sequence: 1, action: "update-client" };
+let transitionCalls = 0;
+const reconciled = await confirmUpdateTransition(async (route, body) => {
+  transitionCalls += 1;
+  if (transitionCalls === 1) throw new Error("simulated lost terminal response");
+  expect(route === "/v1/poll" && body.client_commit === targetCommit, "ambiguous transition did not probe the target identity");
+  return { schema_version: 1, run_id: transitionIdentity.run_id, source_commit: channelCommit,
+    client_commit: targetCommit, sequence: 0, action: "wait", parameters: {} };
+}, transitionIdentity, transitionTask, "a".repeat(64), targetCommit, 2, "complete");
+expect(reconciled.client_commit === targetCommit && transitionCalls === 2, "lost update response was not reconciled safely");
 let extraArgRejected = false;
 try { parseArguments([...agentArgv, "--extra", "forbidden"]); } catch { extraArgRejected = true; }
 expect(extraArgRejected, "agent accepted an extra argv pair");
