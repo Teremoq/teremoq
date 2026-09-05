@@ -39,6 +39,16 @@ afterEach(() => {
 });
 
 describe("aislamiento completo de configuración npm", () => {
+  it("normaliza PATH sin conservar la variante hostil de Windows", () => {
+    const { paths } = isolationFixture();
+    const env = buildIsolatedNpmEnvironment({
+      PATH: "C:\\approved-node;C:\\approved-git",
+      Path: "C:\\hostile",
+    }, paths);
+    expect(env.PATH).toBe("C:\\approved-node;C:\\approved-git");
+    expect(Object.hasOwn(env, "Path")).toBe(false);
+  });
+
   it("sustituye HOME/perfiles/config global hostil y no hereda credenciales", () => {
     const { root, paths } = isolationFixture();
     const hostile = join(root, "hostile-global.npmrc");

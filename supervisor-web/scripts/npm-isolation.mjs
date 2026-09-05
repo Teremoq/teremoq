@@ -4,8 +4,10 @@ import { join } from "node:path";
 
 export function buildIsolatedNpmEnvironment(processEnvironment, isolation) {
   const env = Object.create(null);
+  const executablePath = processEnvironment.PATH ?? processEnvironment.Path;
+  if (typeof executablePath === "string") env.PATH = executablePath;
   for (const key of [
-    "PATH", "Path", "SystemRoot", "SYSTEMROOT", "ComSpec", "PATHEXT",
+    "SystemRoot", "SYSTEMROOT", "ComSpec", "PATHEXT",
     "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
   ]) {
     if (typeof processEnvironment[key] === "string") env[key] = processEnvironment[key];
