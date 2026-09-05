@@ -25,7 +25,14 @@ if (((Get-Item -LiteralPath $parent -Force).Attributes -band [IO.FileAttributes]
 $branch = Get-TeremoqRepositoryBranchName -RepositoryRef $RepositoryRef
 $temporary = Join-Path $parent ("." + [IO.Path]::GetFileName($checkout) + ".tmp." + [Guid]::NewGuid().ToString('N'))
 try {
-    Invoke-TeremoqGit -CheckoutRoot $parent -Arguments @('clone', '--origin', 'origin', '--branch', $branch, '--single-branch', '--no-tags', $RepositoryUrl, $temporary) | Out-Null
+    Invoke-TeremoqGit -CheckoutRoot $parent -Arguments @(
+        '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', '-c', 'core.safecrlf=true',
+        'clone', '--origin', 'origin', '--branch', $branch, '--single-branch', '--no-tags',
+        $RepositoryUrl, $temporary
+    ) | Out-Null
+    foreach ($setting in @(@('core.autocrlf','false'), @('core.eol','lf'), @('core.safecrlf','true'))) {
+        Invoke-TeremoqGit -CheckoutRoot $temporary -Arguments @('config','--local',$setting[0],$setting[1]) | Out-Null
+    }
     $cloned = Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $temporary -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
     Move-Item -LiteralPath $temporary -Destination $checkout
     Write-Output ("Teremoq LAN Git checkout installed at {0} for commit {1}; initialize external state only after this exact clone is verified." -f $checkout, $cloned.Head)

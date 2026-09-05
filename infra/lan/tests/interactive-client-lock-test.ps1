@@ -73,8 +73,8 @@ try {
     $argvCanary = Join-Path $root 'argv-canary.mjs'
     $argvCanarySource = @'
 const argv = process.argv.slice(2);
-const required = new Set(["--server","--fingerprint","--run-id","--source-commit","--pairing-stdin","--checkout","--state-root","--evidence-root","--git-sha256","--node-sha256","--npm-cli-sha256","--powershell-sha256","--taskkill-sha256"]);
-if (argv.length !== 26) process.exit(20);
+const required = new Set(["--server","--fingerprint","--run-id","--source-commit","--client-commit","--credential-mode","--checkout","--state-root","--evidence-root","--git-sha256","--node-sha256","--npm-cli-sha256","--powershell-sha256","--taskkill-sha256"]);
+if (argv.length !== 28) process.exit(20);
 for (let index = 0; index < argv.length; index += 2) {
   if (!required.delete(argv[index]) || !argv[index + 1]) process.exit(21);
 }
@@ -83,20 +83,20 @@ if (required.size !== 0) process.exit(22);
     [IO.File]::WriteAllText($argvCanary, $argvCanarySource, (New-Object Text.UTF8Encoding($false)))
     $sessionHashes = @{ Git=$zeroHash; Node=$nodeHash; NpmCli=$zeroHash; PowerShell=$zeroHash; Taskkill=$zeroHash }
     $agentArguments = New-TeremoqAgentArguments -AgentPath $argvCanary -RunId 'lan-argv-canary' `
-        -Commit $zeroCommit -Checkout $root -StateRoot $root -EvidenceRoot $root `
-        -SessionHashes $sessionHashes
+        -ChannelCommit $zeroCommit -ClientCommit $zeroCommit -Checkout $root -StateRoot $root -EvidenceRoot $root `
+        -SessionHashes $sessionHashes -CredentialMode 'pair'
     $argumentMap = @{}
     for ($index = 1; $index -lt $agentArguments.Count; $index += 2) {
         if ($argumentMap.ContainsKey($agentArguments[$index])) { throw 'Real launcher duplicated an agent argument' }
         $argumentMap[$agentArguments[$index]] = $agentArguments[$index + 1]
     }
-    if ($agentArguments.Count -ne 27 -or $argumentMap.Count -ne 13 -or
+    if ($agentArguments.Count -ne 29 -or $argumentMap.Count -ne 14 -or
         $argumentMap['--git-sha256'] -cne $sessionHashes.Git -or
         $argumentMap['--node-sha256'] -cne $sessionHashes.Node -or
         $argumentMap['--npm-cli-sha256'] -cne $sessionHashes.NpmCli -or
         $argumentMap['--powershell-sha256'] -cne $sessionHashes.PowerShell -or
         $argumentMap['--taskkill-sha256'] -cne $sessionHashes.Taskkill) {
-        throw 'Real launcher agent argv differs from its 13-pair closed contract'
+        throw 'Real launcher agent argv differs from its 14-pair closed contract'
     }
     $argvExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -ExpectedSha256 $nodeHash `
         -Arguments $agentArguments -WorkingDirectory $root

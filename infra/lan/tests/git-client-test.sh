@@ -5,6 +5,7 @@ set -Eeuo pipefail
 TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(cd -- "${TEST_DIR}/../../.." && pwd -P)"
 runner="${TEST_DIR}/Run-GitClientE2E.ps1"
+stage_runner="${TEST_DIR}/Run-StageUpdateE2E.ps1"
 for path in "${ROOT}/infra/lan/client/Install-LanClient.ps1" "${ROOT}/infra/lan/client/Update-LanClient.ps1" "${runner}"; do test -f "${path}"; done
 
 git_exe="${TEREMOQ_TEST_GIT_EXE:-}"
@@ -22,4 +23,6 @@ runner_win="$(wslpath -w "${runner}")"
 root_win="$(wslpath -w "${ROOT}")"
 git_win="$(wslpath -w "${git_exe}")"
 powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${runner_win}" -SourceRoot "${root_win}" -GitExecutable "${git_win}"
+stage_runner_win="$(wslpath -w "${stage_runner}")"
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${stage_runner_win}" -SourceRoot "${root_win}" -GitExecutable "${git_win}"
 printf 'lan-git-client-test: PASS (Windows PowerShell 5 and Git for Windows)\n'

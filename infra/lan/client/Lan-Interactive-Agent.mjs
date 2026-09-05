@@ -10,7 +10,7 @@ import path from "node:path";
 import tls from "node:tls";
 import { pathToFileURL } from "node:url";
 
-const ACTIONS = new Set(["prepare-client", "preflight", "player-1", "load-5", "load-10", "load-25", "wifi-observe", "collect", "stop"]);
+const ACTIONS = new Set(["update-client", "prepare-client", "preflight", "player-1", "load-5", "load-10", "load-25", "wifi-observe", "collect", "stop"]);
 const MAX_RESPONSE = 32768;
 const MAX_MESSAGE = 16384;
 const ACTION_TIMEOUT_MS = 5 * 60 * 1000;
@@ -19,6 +19,7 @@ const TERMINATION_TIMEOUT_MS = 15 * 1000;
 const WINDOWS_ROOT = "C:\\Windows";
 const PROGRAM_FILES = "C:\\Program Files";
 const LOCAL_ACTION_LABELS = Object.freeze({
+  "update-client": "Actualizar el cliente desde GitHub",
   "prepare-client": "Preparar y verificar el cliente",
   preflight: "Comprobar el portatil",
   "player-1": "Iniciar un reproductor",
@@ -53,17 +54,18 @@ function parseArguments(argv) {
     values[key] = argv[index + 1];
   }
   const required = [
-    "--server", "--fingerprint", "--run-id", "--source-commit", "--pairing-stdin",
+    "--server", "--fingerprint", "--run-id", "--source-commit", "--client-commit", "--credential-mode",
     "--checkout", "--state-root", "--evidence-root", "--git-sha256", "--node-sha256",
     "--npm-cli-sha256", "--powershell-sha256", "--taskkill-sha256",
   ];
   if (Object.keys(values).length !== required.length || required.some((key) => !values[key])) fail("agent arguments differ from the closed contract");
   if (values["--server"] !== "https://192.168.1.130:18443") fail("server URL differs from the exact LAN endpoint");
-  if (!/^[0-9a-f]{64}$/.test(values["--fingerprint"]) || !/^[0-9a-f]{40}$/.test(values["--source-commit"])) fail("invalid fingerprint or commit");
+  if (!/^[0-9a-f]{64}$/.test(values["--fingerprint"]) || !/^[0-9a-f]{40}$/.test(values["--source-commit"]) ||
+      !/^[0-9a-f]{40}$/.test(values["--client-commit"])) fail("invalid fingerprint or commit");
   for (const key of ["--git-sha256", "--node-sha256", "--npm-cli-sha256", "--powershell-sha256", "--taskkill-sha256"]) {
     if (!/^[0-9a-f]{64}$/.test(values[key])) fail("invalid executable approval hash");
   }
-  if (!/^lan-[a-z0-9][a-z0-9-]{0,31}$/.test(values["--run-id"]) || values["--pairing-stdin"] !== "true") fail("invalid run or pairing input policy");
+  if (!/^lan-[a-z0-9][a-z0-9-]{0,31}$/.test(values["--run-id"]) || !["pair", "session"].includes(values["--credential-mode"])) fail("invalid run or credential input policy");
   return values;
 }
 
@@ -206,7 +208,7 @@ function verifyApprovedFile(file, expectedSha256) {
 }
 
 function verifyCheckout(context) {
-  const prefix = ["--no-replace-objects", "-c", "core.hooksPath=NUL", "-c", "core.fsmonitor=false", "-c", "protocol.file.allow=never", "-C", context.checkout];
+  const prefix = ["--no-replace-objects", "-c", "core.hooksPath=NUL", "-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.safecrlf=true", "-c", "protocol.file.allow=never", "-C", context.checkout];
   const runGit = (args) => {
     verifyApprovedFile(context.git, context.gitSha256);
     const result = spawnSync(context.git, [...prefix, ...args], {
@@ -383,6 +385,27 @@ async function execute(action, context, progress) {
     expectedFileSha256: context.powershellSha256,
     taskkillSha256: context.taskkillSha256,
   };
+  if (action === "update-client") {
+    const update = context.taskParameters;
+    if (!update || Object.keys(update).sort().join(",") !== "repository_ref,repository_url,target_commit" ||
+        update.repository_url !== "https://github.com/Teremoq/teremoq" ||
+        update.repository_ref !== "refs/heads/codex/lan-e2e-integration" ||
+        !/^[0-9a-f]{40}$/.test(update.target_commit) || update.target_commit === context.commit) {
+      fail("update parameters differ from the closed Git policy");
+    }
+    const script = path.join(context.checkout, "infra", "lan", "client", "Stage-LanClientUpdate.ps1");
+    const result = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
+      "-CheckoutRoot", context.checkout, "-CurrentCommit", context.commit, "-TargetCommit", update.target_commit,
+      "-RepositoryUrl", update.repository_url, "-RepositoryRef", update.repository_ref],
+    context.checkout, progress, powershellOptions);
+    if (result.code === 0) {
+      result.handoff = {
+        commit: update.target_commit,
+        checkout: path.join(process.env.LOCALAPPDATA, "Teremoq", `checkout-lan-${update.target_commit.slice(0, 8)}`),
+      };
+    }
+    return result;
+  }
   if (action === "prepare-client") {
     const script = path.join(context.checkout, "infra", "lan", "client", "Prepare-LanClientFromGit.ps1");
     return runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
@@ -430,14 +453,51 @@ async function execute(action, context, progress) {
   fail("action is not implemented");
 }
 
+function restartUpdatedClient(context, handoff, session) {
+  const updated = { ...context, checkout: exactDirectory(handoff.checkout, "updated checkout"), commit: handoff.commit };
+  verifyCheckout(updated);
+  const powershell = `${WINDOWS_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+  verifyApprovedFile(powershell, context.powershellSha256);
+  const launcher = path.join(updated.checkout, "infra", "lan", "client", "Start-LanInteractiveClient.ps1");
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    const child = spawn(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcher,
+      "-ExpectedCommit", updated.commit, "-ChannelCommit", context.channelCommit, "-ResumeSessionStdin"], {
+      cwd: updated.checkout, windowsHide: true, detached: true, shell: false,
+      env: restrictedEnvironment(), stdio: ["pipe", "ignore", "ignore"],
+    });
+    const timer = setTimeout(() => {
+      child.stdin.destroy();
+      finish(new Error("updated client credential handoff timed out"));
+    }, 5_000);
+    child.once("error", finish);
+    child.once("spawn", () => {
+      child.stdin.once("error", finish);
+      child.stdin.end(`${session}\n`, "ascii", () => {
+        child.unref();
+        finish();
+      });
+    });
+  });
+}
+
 async function main() {
   if (process.platform !== "win32" || process.versions.node.split(".")[0] !== "22") fail("agent requires native Windows and Node 22.x");
   const values = parseArguments(process.argv.slice(2));
-  const pairingCode = fs.readFileSync(0, { encoding: "ascii" }).trim();
-  if (!/^[0-9a-f]{48}$/.test(pairingCode)) fail("invalid one-time pairing code from standard input");
+  const credential = fs.readFileSync(0, { encoding: "ascii" }).trim();
+  if (values["--credential-mode"] === "pair" && !/^[0-9a-f]{48}$/.test(credential)) fail("invalid one-time pairing code from standard input");
+  if (values["--credential-mode"] === "session" && !/^[0-9a-f]{64}$/.test(credential)) fail("invalid session credential from standard input");
   const context = {
     checkout: exactDirectory(values["--checkout"], "checkout"), stateRoot: exactFutureDirectory(values["--state-root"], "state root"),
-    evidenceRoot: exactDirectory(values["--evidence-root"], "evidence root"), runId: values["--run-id"], commit: values["--source-commit"],
+    evidenceRoot: exactDirectory(values["--evidence-root"], "evidence root"), runId: values["--run-id"],
+    channelCommit: values["--source-commit"], commit: values["--client-commit"],
     fingerprint: values["--fingerprint"],
     git: "C:\\Program Files\\Git\\cmd\\git.exe",
     node: "C:\\Program Files\\nodejs\\node.exe",
@@ -455,7 +515,7 @@ async function main() {
   verifyApprovedFile(`${WINDOWS_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`, context.powershellSha256);
   verifyApprovedFile(`${WINDOWS_ROOT}\\System32\\taskkill.exe`, context.taskkillSha256);
   const agent = pinnedAgent(values["--server"], values["--fingerprint"]);
-  const identity = { schema_version: 1, run_id: context.runId, source_commit: context.commit };
+  let identity = { schema_version: 1, run_id: context.runId, source_commit: context.channelCommit, client_commit: context.commit };
   let previousRequest = 0;
   const channelRequest = async (route, body, session = "") => {
     const delay = Math.max(0, 125 - (Date.now() - previousRequest));
@@ -464,20 +524,34 @@ async function main() {
     previousRequest = Date.now();
     return response;
   };
-  const pair = await channelRequest("/v1/pair", { ...identity, pairing_code: pairingCode });
-  if (pair.schema_version !== 1 || pair.run_id !== context.runId || pair.source_commit !== context.commit || !/^[0-9a-f]{64}$/.test(pair.session)) fail("invalid pairing response");
+  let session = credential;
+  if (values["--credential-mode"] === "pair") {
+    const pair = await channelRequest("/v1/pair", { ...identity, pairing_code: credential });
+    if (pair.schema_version !== 1 || pair.run_id !== context.runId || pair.source_commit !== context.channelCommit ||
+        pair.client_commit !== context.commit || !/^[0-9a-f]{64}$/.test(pair.session)) fail("invalid pairing response");
+    session = pair.session;
+  }
   process.stdout.write("[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...\n");
   for (;;) {
-    const task = await channelRequest("/v1/poll", identity, pair.session);
-    if (task.schema_version !== 1 || task.run_id !== context.runId || task.source_commit !== context.commit || !Number.isSafeInteger(task.sequence)) fail("invalid task response");
-    if (task.action === "wait") { await new Promise((resolve) => setTimeout(resolve, 2000)); continue; }
+    const task = await channelRequest("/v1/poll", identity, session);
+    if (Object.keys(task).sort().join(",") !== "action,client_commit,parameters,run_id,schema_version,sequence,source_commit" ||
+        task.schema_version !== 1 || task.run_id !== context.runId || task.source_commit !== context.channelCommit ||
+        task.client_commit !== context.commit || !Number.isSafeInteger(task.sequence) ||
+        !task.parameters || typeof task.parameters !== "object" || Array.isArray(task.parameters)) fail("invalid task response");
+    if (task.action === "wait") {
+      if (task.sequence !== 0 || Object.keys(task.parameters).length !== 0) fail("wait response differs from the closed contract");
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      continue;
+    }
     if (!ACTIONS.has(task.action) || task.sequence < 1) fail("server requested an unapproved action");
+    if (task.action !== "update-client" && Object.keys(task.parameters).length !== 0) fail("non-update task carried unexpected parameters");
+    context.taskParameters = task.parameters;
     process.stdout.write(`${formatLocalStatus(task.action, "received", task.sequence)}\n`);
     let event = 1;
     let sendQueue = Promise.resolve();
     const send = (status, message) => {
       const currentEvent = event++;
-      sendQueue = sendQueue.then(() => channelRequest("/v1/event", { ...identity, sequence: task.sequence, event: currentEvent, action: task.action, status, message: scrub(message) }, pair.session));
+      sendQueue = sendQueue.then(() => channelRequest("/v1/event", { ...identity, sequence: task.sequence, event: currentEvent, action: task.action, status, message: scrub(message) }, session));
       return sendQueue;
     };
     const started = await send("started", `${task.action} started`);
@@ -492,13 +566,19 @@ async function main() {
       context.activeLevel = Number(task.action.split("-")[1]);
     }
     await sendQueue;
-    await send(result.code === 0 ? "complete" : "failed", `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`);
+    const terminal = await send(result.code === 0 ? "complete" : "failed", `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`);
     process.stdout.write(`${formatLocalStatus(task.action, result.code === 0 ? "complete" : "failed", task.sequence)}\n`);
+    if (task.action === "update-client" && result.code === 0) {
+      if (!result.handoff || terminal.source_commit !== context.channelCommit || terminal.client_commit !== result.handoff.commit) fail("server did not confirm the client commit transition");
+      await restartUpdatedClient(context, result.handoff, session);
+      process.stdout.write("[Teremoq] Cliente actualizado; la sesion segura continua en la nueva version.\n");
+      break;
+    }
     if (task.action === "stop") break;
   }
 }
 
-export { execute, formatLocalStatus, parseArguments, pinnedAgent, requestJson, runProcess, scrub, terminateProcessTree };
+export { execute, formatLocalStatus, parseArguments, pinnedAgent, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });

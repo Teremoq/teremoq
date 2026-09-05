@@ -40,6 +40,7 @@ MAX_EVENT_LOG = 8 * 1024 * 1024
 READ_TIMEOUT_SECONDS = 10
 MIN_REQUEST_INTERVAL_SECONDS = 0.1
 ACTIONS = (
+    "update-client",
     "prepare-client",
     "preflight",
     "player-1",
@@ -50,6 +51,8 @@ ACTIONS = (
     "collect",
     "stop",
 )
+UPDATE_REPOSITORY_URL = "https://github.com/Teremoq/teremoq"
+UPDATE_REPOSITORY_REF = "refs/heads/codex/lan-e2e-integration"
 STATUSES = ("started", "progress", "complete", "blocked", "failed")
 SENSITIVE_PATTERNS = (
     re.compile(r"-----begin [a-z0-9 ]*private key-----", re.IGNORECASE),
@@ -92,6 +95,28 @@ def exact_private_ipv4(value: str, label: str) -> str:
     if address.version != 4 or not any(address in network for network in private_networks):
         fail(f"{label} must be one exact private unicast IPv4 address")
     return str(address)
+
+
+def validate_task_parameters(
+    action: str,
+    parameters: Any,
+    source_commit: str,
+    allow_current_target: bool = False,
+) -> dict[str, Any]:
+    if action != "update-client":
+        return exact_object(parameters, set(), "task parameters")
+    value = exact_object(
+        parameters,
+        {"repository_url", "repository_ref", "target_commit"},
+        "update parameters",
+    )
+    if (value["repository_url"] != UPDATE_REPOSITORY_URL
+            or value["repository_ref"] != UPDATE_REPOSITORY_REF
+            or not isinstance(value["target_commit"], str)
+            or not re.fullmatch(r"[0-9a-f]{40}", value["target_commit"])
+            or (not allow_current_target and value["target_commit"] == source_commit)):
+        fail("update parameters differ from the closed Git policy")
+    return value
 
 
 def decode_json_object(data: bytes, label: str) -> dict[str, Any]:
@@ -380,7 +405,7 @@ class ChannelState:
         document = decode_json_object(read_regular_at(self.root_descriptor, "channel-state.json", 65536, 0o600), "channel state")
         exact_object(
             document,
-            {"schema_version", "run_id", "source_commit", "client_ipv4", "paired", "session_sha256", "management_sequence", "last_management_request", "tasks"},
+            {"schema_version", "run_id", "source_commit", "client_commit", "client_ipv4", "paired", "session_sha256", "management_sequence", "last_management_request", "tasks"},
             "channel state",
         )
         if (
@@ -388,6 +413,8 @@ class ChannelState:
             or document["schema_version"] != SCHEMA_VERSION
             or document["run_id"] != self.run_id
             or document["source_commit"] != self.source_commit
+            or not isinstance(document["client_commit"], str)
+            or not re.fullmatch(r"[0-9a-f]{40}", document["client_commit"])
             or document["client_ipv4"] != self.client_ip
             or not isinstance(document["paired"], bool)
             or type(document["management_sequence"]) is not int
@@ -402,9 +429,10 @@ class ChannelState:
         ):
             fail("channel state identity differs from invocation")
         for index, task in enumerate(document["tasks"], 1):
-            exact_object(task, {"sequence", "action", "completed", "last_event", "terminal_status", "management_request_id", "cancel_requested"}, "task")
+            exact_object(task, {"sequence", "action", "parameters", "completed", "last_event", "terminal_status", "management_request_id", "cancel_requested"}, "task")
             if type(task["sequence"]) is not int or task["sequence"] != index or task["action"] not in ACTIONS or not isinstance(task["completed"], bool):
                 fail("invalid task state")
+            validate_task_parameters(task["action"], task["parameters"], document["client_commit"], task["completed"])
             if type(task["last_event"]) is not int or task["last_event"] < 0:
                 fail("invalid task event counter")
             if task["terminal_status"] not in ("pending", "complete", "blocked", "failed") or not isinstance(task["management_request_id"], str) or not isinstance(task["cancel_requested"], bool):
@@ -424,8 +452,10 @@ class ChannelState:
         self.last_request[actor] = now
 
     def pair(self, request: dict[str, Any]) -> dict[str, Any]:
-        exact_object(request, {"schema_version", "run_id", "source_commit", "pairing_code"}, "pair request")
-        if type(request["schema_version"]) is not int or request["schema_version"] != SCHEMA_VERSION or request["run_id"] != self.run_id or request["source_commit"] != self.source_commit:
+        exact_object(request, {"schema_version", "run_id", "source_commit", "client_commit", "pairing_code"}, "pair request")
+        if (type(request["schema_version"]) is not int or request["schema_version"] != SCHEMA_VERSION
+                or request["run_id"] != self.run_id or request["source_commit"] != self.source_commit
+                or request["client_commit"] != self.document["client_commit"]):
             fail("pair request identity mismatch")
         candidate = bounded_text(request["pairing_code"], "pairing code", 128).encode("ascii")
         with self.lock:
@@ -441,7 +471,8 @@ class ChannelState:
             self.document["session_sha256"] = hashlib.sha256(session.encode("ascii")).hexdigest()
             self._persist()
             os.unlink("pairing-code", dir_fd=self.root_descriptor)
-            return {"schema_version": SCHEMA_VERSION, "run_id": self.run_id, "source_commit": self.source_commit, "session": session}
+            return {"schema_version": SCHEMA_VERSION, "run_id": self.run_id, "source_commit": self.source_commit,
+                    "client_commit": self.document["client_commit"], "session": session}
 
     def authenticate(self, session: str) -> None:
         if not isinstance(session, str) or len(session) != 64 or any(character not in "0123456789abcdef" for character in session):
@@ -454,8 +485,9 @@ class ChannelState:
             fail("session rejected")
 
     def poll(self, request: dict[str, Any], session: str) -> dict[str, Any]:
-        exact_object(request, {"schema_version", "run_id", "source_commit"}, "poll request")
-        if type(request["schema_version"]) is not int or request != {"schema_version": SCHEMA_VERSION, "run_id": self.run_id, "source_commit": self.source_commit}:
+        exact_object(request, {"schema_version", "run_id", "source_commit", "client_commit"}, "poll request")
+        if type(request["schema_version"]) is not int or request != {"schema_version": SCHEMA_VERSION, "run_id": self.run_id,
+                "source_commit": self.source_commit, "client_commit": self.document["client_commit"]}:
             fail("poll request identity mismatch")
         with self.lock:
             self._verify_root()
@@ -464,15 +496,19 @@ class ChannelState:
             task = next((item for item in self.document["tasks"] if not item["completed"]), None)
             action = "wait" if task is None else task["action"]
             sequence = 0 if task is None else task["sequence"]
-            return {"schema_version": SCHEMA_VERSION, "run_id": self.run_id, "source_commit": self.source_commit, "sequence": sequence, "action": action}
+            parameters = {} if task is None else task["parameters"]
+            return {"schema_version": SCHEMA_VERSION, "run_id": self.run_id, "source_commit": self.source_commit,
+                    "client_commit": self.document["client_commit"], "sequence": sequence, "action": action, "parameters": parameters}
 
     def event(self, request: dict[str, Any], session: str) -> dict[str, Any]:
         exact_object(
             request,
-            {"schema_version", "run_id", "source_commit", "sequence", "event", "action", "status", "message"},
+            {"schema_version", "run_id", "source_commit", "client_commit", "sequence", "event", "action", "status", "message"},
             "event request",
         )
-        if type(request["schema_version"]) is not int or request["schema_version"] != SCHEMA_VERSION or request["run_id"] != self.run_id or request["source_commit"] != self.source_commit:
+        if (type(request["schema_version"]) is not int or request["schema_version"] != SCHEMA_VERSION
+                or request["run_id"] != self.run_id or request["source_commit"] != self.source_commit
+                or request["client_commit"] != self.document["client_commit"]):
             fail("event identity mismatch")
         if type(request["sequence"]) is not int or type(request["event"]) is not int or request["sequence"] < 1 or request["event"] < 1 or request["event"] > MAX_EVENTS_PER_TASK:
             fail("event counters are invalid")
@@ -514,15 +550,23 @@ class ChannelState:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
+            next_client_commit = self.document["client_commit"]
+            if task["action"] == "update-client" and request["status"] == "complete":
+                next_client_commit = task["parameters"]["target_commit"]
+                self.document["client_commit"] = next_client_commit
             self._persist()
-            return {"schema_version": SCHEMA_VERSION, "sequence": request["sequence"], "event": request["event"], "accepted": True, "cancel_requested": task["cancel_requested"]}
+            return {"schema_version": SCHEMA_VERSION, "sequence": request["sequence"], "event": request["event"], "accepted": True,
+                    "cancel_requested": task["cancel_requested"], "source_commit": self.source_commit, "client_commit": next_client_commit}
 
     def enqueue(self, request: dict[str, Any], management: str) -> dict[str, Any]:
-        exact_object(request, {"schema_version", "run_id", "source_commit", "management_sequence", "request_id", "action"}, "management request")
-        if type(request["schema_version"]) is not int or request["schema_version"] != SCHEMA_VERSION or request["run_id"] != self.run_id or request["source_commit"] != self.source_commit:
+        exact_object(request, {"schema_version", "run_id", "source_commit", "client_commit", "management_sequence", "request_id", "action", "parameters"}, "management request")
+        if (type(request["schema_version"]) is not int or request["schema_version"] != SCHEMA_VERSION
+                or request["run_id"] != self.run_id or request["source_commit"] != self.source_commit
+                or request["client_commit"] != self.document["client_commit"]):
             fail("management request identity mismatch")
         if request["action"] not in ACTIONS:
             fail("management action is outside the allowlist")
+        validate_task_parameters(request["action"], request["parameters"], self.document["client_commit"])
         if type(request["management_sequence"]) is not int or request["management_sequence"] < 1 or not re.fullmatch(r"[0-9a-f]{32}", request["request_id"]):
             fail("management sequence or request id is invalid")
         candidate = management.encode("ascii")
@@ -545,17 +589,19 @@ class ChannelState:
                 sequence = len(tasks) + 1
                 self.document["management_sequence"] = request["management_sequence"]
                 self.document["last_management_request"] = request["request_id"]
-                tasks.append({"sequence": sequence, "action": "stop", "completed": False, "last_event": 0,
+                tasks.append({"sequence": sequence, "action": "stop", "parameters": {}, "completed": False, "last_event": 0,
                               "terminal_status": "pending", "management_request_id": request["request_id"], "cancel_requested": False})
                 self._persist()
                 return {"schema_version": SCHEMA_VERSION, "sequence": sequence, "action": "stop", "accepted": True,
                         "cancellation_sequence": pending["sequence"]}
             if not tasks:
-                allowed = {"prepare-client"}
+                allowed = {"update-client", "prepare-client"}
             else:
                 previous = tasks[-1]
                 if previous["terminal_status"] in ("failed", "blocked"):
-                    allowed = {previous["action"], "stop"}
+                    allowed = {previous["action"], "update-client", "stop"}
+                elif previous["action"] == "update-client":
+                    allowed = {"prepare-client", "stop"}
                 elif previous["action"] == "prepare-client":
                     allowed = {"preflight", "stop"}
                 elif previous["action"] == "preflight":
@@ -575,7 +621,7 @@ class ChannelState:
             sequence = len(self.document["tasks"]) + 1
             self.document["management_sequence"] = request["management_sequence"]
             self.document["last_management_request"] = request["request_id"]
-            self.document["tasks"].append({"sequence": sequence, "action": request["action"], "completed": False, "last_event": 0,
+            self.document["tasks"].append({"sequence": sequence, "action": request["action"], "parameters": request["parameters"], "completed": False, "last_event": 0,
                                            "terminal_status": "pending", "management_request_id": request["request_id"], "cancel_requested": False})
             self._persist()
             return {"schema_version": SCHEMA_VERSION, "sequence": sequence, "action": request["action"], "accepted": True}
@@ -689,6 +735,7 @@ def initialize(root: Path, run_id: str, source_commit: str, client_ip: str, keep
             "schema_version": SCHEMA_VERSION,
             "run_id": run_id,
             "source_commit": source_commit,
+            "client_commit": source_commit,
             "client_ipv4": client_ip,
             "paired": False,
             "session_sha256": None,
@@ -845,9 +892,27 @@ def daemon_stop(arguments: argparse.Namespace, server_ip: str, client_ip: str) -
         os.close(descriptor)
 
 
-def enqueue(server_ip: str, certificate: Path, root: Path, run_id: str, source_commit: str, action: str) -> None:
+def enqueue(
+    server_ip: str,
+    certificate: Path,
+    root: Path,
+    run_id: str,
+    source_commit: str,
+    action: str,
+    target_commit: str | None,
+) -> None:
     if action not in ACTIONS:
         fail("management action is outside the allowlist")
+    parameters: dict[str, str] = {}
+    if action == "update-client":
+        parameters = {
+            "repository_url": UPDATE_REPOSITORY_URL,
+            "repository_ref": UPDATE_REPOSITORY_REF,
+            "target_commit": target_commit or "",
+        }
+    elif target_commit is not None:
+        fail("target commit is valid only for update-client")
+    validate_task_parameters(action, parameters, source_commit)
     descriptor = open_state_root(root)
     try:
         management = read_regular_at(descriptor, "management-token", 128, 0o600).decode("ascii").strip()
@@ -855,10 +920,14 @@ def enqueue(server_ip: str, certificate: Path, root: Path, run_id: str, source_c
     finally:
         os.close(descriptor)
     management_sequence = document.get("management_sequence")
-    if type(management_sequence) is not int or management_sequence < 0:
+    client_commit = document.get("client_commit")
+    if (type(management_sequence) is not int or management_sequence < 0
+            or document.get("run_id") != run_id or document.get("source_commit") != source_commit
+            or not isinstance(client_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", client_commit)):
         fail("management state sequence is invalid")
-    body = json.dumps({"schema_version": SCHEMA_VERSION, "run_id": run_id, "source_commit": source_commit,
-                       "management_sequence": management_sequence + 1, "request_id": secrets.token_hex(16), "action": action}, separators=(",", ":")).encode("utf-8")
+    body = json.dumps({"schema_version": SCHEMA_VERSION, "run_id": run_id, "source_commit": source_commit, "client_commit": client_commit,
+                       "management_sequence": management_sequence + 1, "request_id": secrets.token_hex(16),
+                       "action": action, "parameters": parameters}, separators=(",", ":")).encode("utf-8")
     request = urllib.request.Request(
         f"https://{server_ip}:{PORT}/v1/manage",
         data=body,
@@ -917,6 +986,7 @@ def main() -> None:
     enqueue_parser.add_argument("--server-ip", required=True)
     enqueue_parser.add_argument("--certificate", required=True, type=Path)
     enqueue_parser.add_argument("--action", required=True)
+    enqueue_parser.add_argument("--target-commit")
     rollback_parser.add_argument("--server-ip", required=True)
     rollback_parser.add_argument("--attestation", required=True, type=Path)
     arguments = parser.parse_args()
@@ -935,7 +1005,8 @@ def main() -> None:
         return
     if arguments.command == "enqueue":
         server_ip = exact_private_ipv4(arguments.server_ip, "server IP")
-        enqueue(server_ip, arguments.certificate, arguments.state_root, arguments.run_id, arguments.source_commit, arguments.action)
+        enqueue(server_ip, arguments.certificate, arguments.state_root, arguments.run_id,
+                arguments.source_commit, arguments.action, arguments.target_commit)
         return
     if arguments.command == "verify-rollback":
         server_ip = exact_private_ipv4(arguments.server_ip, "server IP")

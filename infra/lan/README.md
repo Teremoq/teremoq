@@ -210,7 +210,7 @@ This channel removes manual log copying without sending evidence to GitHub or
 another external service. GitHub distributes only the clean reviewed commit.
 The Windows 10 agent makes outbound HTTPS requests to the exact server address,
 pins the temporary certificate fingerprint, consumes a one-time pairing code
-and accepts only the fixed progressive actions `prepare-client`, `preflight`,
+and accepts only the fixed progressive actions `update-client`, `prepare-client`, `preflight`,
 `player-1`, `load-5`, `load-10`, `load-25`,
 `wifi-observe`, `collect` and `stop`. There is no arbitrary command or path in
 the protocol. Diagnostics are bounded, scrubbed and stored under a private
@@ -220,6 +220,16 @@ it executed the checkout's ignored `node_modules`. The management gate starts
 with `prepare-client`, whose builder installs
 dependencies in isolated detached Git worktrees and emits the sealed client
 artifact, or the client rejects the task before any process is started.
+
+`update-client` is the only action with parameters. Its closed payload fixes
+the official repository URL, the reviewed LAN branch and one exact target
+commit. The client fetches only missing Git objects, rejects a dirty or
+divergent source checkout and stages the target in a new side-by-side checkout.
+It never overwrites the active checkout or external configuration/evidence.
+The existing in-memory session is handed to the new launcher only over a
+bounded stdin pipe; it is absent from argv, environment, disk and logs. The
+server channel commit remains immutable for authorization and rollback while
+the separately recorded client commit advances after a successful update.
 
 The channel cannot listen until the native server preflight passes and the
 exact Defender and Hyper-V rules for UDP/14433 and TCP/18443 have been applied
@@ -282,6 +292,23 @@ to `interactive-channel-control.sh stop`. The listener remains inaccessible
 after firewall rollback and cannot be declared stopped until the exact
 zero-residue rollback attestation is validated. Evidence is retained; the
 channel does not recursively delete directories.
+
+After a reviewed target commit is published, enqueue a client update from the
+server without copying a script or diagnostic between computers:
+
+```bash
+infra/lan/interactive-channel-control.sh enqueue \
+  --state-root /ABSOLUTE/PRIVATE/channel-state --run-id RUN_ID \
+  --source-commit IMMUTABLE_CHANNEL_COMMIT \
+  --server-ip SERVER_EXACT_IP --client-ip CLIENT_EXACT_IP \
+  --certificate /ABSOLUTE/RUNTIME/relay/cert.pem \
+  --task update-client --target-commit REVIEWED_PUBLISHED_COMMIT
+```
+
+The client version deployed before this feature cannot understand
+`update-client`. It therefore needs one final manual launch of the newly
+published client. Once that version is paired, subsequent reviewed updates and
+their bounded progress use this channel without repeating the bootstrap.
 
 ## 6. Executable activation and stop
 

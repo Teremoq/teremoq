@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$ExpectedCommit
+    [Parameter(Mandatory = $true)][string]$ExpectedCommit,
+    [string]$ChannelCommit = '',
+    [switch]$ResumeSessionStdin
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
@@ -15,10 +17,13 @@ function Get-TeremoqSafeAgentOutput([AllowEmptyString()][string]$Line) {
     if ($null -eq $Line -or $Line.Length -gt 160) { return $null }
     $connected = '[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...'
     if ($Line -ceq $connected) { return $Line }
+    $updated = '[Teremoq] Cliente actualizado; la sesion segura continua en la nueva version.'
+    if ($Line -ceq $updated) { return $Line }
     if ($Line -cnotmatch '^\[Teremoq\] Paso [1-9][0-9]{0,5} - ([A-Za-z ]{1,64}): ([a-z ]{1,32})$') {
         return $null
     }
     $actions = @(
+        'Actualizar el cliente desde GitHub',
         'Preparar y verificar el cliente', 'Comprobar el portatil',
         'Iniciar un reproductor', 'Probar cinco espectadores',
         'Probar diez espectadores', 'Probar veinticinco espectadores',
@@ -304,17 +309,19 @@ function New-TeremoqAgentArguments {
     param(
         [Parameter(Mandatory = $true)][string]$AgentPath,
         [Parameter(Mandatory = $true)][string]$RunId,
-        [Parameter(Mandatory = $true)][string]$Commit,
+        [Parameter(Mandatory = $true)][string]$ChannelCommit,
+        [Parameter(Mandatory = $true)][string]$ClientCommit,
         [Parameter(Mandatory = $true)][string]$Checkout,
         [Parameter(Mandatory = $true)][string]$StateRoot,
         [Parameter(Mandatory = $true)][string]$EvidenceRoot,
-        [Parameter(Mandatory = $true)][hashtable]$SessionHashes
+        [Parameter(Mandatory = $true)][hashtable]$SessionHashes,
+        [Parameter(Mandatory = $true)][ValidateSet('pair','session')][string]$CredentialMode
     )
     return @(
         $AgentPath,
         '--server','https://192.168.1.130:18443',
         '--fingerprint','7984fd4852ec204dc16fb445d5260325fd3b686b478676767f52a1fa63a1a7bc',
-        '--run-id',$RunId,'--source-commit',$Commit,'--pairing-stdin','true',
+        '--run-id',$RunId,'--source-commit',$ChannelCommit,'--client-commit',$ClientCommit,'--credential-mode',$CredentialMode,
         '--checkout',$Checkout,'--state-root',$StateRoot,'--evidence-root',$EvidenceRoot,
         '--git-sha256',$SessionHashes.Git,'--node-sha256',$SessionHashes.Node,
         '--npm-cli-sha256',$SessionHashes.NpmCli,
@@ -334,6 +341,8 @@ if ([IO.Path]::GetFullPath($env:SystemRoot).TrimEnd('\') -ine 'C:\Windows' -or
     throw 'Windows roots differ from the reviewed executable locations'
 }
 if ($ExpectedCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'ExpectedCommit must be the exact reviewed commit supplied by the server operator' }
+if ([string]::IsNullOrEmpty($ChannelCommit)) { $ChannelCommit = $ExpectedCommit }
+if ($ChannelCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'ChannelCommit must identify the exact paired server channel' }
 
 $checkout = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $launcherPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
@@ -410,13 +419,20 @@ try {
 
     Write-Host "Teremoq LAN interactive client: commit $head; $($locks.Count) immutable read handles"
     Write-Host 'The client only initiates outbound HTTPS and executes the reviewed fixed action list.'
-    $pairingCode = Read-Host 'Enter the one-time pairing code shown on the server'
-    if ($pairingCode -cnotmatch '^[0-9a-f]{48}$') { throw 'The pairing code must contain exactly 48 lowercase hexadecimal characters' }
+    if ($ResumeSessionStdin) {
+        $credential = [Console]::In.ReadLine()
+        if ($credential -cnotmatch '^[0-9a-f]{64}$') { throw 'The resumed session credential is invalid' }
+        $credentialMode = 'session'
+    } else {
+        $credential = Read-Host 'Enter the one-time pairing code shown on the server'
+        if ($credential -cnotmatch '^[0-9a-f]{48}$') { throw 'The pairing code must contain exactly 48 lowercase hexadecimal characters' }
+        $credentialMode = 'pair'
+    }
     $agentArguments = New-TeremoqAgentArguments -AgentPath (Join-Path $PSScriptRoot 'Lan-Interactive-Agent.mjs') `
-        -RunId $runId -Commit $head -Checkout $checkout -StateRoot $stateRoot `
-        -EvidenceRoot $evidenceRoot -SessionHashes $sessionHashes
+        -RunId $runId -ChannelCommit $ChannelCommit -ClientCommit $head -Checkout $checkout -StateRoot $stateRoot `
+        -EvidenceRoot $evidenceRoot -SessionHashes $sessionHashes -CredentialMode $credentialMode
     $agentExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -WorkingDirectory $checkout `
-        -ExpectedSha256 $sessionHashes.Node -InputLine $pairingCode -Arguments $agentArguments
+        -ExpectedSha256 $sessionHashes.Node -InputLine $credential -Arguments $agentArguments
     if ($agentExit -ne 0) { throw "Teremoq LAN interactive client stopped with exit code $agentExit" }
 } finally {
     for ($index = $locks.Count - 1; $index -ge 0; $index--) { $locks[$index].Dispose() }

@@ -75,7 +75,7 @@ def post(url, body, context, headers=None):
 
 
 commit = "b" * 40
-identity = {"schema_version": 1, "run_id": "lan-channel-e2e", "source_commit": commit}
+identity = {"schema_version": 1, "run_id": "lan-channel-e2e", "source_commit": commit, "client_commit": commit}
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
     certificate = root / "cert.pem"
@@ -147,13 +147,13 @@ with tempfile.TemporaryDirectory() as temporary:
     try:
         pair = post(url + "/v1/pair", {**identity, "pairing_code": pairing}, client_context)
         session = pair["session"]
-        removed_build = {**identity, "management_sequence": 1, "request_id": "1" * 32, "action": "diagnose-build"}
+        removed_build = {**identity, "management_sequence": 1, "request_id": "1" * 32, "action": "diagnose-build", "parameters": {}}
         try:
             post(url + "/v1/manage", removed_build, client_context, {"X-Teremoq-Management": management})
             raise AssertionError("removed diagnose-build action was accepted")
         except urllib.error.HTTPError as error:
             assert error.code == 403
-        management_request = {**identity, "management_sequence": 1, "request_id": "2" * 32, "action": "prepare-client"}
+        management_request = {**identity, "management_sequence": 1, "request_id": "2" * 32, "action": "prepare-client", "parameters": {}}
         managed = post(url + "/v1/manage", management_request, client_context, {"X-Teremoq-Management": management})
         assert managed["accepted"] is True
         time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)

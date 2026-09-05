@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory() as temporary:
     assert root.stat().st_mode & 0o777 == 0o700
     pairing = (root / "pairing-code").read_text(encoding="ascii").strip()
     state = channel.ChannelState(root, "lan-channel-test", commit, "192.168.77.10", "192.168.77.20")
-    identity = {"schema_version": 1, "run_id": "lan-channel-test", "source_commit": commit}
+    identity = {"schema_version": 1, "run_id": "lan-channel-test", "source_commit": commit, "client_commit": commit}
     response = state.pair({**identity, "pairing_code": pairing})
     session = response["session"]
     assert not (root / "pairing-code").exists()
@@ -31,20 +31,20 @@ with tempfile.TemporaryDirectory() as temporary:
     assert state.poll(identity, session)["action"] == "wait"
     management = (root / "management-token").read_text(encoding="ascii").strip()
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
-    invalid_first = {**identity, "management_sequence": 1, "request_id": "0" * 32, "action": "load-25"}
+    invalid_first = {**identity, "management_sequence": 1, "request_id": "0" * 32, "action": "load-25", "parameters": {}}
     try:
         state.enqueue(invalid_first, management)
         raise AssertionError("progressive gate accepted load-25 as the first action")
     except ValueError:
         pass
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
-    removed_build = {**identity, "management_sequence": 1, "request_id": "f" * 32, "action": "diagnose-build"}
+    removed_build = {**identity, "management_sequence": 1, "request_id": "f" * 32, "action": "diagnose-build", "parameters": {}}
     try:
         state.enqueue(removed_build, management)
         raise AssertionError("removed diagnose-build action was accepted")
     except ValueError:
         pass
-    management_request = {**identity, "management_sequence": 1, "request_id": "1" * 32, "action": "prepare-client"}
+    management_request = {**identity, "management_sequence": 1, "request_id": "1" * 32, "action": "prepare-client", "parameters": {}}
     assert state.enqueue(management_request, management)["accepted"] is True
     reloaded = channel.ChannelState(root, "lan-channel-test", commit, "192.168.77.10", "192.168.77.20")
     assert reloaded.document["management_sequence"] == 1
@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory() as temporary:
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
     assert state.event(first, session)["accepted"] is True
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
-    stop_request = {**identity, "management_sequence": 2, "request_id": "2" * 32, "action": "stop"}
+    stop_request = {**identity, "management_sequence": 2, "request_id": "2" * 32, "action": "stop", "parameters": {}}
     cancellation = state.enqueue(stop_request, management)
     assert cancellation["action"] == "stop" and cancellation["cancellation_sequence"] == 1
     complete = {**first, "event": 2, "status": "failed", "message": "bounded diagnostic"}
@@ -127,5 +127,56 @@ with tempfile.TemporaryDirectory() as temporary:
         if server is not None:
             server.server_close()
         channel.socket.getfqdn = original_getfqdn
+
+    update_root = Path(temporary) / "update-state"
+    target = "b" * 40
+    channel.initialize(update_root, "lan-update-test", commit, "192.168.77.20")
+    update_pairing = (update_root / "pairing-code").read_text(encoding="ascii").strip()
+    update_management = (update_root / "management-token").read_text(encoding="ascii").strip()
+    update_state = channel.ChannelState(update_root, "lan-update-test", commit, "192.168.77.10", "192.168.77.20")
+    update_identity = {"schema_version": 1, "run_id": "lan-update-test", "source_commit": commit, "client_commit": commit}
+    update_session = update_state.pair({**update_identity, "pairing_code": update_pairing})["session"]
+    parameters = {
+        "repository_url": channel.UPDATE_REPOSITORY_URL,
+        "repository_ref": channel.UPDATE_REPOSITORY_REF,
+        "target_commit": target,
+    }
+    for invalid_parameters in (
+        {**parameters, "repository_url": "https://example.invalid/repository"},
+        {**parameters, "repository_ref": "refs/heads/main"},
+        {**parameters, "target_commit": commit},
+        {**parameters, "extra": "forbidden"},
+    ):
+        time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+        try:
+            update_state.enqueue({**update_identity, "management_sequence": 1, "request_id": "4" * 32,
+                "action": "update-client", "parameters": invalid_parameters}, update_management)
+            raise AssertionError("invalid update parameters were accepted")
+        except ValueError:
+            pass
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    update_request = {**update_identity, "management_sequence": 1, "request_id": "3" * 32,
+                      "action": "update-client", "parameters": parameters}
+    assert update_state.enqueue(update_request, update_management)["accepted"] is True
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    update_task = update_state.poll(update_identity, update_session)
+    assert update_task["action"] == "update-client" and update_task["parameters"] == parameters
+    for event, status in ((1, "started"), (2, "complete")):
+        time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+        transition = update_state.event({**update_identity, "sequence": 1, "event": event,
+            "action": "update-client", "status": status, "message": status}, update_session)
+    assert transition["source_commit"] == commit and transition["client_commit"] == target
+    new_identity = {**update_identity, "client_commit": target}
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    assert update_state.poll(new_identity, update_session)["action"] == "wait"
+    reloaded_update = channel.ChannelState(update_root, "lan-update-test", commit, "192.168.77.10", "192.168.77.20")
+    assert reloaded_update.document["source_commit"] == commit
+    assert reloaded_update.document["client_commit"] == target
+    try:
+        time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+        update_state.poll(update_identity, update_session)
+        raise AssertionError("old source identity remained valid after update")
+    except ValueError:
+        pass
 
 print("lan-interactive-channel-test: PASS")

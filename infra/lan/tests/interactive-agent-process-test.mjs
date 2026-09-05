@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execute, formatLocalStatus, parseArguments, runProcess, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
+import { execute, formatLocalStatus, parseArguments, restartUpdatedClient, runProcess, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -45,14 +45,22 @@ const nodeSha256 = crypto.createHash("sha256").update(fs.readFileSync(process.ex
 const agentArgv = [
   "--server", "https://192.168.1.130:18443", "--fingerprint", "1".repeat(64),
   "--run-id", "lan-argv-canary", "--source-commit", "2".repeat(40),
-  "--pairing-stdin", "true", "--checkout", "C:\\source", "--state-root", "C:\\state",
+  "--client-commit", "2".repeat(40), "--credential-mode", "pair", "--checkout", "C:\\source", "--state-root", "C:\\state",
   "--evidence-root", "C:\\evidence", "--git-sha256", "3".repeat(64),
   "--node-sha256", "4".repeat(64), "--npm-cli-sha256", "5".repeat(64),
   "--powershell-sha256", "6".repeat(64), "--taskkill-sha256", "7".repeat(64),
 ];
 const parsedArgv = parseArguments(agentArgv);
-expect(agentArgv.length === 26 && Object.keys(parsedArgv).length === 13, "closed agent argv cardinality drifted");
+expect(agentArgv.length === 28 && Object.keys(parsedArgv).length === 14, "closed agent argv cardinality drifted");
 expect(parsedArgv["--taskkill-sha256"] === "7".repeat(64), "taskkill session hash was not parsed");
+expect(parsedArgv["--credential-mode"] === "pair", "credential mode was not parsed");
+const resumedArgv = [...agentArgv];
+resumedArgv[resumedArgv.indexOf("pair")] = "session";
+expect(parseArguments(resumedArgv)["--credential-mode"] === "session", "session resume mode was rejected");
+const restartSource = restartUpdatedClient.toString();
+expect(!restartSource.includes('"--session"') && !restartSource.includes("SESSION="), "session credential can reach child argv or environment");
+expect(restartSource.includes('stdio: ["pipe", "ignore", "ignore"]') && restartSource.includes("credential handoff timed out"),
+  "session handoff is not bounded to the private stdin pipe");
 let extraArgRejected = false;
 try { parseArguments([...agentArgv, "--extra", "forbidden"]); } catch { extraArgRejected = true; }
 expect(extraArgRejected, "agent accepted an extra argv pair");

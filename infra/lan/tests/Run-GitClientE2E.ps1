@@ -13,7 +13,8 @@ $source = [IO.Path]::GetFullPath($SourceRoot)
 function Invoke-TestGit {
     param([Parameter(Mandatory = $true)][string]$WorkingDirectory, [Parameter(Mandatory = $true)][string[]]$Arguments)
     $result = Invoke-TeremoqBoundedNativeProcess -FilePath $GitExecutable -WorkingDirectory $WorkingDirectory `
-        -Arguments $Arguments -TimeoutMilliseconds 30000 -StdoutMaxBytes 131072 -StderrMaxBytes 131072
+        -Arguments (@('-c','core.autocrlf=false','-c','core.eol=lf') + $Arguments) `
+        -TimeoutMilliseconds 30000 -StdoutMaxBytes 131072 -StderrMaxBytes 131072
     if ($result.ExitCode -ne 0) { throw "Git fixture command failed: $($result.Stderr)" }
     return $result.Stdout.Trim()
 }

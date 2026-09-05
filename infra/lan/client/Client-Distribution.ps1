@@ -288,7 +288,24 @@ function Invoke-TeremoqGit {
     )
     $gitPath = Get-TeremoqGitExecutable
     if (-not $gitPath) { throw 'Git for Windows is required and was not found' }
-    $result = Invoke-TeremoqBoundedNativeProcess -FilePath $gitPath -WorkingDirectory $CheckoutRoot -Arguments $Arguments
+    $prefix = @(
+        '--no-replace-objects',
+        '-c', 'core.hooksPath=NUL',
+        '-c', 'core.fsmonitor=false',
+        '-c', 'core.autocrlf=false',
+        '-c', 'core.eol=lf',
+        '-c', 'core.safecrlf=true'
+    )
+    $previousNoSystem = $env:GIT_CONFIG_NOSYSTEM
+    $previousGlobal = $env:GIT_CONFIG_GLOBAL
+    try {
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_GLOBAL = 'NUL'
+        $result = Invoke-TeremoqBoundedNativeProcess -FilePath $gitPath -WorkingDirectory $CheckoutRoot -Arguments ($prefix + $Arguments)
+    } finally {
+        $env:GIT_CONFIG_NOSYSTEM = $previousNoSystem
+        $env:GIT_CONFIG_GLOBAL = $previousGlobal
+    }
     if ($result.ExitCode -ne 0) {
         $detail = $result.Stderr.Trim()
         if ([string]::IsNullOrWhiteSpace($detail)) { $detail = $result.Stdout.Trim() }
@@ -585,7 +602,7 @@ function Get-TeremoqGitCheckoutContext {
     if (-not $supportRoot.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $supportRoot -PathType Container)) {
         throw 'approved repository_subdirectory is absent from the checkout'
     }
-    foreach ($required in @('client/Install-LanClient.ps1', 'client/Initialize-LanClientState.ps1', 'client/Update-LanClient.ps1', 'client/Invoke-LanLoad.ps1', 'client/Verify-Package.ps1', 'client/Import-BrowserObservation.ps1', 'client/Client-Distribution.ps1', 'windows/Preflight-Client.ps1', 'windows/Collect-Evidence.ps1', 'windows/Preflight-Contract.ps1')) {
+    foreach ($required in @('client/Install-LanClient.ps1', 'client/Initialize-LanClientState.ps1', 'client/Update-LanClient.ps1', 'client/Stage-LanClientUpdate.ps1', 'client/Invoke-LanLoad.ps1', 'client/Verify-Package.ps1', 'client/Import-BrowserObservation.ps1', 'client/Client-Distribution.ps1', 'windows/Preflight-Client.ps1', 'windows/Collect-Evidence.ps1', 'windows/Preflight-Contract.ps1')) {
         if (-not (Test-Path -LiteralPath (Join-Path $supportRoot $required) -PathType Leaf)) {
             throw "required LAN support file is absent from checkout: $required"
         }

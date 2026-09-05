@@ -10,8 +10,18 @@ reviewed Git update. The agent initiates outbound HTTPS only to
 `192.168.1.130:18443`, pins the exact temporary certificate fingerprint and
 exchanges a one-use pairing code for an in-memory session. It never accepts a
 shell command, URL or path from the server. The server can enqueue only the
-closed actions `prepare-client`, `preflight`, `player-1`, `load-5`, `load-10`,
+closed actions `update-client`, `prepare-client`, `preflight`, `player-1`, `load-5`, `load-10`,
 `load-25`, `wifi-observe`, `collect` and `stop`.
+
+`update-client` carries only the fixed official repository/ref and an exact
+reviewed target commit. It creates a side-by-side checkout, requires the target
+to be a fast-forward descendant, and preserves the active checkout plus all
+external state and evidence. After the server confirms the commit transition,
+the session credential moves to the new launcher through a bounded stdin pipe;
+it is never placed in command arguments, environment variables, files or
+diagnostics. The server channel identity stays fixed while the client identity
+advances, so firewall authorization and rollback remain tied to the original
+server run.
 
 The remote `diagnose-build` action is removed. It previously ran the checkout's
 ignored `node_modules`, which is not part of the reviewed commit. The matching
