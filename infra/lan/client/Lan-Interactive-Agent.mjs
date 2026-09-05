@@ -18,8 +18,33 @@ const TASKKILL_TIMEOUT_MS = 5 * 1000;
 const TERMINATION_TIMEOUT_MS = 15 * 1000;
 const WINDOWS_ROOT = "C:\\Windows";
 const PROGRAM_FILES = "C:\\Program Files";
+const LOCAL_ACTION_LABELS = Object.freeze({
+  "prepare-client": "Preparar y verificar el cliente",
+  preflight: "Comprobar el portatil",
+  "player-1": "Iniciar un reproductor",
+  "load-5": "Probar cinco espectadores",
+  "load-10": "Probar diez espectadores",
+  "load-25": "Probar veinticinco espectadores",
+  "wifi-observe": "Observar la recuperacion Wi-Fi",
+  collect: "Recoger resultados",
+  stop: "Detener el cliente",
+});
+const LOCAL_STAGE_LABELS = Object.freeze({
+  received: "orden recibida",
+  running: "en ejecucion",
+  progress: "continua en ejecucion",
+  complete: "completado",
+  failed: "fallo comunicado al servidor",
+});
 
 function fail(message) { throw new Error(message); }
+function formatLocalStatus(action, stage, sequence) {
+  if (!ACTIONS.has(action) || !Object.hasOwn(LOCAL_STAGE_LABELS, stage) ||
+      !Number.isSafeInteger(sequence) || sequence < 1) {
+    fail("invalid local status");
+  }
+  return `[Teremoq] Paso ${sequence} - ${LOCAL_ACTION_LABELS[action]}: ${LOCAL_STAGE_LABELS[stage]}`;
+}
 function parseArguments(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 2) {
@@ -441,11 +466,13 @@ async function main() {
   };
   const pair = await channelRequest("/v1/pair", { ...identity, pairing_code: pairingCode });
   if (pair.schema_version !== 1 || pair.run_id !== context.runId || pair.source_commit !== context.commit || !/^[0-9a-f]{64}$/.test(pair.session)) fail("invalid pairing response");
+  process.stdout.write("[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...\n");
   for (;;) {
     const task = await channelRequest("/v1/poll", identity, pair.session);
     if (task.schema_version !== 1 || task.run_id !== context.runId || task.source_commit !== context.commit || !Number.isSafeInteger(task.sequence)) fail("invalid task response");
     if (task.action === "wait") { await new Promise((resolve) => setTimeout(resolve, 2000)); continue; }
     if (!ACTIONS.has(task.action) || task.sequence < 1) fail("server requested an unapproved action");
+    process.stdout.write(`${formatLocalStatus(task.action, "received", task.sequence)}\n`);
     let event = 1;
     let sendQueue = Promise.resolve();
     const send = (status, message) => {
@@ -454,19 +481,24 @@ async function main() {
       return sendQueue;
     };
     const started = await send("started", `${task.action} started`);
+    process.stdout.write(`${formatLocalStatus(task.action, "running", task.sequence)}\n`);
     const result = started.cancel_requested === true
       ? { code: -1, signal: "cancel-requested", output: "The server cancelled the action before execution." }
-      : await execute(task.action, context, (message) => send("progress", message));
+      : await execute(task.action, context, (message) => {
+          process.stdout.write(`${formatLocalStatus(task.action, "progress", task.sequence)}\n`);
+          return send("progress", message);
+        });
     if (result.code === 0 && ["player-1", "load-5", "load-10", "load-25"].includes(task.action)) {
       context.activeLevel = Number(task.action.split("-")[1]);
     }
     await sendQueue;
     await send(result.code === 0 ? "complete" : "failed", `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`);
+    process.stdout.write(`${formatLocalStatus(task.action, result.code === 0 ? "complete" : "failed", task.sequence)}\n`);
     if (task.action === "stop") break;
   }
 }
 
-export { execute, parseArguments, pinnedAgent, requestJson, runProcess, scrub, terminateProcessTree };
+export { execute, formatLocalStatus, parseArguments, pinnedAgent, requestJson, runProcess, scrub, terminateProcessTree };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });

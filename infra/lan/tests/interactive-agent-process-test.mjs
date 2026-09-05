@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execute, parseArguments, runProcess, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
+import { execute, formatLocalStatus, parseArguments, runProcess, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -33,6 +33,14 @@ try {
 
 const invalidPid = await terminateProcessTree(0);
 expect(invalidPid.status === "invalid-pid" && invalidPid.exitCode === -1, "invalid taskkill PID was accepted");
+expect(
+  formatLocalStatus("prepare-client", "running", 1) ===
+    "[Teremoq] Paso 1 - Preparar y verificar el cliente: en ejecucion",
+  "local progress is not deterministic",
+);
+let arbitraryStatusRejected = false;
+try { formatLocalStatus("prepare-client", "C:\\secret", 1); } catch { arbitraryStatusRejected = true; }
+expect(arbitraryStatusRejected, "arbitrary local status text was accepted");
 const nodeSha256 = crypto.createHash("sha256").update(fs.readFileSync(process.execPath)).digest("hex");
 const agentArgv = [
   "--server", "https://192.168.1.130:18443", "--fingerprint", "1".repeat(64),
