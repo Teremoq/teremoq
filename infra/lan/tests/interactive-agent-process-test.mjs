@@ -90,34 +90,62 @@ expect(rejectedTaskkill.status === "verification-failed", "taskkill verification
 const failedContainmentStatuses = ["failed", "timeout", "verification-failed", "termination-residue"];
 for (const status of failedContainmentStatuses) {
   let releases = 0;
+  let terminationCalls = 0;
   const containment = await containUpdatedClientBeforeRelease(
     { pid: 123, exitCode: null, signalCode: null },
     { taskkillSha256: "7".repeat(64) },
     async () => { releases += 1; },
     {
-      maxAttempts: 1,
-      retryDelayMs: 0,
-      terminateProcessTree: async () => ({ status, exitCode: -1 }),
+      maxObservationCycles: 1,
+      terminateProcessTree: async () => { terminationCalls += 1; return { status, exitCode: -1 }; },
       waitForChildExit: async () => true,
     },
   );
-  expect(!containment.contained && releases === 0,
+  expect(!containment.contained && releases === 0 && terminationCalls === 1,
     `updated launcher pin was released after ${status} tree termination`);
 }
+let exitedPidTerminationCalls = 0;
+let exitedPidReleases = 0;
+const exitedBeforeTermination = await containUpdatedClientBeforeRelease(
+  { pid: 123, exitCode: 1, signalCode: null },
+  { taskkillSha256: "7".repeat(64) },
+  async () => { exitedPidReleases += 1; },
+  {
+    maxObservationCycles: 1,
+    terminateProcessTree: async () => { exitedPidTerminationCalls += 1; return { status: "complete", exitCode: 0 }; },
+  },
+);
+expect(!exitedBeforeTermination.contained && exitedPidTerminationCalls === 0 && exitedPidReleases === 0,
+  "taskkill targeted a PID after the original child exit was already observed");
 let releaseBeforeExit = 0;
+let completeTerminationCalls = 0;
 const noExit = await containUpdatedClientBeforeRelease(
   { pid: 123, exitCode: null, signalCode: null },
   { taskkillSha256: "7".repeat(64) },
   async () => { releaseBeforeExit += 1; },
   {
-    maxAttempts: 1,
-    retryDelayMs: 0,
-    terminateProcessTree: async () => ({ status: "complete", exitCode: 0 }),
+    maxObservationCycles: 2,
+    terminateProcessTree: async () => { completeTerminationCalls += 1; return { status: "complete", exitCode: 0 }; },
     waitForChildExit: async () => false,
   },
 );
-expect(!noExit.contained && releaseBeforeExit === 0,
-  "updated launcher pin was released before child exit was observed");
+expect(!noExit.contained && releaseBeforeExit === 0 && completeTerminationCalls === 1,
+  "updated launcher retried taskkill or released the pin before child exit was observed");
+let delayedExitObservations = 0;
+let delayedExitTerminations = 0;
+let delayedExitReleases = 0;
+const delayedExit = await containUpdatedClientBeforeRelease(
+  { pid: 123, exitCode: null, signalCode: null },
+  { taskkillSha256: "7".repeat(64) },
+  async () => { delayedExitReleases += 1; },
+  {
+    maxObservationCycles: 2,
+    terminateProcessTree: async () => { delayedExitTerminations += 1; return { status: "complete", exitCode: 0 }; },
+    waitForChildExit: async () => { delayedExitObservations += 1; return delayedExitObservations === 2; },
+  },
+);
+expect(delayedExit.contained && delayedExitTerminations === 1 && delayedExitObservations === 2 && delayedExitReleases === 1,
+  "confirmed tree termination retried taskkill instead of waiting on the original child handle");
 
 const ackRoot = fs.mkdtempSync(path.join(os.tmpdir(), "teremoq-ack-failure-"));
 try {
@@ -157,8 +185,7 @@ if (process.platform === "win32") {
       { taskkillSha256: "7".repeat(64) },
       pin.release,
       {
-        maxAttempts: 1,
-        retryDelayMs: 0,
+        maxObservationCycles: 1,
         terminateProcessTree: async () => ({ status: "timeout", exitCode: -1 }),
         waitForChildExit: async () => false,
       },
@@ -175,8 +202,7 @@ if (process.platform === "win32") {
       { taskkillSha256: "7".repeat(64) },
       pin.release,
       {
-        maxAttempts: 1,
-        retryDelayMs: 0,
+        maxObservationCycles: 1,
         terminateProcessTree: async () => ({ status: "complete", exitCode: 0 }),
         waitForChildExit: async () => true,
       },

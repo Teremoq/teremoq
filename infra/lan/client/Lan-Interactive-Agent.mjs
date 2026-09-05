@@ -390,29 +390,35 @@ async function containUpdatedClientBeforeRelease(child, context, releasePin, opt
   }
   const terminate = options.terminateProcessTree ?? terminateProcessTree;
   const observeExit = options.waitForChildExit ?? waitForChildExit;
-  const maxAttempts = options.maxAttempts ?? Number.POSITIVE_INFINITY;
-  const retryDelayMs = options.retryDelayMs ?? 1_000;
-  let attempts = 0;
-  let treeTerminationConfirmed = false;
-  let termination = { status: "not-attempted", exitCode: -1 };
-  while (attempts < maxAttempts) {
-    attempts += 1;
-    try {
-      termination = await terminate(child.pid, { taskkillSha256: context.taskkillSha256 });
-    } catch (error) {
-      termination = { status: "verification-failed", exitCode: -1, output: scrub(error.message) };
+  const maxObservationCycles = options.maxObservationCycles ?? Number.POSITIVE_INFINITY;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    const termination = { status: "target-exited-before-tree-confirmation", exitCode: -1 };
+    if (Number.isFinite(maxObservationCycles)) {
+      return { contained: false, observations: 0, termination };
     }
-    if (termination.status === "complete") treeTerminationConfirmed = true;
-    const childExited = await observeExit(child, options.childExitTimeoutMs ?? TERMINATION_TIMEOUT_MS);
-    if (treeTerminationConfirmed && childExited) {
+    await new Promise(() => {});
+  }
+  let termination;
+  try {
+    termination = await terminate(child.pid, { taskkillSha256: context.taskkillSha256 });
+  } catch (error) {
+    termination = { status: "verification-failed", exitCode: -1, output: scrub(error.message) };
+  }
+  if (termination.status !== "complete") {
+    if (Number.isFinite(maxObservationCycles)) {
+      return { contained: false, observations: 0, termination };
+    }
+    // Keep this process and the pin helper alive without ever targeting a PID
+    // that Windows may have reassigned after the original child exits.
+    await new Promise(() => {});
+  }
+  for (let observations = 1; observations <= maxObservationCycles; observations += 1) {
+    if (await observeExit(child, options.childExitTimeoutMs ?? TERMINATION_TIMEOUT_MS)) {
       await releasePin();
-      return { contained: true, attempts, termination };
-    }
-    if (attempts < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      return { contained: true, observations, termination };
     }
   }
-  return { contained: false, attempts, termination };
+  return { contained: false, observations: maxObservationCycles, termination };
 }
 
 function runProcess(file, args, cwd, onProgress, options = {}) {
