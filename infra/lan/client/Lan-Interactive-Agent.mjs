@@ -582,9 +582,15 @@ async function restartUpdatedClient(context, handoff, session) {
     await releasePin();
     child.unref();
   } catch (error) {
+    // The updated child already received the session.  Its pinned launcher must
+    // remain immutable until taskkill positively confirms complete tree exit.
+    let termination = { status: "complete" };
+    if (child?.pid) termination = await terminateProcessTree(child.pid, { taskkillSha256: context.taskkillSha256 });
+    if (termination.status !== "complete") {
+      throw new Error(`updated client termination was not confirmed: ${scrub(termination.status)}`);
+    }
     let releaseError = null;
     try { await releasePin(); } catch (pinError) { releaseError = pinError; }
-    if (child?.pid) await terminateProcessTree(child.pid, { taskkillSha256: context.taskkillSha256 });
     try { fs.unlinkSync(ackPath); } catch (cleanupError) {
       if (cleanupError?.code !== "ENOENT") throw cleanupError;
     }

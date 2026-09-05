@@ -61,6 +61,10 @@ const restartSource = restartUpdatedClient.toString();
 expect(!restartSource.includes('"--session"') && !restartSource.includes("SESSION="), "session credential can reach child argv or environment");
 expect(restartSource.includes('stdio: ["pipe", "ignore", "ignore"]') && restartSource.includes("credential handoff timed out"),
   "session handoff is not bounded to the private stdin pipe");
+expect(restartSource.indexOf("termination = await terminateProcessTree") < restartSource.lastIndexOf("await releasePin();"),
+  "updated launcher pin is released before target termination");
+expect(restartSource.includes('termination.status !== "complete"'),
+  "updated launcher accepts unconfirmed target termination");
 const channelCommit = "8".repeat(40);
 const targetCommit = "9".repeat(40);
 const transitionIdentity = { schema_version: 1, run_id: "lan-transition", source_commit: channelCommit, client_commit: channelCommit };
