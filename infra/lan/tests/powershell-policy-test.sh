@@ -55,7 +55,10 @@ grep -Fq 'Invoke-TeremoqBoundedNativeProcess' "${ROOT}/client/Prepare-LanClientF
 grep -Fq '[Console]::OutputEncoding = $utf8NoBom' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 [[ "$(grep -Fc 'Invoke-TeremoqBoundedNativeProcess' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1")" -eq 3 ]]
 ! grep -Fq '$LASTEXITCODE' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
-grep -Fq -- "-Arguments (@(\$npmCli) + \$arguments)" "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
+grep -Fq -- '-Arguments $arguments' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
+grep -Fq "\$distributionScript = Join-Path \$project 'scripts\\distribute-lan-from-git.mjs'" "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
+grep -Fq 'resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")' "${REPO_ROOT}/supervisor-web/scripts/distribute-lan-from-git.mjs"
+! grep -Fq 'process.env.npm_execpath' "${REPO_ROOT}/supervisor-web/scripts/distribute-lan-from-git.mjs"
 grep -Fq 'Git\cmd' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq '$env:PATH = "$(Split-Path -Parent $node);$gitDirectory;$env:SystemRoot\System32;$env:SystemRoot"' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq 'BuilderReceiptPath' "${ROOT}/client/Initialize-LanClientState.ps1"

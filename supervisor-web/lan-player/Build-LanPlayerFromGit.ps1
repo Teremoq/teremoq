@@ -44,14 +44,14 @@ if (-not (Test-Path -LiteralPath $distributionLibrary -PathType Leaf)) {
 . $distributionLibrary
 
 $node = Join-Path $env:ProgramFiles 'nodejs\node.exe'
-$npm = Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
 $npmCli = Join-Path $env:ProgramFiles 'nodejs\node_modules\npm\bin\npm-cli.js'
 $gitDirectory = Join-Path $env:ProgramFiles 'Git\cmd'
 $git = Join-Path $gitDirectory 'git.exe'
+$distributionScript = Join-Path $project 'scripts\distribute-lan-from-git.mjs'
 if (-not (Test-Path -LiteralPath $node -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $npm -PathType Leaf) -or
     -not (Test-Path -LiteralPath $npmCli -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $git -PathType Leaf)) {
+    -not (Test-Path -LiteralPath $git -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $distributionScript -PathType Leaf)) {
     throw 'Node 22.x and npm 10.x are required in Program Files'
 }
 $nodeVersionResult = Invoke-TeremoqBoundedNativeProcess -FilePath $node -WorkingDirectory $project `
@@ -74,7 +74,7 @@ if ($npmVersion -cnotmatch '^10[.][0-9]+[.][0-9]+$') {
 }
 
 $arguments = @(
-    'run', 'distribute:lan', '--',
+    $distributionScript,
     '--checkout-root', $checkout,
     '--state-root', [IO.Path]::GetFullPath($StateRoot),
     '--repository-url', $RepositoryUrl,
@@ -87,11 +87,11 @@ if ($Offline) { $arguments += '--offline' }
 Push-Location -LiteralPath $project
 $previousPath = $env:PATH
 try {
-    # npm run resolves the fixed "node" command used by package scripts through
-    # PATH. Keep that child-only search path closed to reviewed installations.
+    # The orchestrator runs directly under the validated Node executable. npm is
+    # still used internally, but no cmd.exe wrapper has to rediscover node.exe.
     $env:PATH = "$(Split-Path -Parent $node);$gitDirectory;$env:SystemRoot\System32;$env:SystemRoot"
     $buildResult = Invoke-TeremoqBoundedNativeProcess -FilePath $node -WorkingDirectory $project `
-        -Arguments (@($npmCli) + $arguments) -TimeoutMilliseconds 900000 `
+        -Arguments $arguments -TimeoutMilliseconds 900000 `
         -StdoutMaxBytes 131072 -StderrMaxBytes 131072
     if (-not [string]::IsNullOrEmpty($buildResult.Stdout)) { [Console]::Out.Write($buildResult.Stdout) }
     if (-not [string]::IsNullOrEmpty($buildResult.Stderr)) { [Console]::Error.Write($buildResult.Stderr) }

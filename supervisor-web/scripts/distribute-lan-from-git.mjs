@@ -377,9 +377,7 @@ function parseArguments(args) {
 }
 
 function resolveNpmCli() {
-  const value = process.env.npm_execpath;
-  if (!value || !isAbsolute(value)) throw new Error("ejecuta mediante npm 10.x desde el checkout");
-  return resolve(value);
+  return resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
 }
 
 function runNpm(npmCli, args, cwd, timeout, env) {

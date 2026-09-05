@@ -200,11 +200,13 @@ describe("contrato de distribución Git del player LAN", () => {
     const launcher = readFileSync("lan-player/Build-LanPlayerFromGit.ps1", "utf8");
     const orchestrator = readFileSync("scripts/distribute-lan-from-git.mjs", "utf8");
     expect(launcher).toContain("Node 22.x and npm 10.x are required in Program Files");
-    expect(launcher).toContain("$nodeVersionOutput = @(& $node --version)");
-    expect(launcher).toContain("$npmVersionOutput = @(& $node $npmCli --version)");
+    expect(launcher).toContain("Invoke-TeremoqBoundedNativeProcess -FilePath $node");
+    expect(launcher).toContain("$distributionScript");
     expect(launcher).toContain("npm runtime must be exact major 10");
     expect(launcher).not.toMatch(/\(& \$(?:node|npm)(?:\.Source)? --version\)\.Trim\(\)/);
-    expect(launcher).toContain("distribute:lan");
+    expect(launcher).not.toContain("'run', 'distribute:lan'");
+    expect(orchestrator).toContain('resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")');
+    expect(orchestrator).not.toContain("process.env.npm_execpath");
     expect(orchestrator).toContain('"worktree", "add", "--detach"');
     expect(orchestrator).not.toMatch(/\[\s*"(?:clone|fetch|pull|push)"/);
     for (const forbidden of ["LAN-CONFIG.json", "VERSION.tsv", "EvidenceDirectory", "FingerprintPath"]) {
