@@ -101,6 +101,45 @@ if (required.size !== 0) process.exit(22);
     $argvExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -ExpectedSha256 $nodeHash `
         -Arguments $agentArguments -WorkingDirectory $root
     if ($argvExit -ne 0) { throw 'Real launcher did not produce the complete closed agent argv' }
+
+    $ackPath = Join-Path $root ('handoff-' + [Guid]::NewGuid().ToString('N') + '.ack')
+    $ackValue = 'a' * 64
+    $nearMissExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -ExpectedSha256 $nodeHash `
+        -Arguments @('-e','console.log("[Teremoq] Canal seguro conectado.")') -WorkingDirectory $root `
+        -HandoffAckPath $ackPath -HandoffAckValue $ackValue
+    if ($nearMissExit -ne 0 -or (Test-Path -LiteralPath $ackPath)) {
+        throw 'A non-contract status line created the handoff acknowledgement'
+    }
+
+    $launcherForJob = [IO.Path]::GetFullPath($launcher)
+    $job = Start-Job -ScriptBlock {
+        param($Launcher, $Commit, $Node, $NodeHash, $WorkingDirectory, $AckPath, $AckValue)
+        $ErrorActionPreference = 'Stop'
+        Set-StrictMode -Version 3.0
+        . $Launcher -ExpectedCommit $Commit
+        Invoke-TeremoqPinnedNodeProcess -FilePath $Node -ExpectedSha256 $NodeHash `
+            -Arguments @('-e','setTimeout(()=>{console.log("[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...");setTimeout(()=>process.exit(0),250)},1000)') `
+            -WorkingDirectory $WorkingDirectory -HandoffAckPath $AckPath -HandoffAckValue $AckValue
+    } -ArgumentList $launcherForJob,$zeroCommit,$nodePath,$nodeHash,$root,$ackPath,$ackValue
+    try {
+        Start-Sleep -Milliseconds 350
+        if (Test-Path -LiteralPath $ackPath) {
+            throw 'Handoff acknowledgement was written before the replacement connected'
+        }
+        if (-not (Wait-Job -Job $job -Timeout 10)) {
+            throw 'Replacement connection canary did not finish'
+        }
+        $jobOutput = @(Receive-Job -Job $job -ErrorAction Stop)
+        if ($job.State -cne 'Completed' -or $jobOutput[-1] -ne 0) {
+            throw 'Replacement connection canary failed'
+        }
+        if (-not (Test-Path -LiteralPath $ackPath -PathType Leaf) -or
+            [IO.File]::ReadAllText($ackPath) -cne ($ackValue + "`n")) {
+            throw 'Replacement connection did not create the exact handoff acknowledgement'
+        }
+    } finally {
+        if ($null -ne $job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+    }
     Write-Output 'lan-interactive-client-lock-test: PASS'
 } finally {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }

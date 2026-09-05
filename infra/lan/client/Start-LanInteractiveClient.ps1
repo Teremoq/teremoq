@@ -171,6 +171,22 @@ function Get-TeremoqStreamGitBlobId([IO.FileStream]$Stream) {
     }
 }
 
+function Write-TeremoqHandoffAck {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+    if ($Value -cnotmatch '^[0-9a-f]{64}$' -or (Test-Path -LiteralPath $Path)) {
+        throw 'handoff acknowledgement value or path differs from contract'
+    }
+    $bytes = [Text.Encoding]::ASCII.GetBytes($Value + "`n")
+    $stream = New-Object IO.FileStream($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } finally { $stream.Dispose() }
+}
+
 function Open-TeremoqPinnedFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -257,7 +273,9 @@ function Invoke-TeremoqPinnedNodeProcess {
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$WorkingDirectory,
         [Parameter(Mandatory = $true)][string]$ExpectedSha256,
-        [AllowEmptyString()][string]$InputLine = ''
+        [AllowEmptyString()][string]$InputLine = '',
+        [string]$HandoffAckPath = '',
+        [string]$HandoffAckValue = ''
     )
     if ($Arguments.Count -lt 1 -or $Arguments.Count -gt 32 -or
         @($Arguments | Where-Object { $null -eq $_ -or $_.Length -gt 8192 }).Count -ne 0) {
@@ -290,6 +308,11 @@ function Invoke-TeremoqPinnedNodeProcess {
     }
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $startInfo
+    $ackRequired = -not [string]::IsNullOrEmpty($HandoffAckPath)
+    if ($ackRequired -ne (-not [string]::IsNullOrEmpty($HandoffAckValue))) {
+        throw 'handoff acknowledgement arguments are incomplete'
+    }
+    $ackWritten = $false
     try {
         if ((Get-TeremoqProtectedExecutableSha256 -Path $FilePath) -cne $ExpectedSha256) {
             throw 'Node executable changed after session approval'
@@ -299,7 +322,14 @@ function Invoke-TeremoqPinnedNodeProcess {
         $process.StandardInput.Dispose()
         while (($line = $process.StandardOutput.ReadLine()) -ne $null) {
             $safeLine = Get-TeremoqSafeAgentOutput -Line $line
-            if ($null -ne $safeLine) { Write-Host $safeLine }
+            if ($null -ne $safeLine) {
+                Write-Host $safeLine
+                if ($ackRequired -and -not $ackWritten -and
+                    $safeLine -ceq '[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...') {
+                    Write-TeremoqHandoffAck -Path $HandoffAckPath -Value $HandoffAckValue
+                    $ackWritten = $true
+                }
+            }
         }
         $process.WaitForExit()
         return [int]$process.ExitCode
@@ -443,12 +473,6 @@ try {
         try {
             $ackValue = ConvertTo-TeremoqLowerHex $sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($handoffNonce))
         } finally { $sha.Dispose() }
-        $ackBytes = [Text.Encoding]::ASCII.GetBytes($ackValue + "`n")
-        $ackStream = New-Object IO.FileStream($ackPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-        try {
-            $ackStream.Write($ackBytes, 0, $ackBytes.Length)
-            $ackStream.Flush($true)
-        } finally { $ackStream.Dispose() }
         $credentialMode = 'session'
     } else {
         if (-not [string]::IsNullOrEmpty($HandoffAckPath)) { throw 'pairing launch may not carry a handoff path' }
@@ -460,7 +484,9 @@ try {
         -RunId $runId -ChannelCommit $ChannelCommit -ClientCommit $head -Checkout $checkout -StateRoot $stateRoot `
         -EvidenceRoot $evidenceRoot -SessionHashes $sessionHashes -CredentialMode $credentialMode
     $agentExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -WorkingDirectory $checkout `
-        -ExpectedSha256 $sessionHashes.Node -InputLine $credential -Arguments $agentArguments
+        -ExpectedSha256 $sessionHashes.Node -InputLine $credential -Arguments $agentArguments `
+        -HandoffAckPath $(if ($ResumeSessionStdin) { $ackPath } else { '' }) `
+        -HandoffAckValue $(if ($ResumeSessionStdin) { $ackValue } else { '' })
     if ($agentExit -ne 0) { throw "Teremoq LAN interactive client stopped with exit code $agentExit" }
 } finally {
     for ($index = $locks.Count - 1; $index -ge 0; $index--) { $locks[$index].Dispose() }
