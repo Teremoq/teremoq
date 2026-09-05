@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { confirmUpdateTransition, execute, formatLocalStatus, parseArguments, restartUpdatedClient, runProcess, scrub, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
+import { confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, restartUpdatedClient, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -61,10 +61,8 @@ const restartSource = restartUpdatedClient.toString();
 expect(!restartSource.includes('"--session"') && !restartSource.includes("SESSION="), "session credential can reach child argv or environment");
 expect(restartSource.includes('stdio: ["pipe", "ignore", "ignore"]') && restartSource.includes("credential handoff timed out"),
   "session handoff is not bounded to the private stdin pipe");
-expect(restartSource.indexOf("termination = await terminateProcessTree") < restartSource.lastIndexOf("await releasePin();"),
-  "updated launcher pin is released before target termination");
-expect(restartSource.includes('termination.status !== "complete"'),
-  "updated launcher accepts unconfirmed target termination");
+expect(restartSource.includes("containUpdatedClientBeforeRelease(child, context, releasePin)"),
+  "updated launcher failure does not use the fail-closed containment path");
 const channelCommit = "8".repeat(40);
 const targetCommit = "9".repeat(40);
 const transitionIdentity = { schema_version: 1, run_id: "lan-transition", source_commit: channelCommit, client_commit: channelCommit };
@@ -88,6 +86,107 @@ const rejectedTaskkill = await terminateProcessTree(123, {
   taskkillSha256: "0".repeat(64),
 });
 expect(rejectedTaskkill.status === "verification-failed", "taskkill verification exception escaped");
+
+const failedContainmentStatuses = ["failed", "timeout", "verification-failed", "termination-residue"];
+for (const status of failedContainmentStatuses) {
+  let releases = 0;
+  const containment = await containUpdatedClientBeforeRelease(
+    { pid: 123, exitCode: null, signalCode: null },
+    { taskkillSha256: "7".repeat(64) },
+    async () => { releases += 1; },
+    {
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      terminateProcessTree: async () => ({ status, exitCode: -1 }),
+      waitForChildExit: async () => true,
+    },
+  );
+  expect(!containment.contained && releases === 0,
+    `updated launcher pin was released after ${status} tree termination`);
+}
+let releaseBeforeExit = 0;
+const noExit = await containUpdatedClientBeforeRelease(
+  { pid: 123, exitCode: null, signalCode: null },
+  { taskkillSha256: "7".repeat(64) },
+  async () => { releaseBeforeExit += 1; },
+  {
+    maxAttempts: 1,
+    retryDelayMs: 0,
+    terminateProcessTree: async () => ({ status: "complete", exitCode: 0 }),
+    waitForChildExit: async () => false,
+  },
+);
+expect(!noExit.contained && releaseBeforeExit === 0,
+  "updated launcher pin was released before child exit was observed");
+
+const ackRoot = fs.mkdtempSync(path.join(os.tmpdir(), "teremoq-ack-failure-"));
+try {
+  let absentAckRejected = false;
+  try { await waitForHandoffAck(path.join(ackRoot, "absent.ack"), "a".repeat(64), 20); }
+  catch { absentAckRejected = true; }
+  expect(absentAckRejected, "absent handoff acknowledgement was accepted");
+  const malformedAck = path.join(ackRoot, "malformed.ack");
+  fs.writeFileSync(malformedAck, `${"b".repeat(64)}\n`, "ascii");
+  let malformedAckRejected = false;
+  try { await waitForHandoffAck(malformedAck, "a".repeat(64), 20); }
+  catch { malformedAckRejected = true; }
+  expect(malformedAckRejected, "malformed handoff acknowledgement was accepted");
+} finally {
+  fs.rmSync(ackRoot, { recursive: true, force: true });
+}
+
+if (process.platform === "win32") {
+  const pinRoot = fs.mkdtempSync(path.join(os.tmpdir(), "teremoq-update-pin-"));
+  try {
+    const helperRoot = path.join(pinRoot, "infra", "lan", "client");
+    fs.mkdirSync(helperRoot, { recursive: true });
+    fs.copyFileSync(new URL("../client/Pin-LanUpdateLauncher.ps1", import.meta.url), path.join(helperRoot, "Pin-LanUpdateLauncher.ps1"));
+    const launcher = path.join(pinRoot, "updated-launcher.ps1");
+    const launcherBytes = Buffer.from("Write-Output 'reviewed launcher'\r\n", "utf8");
+    fs.writeFileSync(launcher, launcherBytes);
+    const blob = crypto.createHash("sha1")
+      .update(Buffer.from(`blob ${launcherBytes.length}\0`, "ascii"))
+      .update(launcherBytes)
+      .digest("hex");
+    const powershell = `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+    const powershellSha256 = crypto.createHash("sha256").update(fs.readFileSync(powershell)).digest("hex");
+    const pin = await pinUpdatedLauncher({ checkout: pinRoot, powershellSha256 }, launcher, blob);
+    const fakeChild = { pid: 321, exitCode: null, signalCode: null };
+    const held = await containUpdatedClientBeforeRelease(
+      fakeChild,
+      { taskkillSha256: "7".repeat(64) },
+      pin.release,
+      {
+        maxAttempts: 1,
+        retryDelayMs: 0,
+        terminateProcessTree: async () => ({ status: "timeout", exitCode: -1 }),
+        waitForChildExit: async () => false,
+      },
+    );
+    expect(!held.contained, "failed termination unexpectedly contained the updated client");
+    let writeRejected = false;
+    try { fs.writeFileSync(launcher, "substituted"); } catch { writeRejected = true; }
+    expect(writeRejected, "updated launcher became writable after failed termination");
+    let deleteRejected = false;
+    try { fs.unlinkSync(launcher); } catch { deleteRejected = true; }
+    expect(deleteRejected, "updated launcher became deletable after failed termination");
+    const contained = await containUpdatedClientBeforeRelease(
+      fakeChild,
+      { taskkillSha256: "7".repeat(64) },
+      pin.release,
+      {
+        maxAttempts: 1,
+        retryDelayMs: 0,
+        terminateProcessTree: async () => ({ status: "complete", exitCode: 0 }),
+        waitForChildExit: async () => true,
+      },
+    );
+    expect(contained.contained, "confirmed updated client termination did not release the pin");
+    fs.writeFileSync(launcher, "released");
+  } finally {
+    fs.rmSync(pinRoot, { recursive: true, force: true });
+  }
+}
 
 const originalSystemRoot = process.env.SystemRoot;
 process.env.SystemRoot = "C:\\substituted-windows-root";

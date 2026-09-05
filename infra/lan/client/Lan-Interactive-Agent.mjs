@@ -363,6 +363,58 @@ function terminateProcessTree(pid, options = {}) {
   });
 }
 
+function waitForChildExit(child, timeoutMs = TERMINATION_TIMEOUT_MS) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    child.once("exit", onExit);
+    const timer = setTimeout(
+      () => finish(child.exitCode !== null || child.signalCode !== null),
+      timeoutMs,
+    );
+  });
+}
+
+async function containUpdatedClientBeforeRelease(child, context, releasePin, options = {}) {
+  if (!child?.pid) {
+    await releasePin();
+    return { contained: true, attempts: 0, termination: { status: "not-started", exitCode: -1 } };
+  }
+  const terminate = options.terminateProcessTree ?? terminateProcessTree;
+  const observeExit = options.waitForChildExit ?? waitForChildExit;
+  const maxAttempts = options.maxAttempts ?? Number.POSITIVE_INFINITY;
+  const retryDelayMs = options.retryDelayMs ?? 1_000;
+  let attempts = 0;
+  let treeTerminationConfirmed = false;
+  let termination = { status: "not-attempted", exitCode: -1 };
+  while (attempts < maxAttempts) {
+    attempts += 1;
+    try {
+      termination = await terminate(child.pid, { taskkillSha256: context.taskkillSha256 });
+    } catch (error) {
+      termination = { status: "verification-failed", exitCode: -1, output: scrub(error.message) };
+    }
+    if (termination.status === "complete") treeTerminationConfirmed = true;
+    const childExited = await observeExit(child, options.childExitTimeoutMs ?? TERMINATION_TIMEOUT_MS);
+    if (treeTerminationConfirmed && childExited) {
+      await releasePin();
+      return { contained: true, attempts, termination };
+    }
+    if (attempts < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+  return { contained: false, attempts, termination };
+}
+
 function runProcess(file, args, cwd, onProgress, options = {}) {
   return new Promise((resolve) => {
     const spawnProcess = options.spawnProcess ?? spawn;
@@ -582,19 +634,13 @@ async function restartUpdatedClient(context, handoff, session) {
     await releasePin();
     child.unref();
   } catch (error) {
-    // The updated child already received the session.  Its pinned launcher must
-    // remain immutable until taskkill positively confirms complete tree exit.
-    let termination = { status: "complete" };
-    if (child?.pid) termination = await terminateProcessTree(child.pid, { taskkillSha256: context.taskkillSha256 });
-    if (termination.status !== "complete") {
-      throw new Error(`updated client termination was not confirmed: ${scrub(termination.status)}`);
-    }
-    let releaseError = null;
-    try { await releasePin(); } catch (pinError) { releaseError = pinError; }
+    let containmentError = null;
+    try { await containUpdatedClientBeforeRelease(child, context, releasePin); }
+    catch (cleanupError) { containmentError = cleanupError; }
     try { fs.unlinkSync(ackPath); } catch (cleanupError) {
       if (cleanupError?.code !== "ENOENT") throw cleanupError;
     }
-    throw releaseError || error;
+    throw containmentError || error;
   }
 }
 
@@ -726,7 +772,7 @@ async function main() {
   }
 }
 
-export { approvedGitBlobId, confirmUpdateTransition, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout, waitForHandoffAck };
+export { approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });
