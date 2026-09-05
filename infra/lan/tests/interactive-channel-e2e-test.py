@@ -147,19 +147,25 @@ with tempfile.TemporaryDirectory() as temporary:
     try:
         pair = post(url + "/v1/pair", {**identity, "pairing_code": pairing}, client_context)
         session = pair["session"]
-        management_request = {**identity, "management_sequence": 1, "request_id": "2" * 32, "action": "diagnose-build"}
+        removed_build = {**identity, "management_sequence": 1, "request_id": "1" * 32, "action": "diagnose-build"}
+        try:
+            post(url + "/v1/manage", removed_build, client_context, {"X-Teremoq-Management": management})
+            raise AssertionError("removed diagnose-build action was accepted")
+        except urllib.error.HTTPError as error:
+            assert error.code == 403
+        management_request = {**identity, "management_sequence": 1, "request_id": "2" * 32, "action": "prepare-client"}
         managed = post(url + "/v1/manage", management_request, client_context, {"X-Teremoq-Management": management})
         assert managed["accepted"] is True
         time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
         task = post(url + "/v1/poll", identity, client_context, {"X-Teremoq-Session": session})
-        assert task["action"] == "diagnose-build"
+        assert task["action"] == "prepare-client"
         for event, status in ((1, "started"), (2, "complete")):
             time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
-            result = post(url + "/v1/event", {**identity, "sequence": 1, "event": event, "action": "diagnose-build", "status": status, "message": status}, client_context, {"X-Teremoq-Session": session})
+            result = post(url + "/v1/event", {**identity, "sequence": 1, "event": event, "action": "prepare-client", "status": status, "message": status}, client_context, {"X-Teremoq-Session": session})
             assert result["accepted"] is True
         time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
         try:
-            post(url + "/v1/event", {**identity, "sequence": 1, "event": 3, "action": "diagnose-build", "status": "complete", "message": "replay"}, client_context, {"X-Teremoq-Session": session})
+            post(url + "/v1/event", {**identity, "sequence": 1, "event": 3, "action": "prepare-client", "status": "complete", "message": "replay"}, client_context, {"X-Teremoq-Session": session})
             raise AssertionError("completed task replay was accepted")
         except urllib.error.HTTPError as error:
             assert error.code == 403

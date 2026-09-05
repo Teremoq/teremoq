@@ -216,8 +216,8 @@ and accepts only the fixed progressive actions `prepare-client`, `preflight`,
 the protocol. Diagnostics are bounded, scrubbed and stored under a private
 server directory; passwords, tokens and private-key markers are rejected.
 The former remote `diagnose-build` action is deliberately unsupported because
-it executed the checkout's ignored `node_modules`. The management gate paired
-with this client must start with `prepare-client`, whose builder installs
+it executed the checkout's ignored `node_modules`. The management gate starts
+with `prepare-client`, whose builder installs
 dependencies in isolated detached Git worktrees and emits the sealed client
 artifact, or the client rejects the task before any process is started.
 

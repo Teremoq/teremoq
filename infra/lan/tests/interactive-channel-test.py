@@ -38,15 +38,21 @@ with tempfile.TemporaryDirectory() as temporary:
     except ValueError:
         pass
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
-    management_request = {**identity, "management_sequence": 1, "request_id": "1" * 32, "action": "diagnose-build"}
+    removed_build = {**identity, "management_sequence": 1, "request_id": "f" * 32, "action": "diagnose-build"}
+    try:
+        state.enqueue(removed_build, management)
+        raise AssertionError("removed diagnose-build action was accepted")
+    except ValueError:
+        pass
+    management_request = {**identity, "management_sequence": 1, "request_id": "1" * 32, "action": "prepare-client"}
     assert state.enqueue(management_request, management)["accepted"] is True
     reloaded = channel.ChannelState(root, "lan-channel-test", commit, "192.168.77.10", "192.168.77.20")
     assert reloaded.document["management_sequence"] == 1
     assert reloaded.document["last_management_request"] == "1" * 32
     assert reloaded.document["tasks"][0]["management_request_id"] == "1" * 32
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
-    assert state.poll(identity, session)["action"] == "diagnose-build"
-    first = {**identity, "sequence": 1, "event": 1, "action": "diagnose-build", "status": "started", "message": "build started"}
+    assert state.poll(identity, session)["action"] == "prepare-client"
+    first = {**identity, "sequence": 1, "event": 1, "action": "prepare-client", "status": "started", "message": "preparation started"}
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
     assert state.event(first, session)["accepted"] is True
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)

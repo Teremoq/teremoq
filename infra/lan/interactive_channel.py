@@ -39,7 +39,6 @@ MAX_EVENT_LOG = 8 * 1024 * 1024
 READ_TIMEOUT_SECONDS = 10
 MIN_REQUEST_INTERVAL_SECONDS = 0.1
 ACTIONS = (
-    "diagnose-build",
     "prepare-client",
     "preflight",
     "player-1",
@@ -551,13 +550,11 @@ class ChannelState:
                 return {"schema_version": SCHEMA_VERSION, "sequence": sequence, "action": "stop", "accepted": True,
                         "cancellation_sequence": pending["sequence"]}
             if not tasks:
-                allowed = {"diagnose-build"}
+                allowed = {"prepare-client"}
             else:
                 previous = tasks[-1]
                 if previous["terminal_status"] in ("failed", "blocked"):
                     allowed = {previous["action"], "stop"}
-                elif previous["action"] == "diagnose-build":
-                    allowed = {"prepare-client", "stop"}
                 elif previous["action"] == "prepare-client":
                     allowed = {"preflight", "stop"}
                 elif previous["action"] == "preflight":
