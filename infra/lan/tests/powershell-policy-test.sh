@@ -62,6 +62,8 @@ grep -Fq 'resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-
 grep -Fq 'Git\cmd' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq "\$powerShellDirectory = Join-Path \$env:SystemRoot 'System32\\WindowsPowerShell\\v1.0'" "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq '$env:PATH = "$(Split-Path -Parent $node);$gitDirectory;$powerShellDirectory;$env:SystemRoot\System32;$env:SystemRoot"' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
+grep -Fq "\$env:PATHEXT = '.COM;.EXE;.BAT;.CMD'" "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
+grep -Fq '$env:ComSpec = $commandProcessor' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq 'BuilderReceiptPath' "${ROOT}/client/Initialize-LanClientState.ps1"
 grep -Fq 'Test-TeremoqReusableCheckout' "${ROOT}/client/Start-LanClientFromGit.ps1"
 grep -Fq "'merge', '--ff-only', \$ExpectedCommit" "${ROOT}/client/Start-LanClientFromGit.ps1"

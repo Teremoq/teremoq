@@ -49,11 +49,13 @@ $gitDirectory = Join-Path $env:ProgramFiles 'Git\cmd'
 $git = Join-Path $gitDirectory 'git.exe'
 $powerShellDirectory = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0'
 $powerShell = Join-Path $powerShellDirectory 'powershell.exe'
+$commandProcessor = Join-Path $env:SystemRoot 'System32\cmd.exe'
 $distributionScript = Join-Path $project 'scripts\distribute-lan-from-git.mjs'
 if (-not (Test-Path -LiteralPath $node -PathType Leaf) -or
     -not (Test-Path -LiteralPath $npmCli -PathType Leaf) -or
     -not (Test-Path -LiteralPath $git -PathType Leaf) -or
     -not (Test-Path -LiteralPath $powerShell -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $commandProcessor -PathType Leaf) -or
     -not (Test-Path -LiteralPath $distributionScript -PathType Leaf)) {
     throw 'Node 22.x and npm 10.x are required in Program Files'
 }
@@ -89,10 +91,14 @@ if ($Offline) { $arguments += '--offline' }
 
 Push-Location -LiteralPath $project
 $previousPath = $env:PATH
+$previousPathExt = $env:PATHEXT
+$previousComSpec = $env:ComSpec
 try {
     # The orchestrator runs directly under the validated Node executable. npm is
     # still used internally, but no cmd.exe wrapper has to rediscover node.exe.
     $env:PATH = "$(Split-Path -Parent $node);$gitDirectory;$powerShellDirectory;$env:SystemRoot\System32;$env:SystemRoot"
+    $env:PATHEXT = '.COM;.EXE;.BAT;.CMD'
+    $env:ComSpec = $commandProcessor
     $buildResult = Invoke-TeremoqBoundedNativeProcess -FilePath $node -WorkingDirectory $project `
         -Arguments $arguments -TimeoutMilliseconds 900000 `
         -StdoutMaxBytes 131072 -StderrMaxBytes 131072
@@ -103,5 +109,7 @@ try {
     }
 } finally {
     $env:PATH = $previousPath
+    $env:PATHEXT = $previousPathExt
+    $env:ComSpec = $previousComSpec
     Pop-Location
 }
