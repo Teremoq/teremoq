@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Teremoq contributors
 // SPDX-License-Identifier: Apache-2.0
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import https from "node:https";
@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 const ACTIONS = new Set(["diagnose-build", "prepare-client", "preflight", "player-1", "load-5", "load-10", "load-25", "wifi-observe", "collect", "stop"]);
 const MAX_RESPONSE = 32768;
 const MAX_MESSAGE = 16384;
+const ACTION_TIMEOUT_MS = 5 * 60 * 1000;
 
 function fail(message) { throw new Error(message); }
 function parseArguments(argv) {
@@ -96,29 +97,80 @@ function requestJson(agent, server, route, body, session = "") {
 
 function scrub(value) {
   return value
-    .replace(/-----BEGIN PRIVATE KEY-----[\s\S]*/gi, "[private key blocked]")
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*/gi, "[private key blocked]")
     .replace(/(authorization:\s*bearer\s+)\S+/gi, "$1[blocked]")
     .replace(/(ghp_|github_pat_)[A-Za-z0-9_]+/g, "[token blocked]")
+    .replace(/((?:password|passwd|token|secret|api[_-]?key)\s*[=:]\s*)\S+/gi, "$1[blocked]")
     .slice(-MAX_MESSAGE);
+}
+
+function restrictedEnvironment() {
+  const systemRoot = process.env.SystemRoot;
+  const programFiles = process.env.ProgramFiles;
+  if (!systemRoot || !programFiles) fail("required Windows roots are unavailable");
+  return {
+    SystemRoot: systemRoot,
+    WINDIR: systemRoot,
+    ProgramFiles: programFiles,
+    "ProgramFiles(x86)": process.env["ProgramFiles(x86)"] || "",
+    LOCALAPPDATA: process.env.LOCALAPPDATA || "",
+    TEMP: process.env.TEMP || "",
+    TMP: process.env.TMP || "",
+    USERPROFILE: process.env.USERPROFILE || "",
+    ComSpec: `${systemRoot}\\System32\\cmd.exe`,
+    PATH: `${programFiles}\\nodejs;${systemRoot}\\System32;${systemRoot};${programFiles}\\Git\\cmd`,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "NUL",
+    GIT_OPTIONAL_LOCKS: "0",
+    NO_COLOR: "1",
+  };
+}
+
+function verifyCheckout(context) {
+  const prefix = ["--no-replace-objects", "-c", "core.hooksPath=NUL", "-c", "core.fsmonitor=false", "-c", "protocol.file.allow=never", "-C", context.checkout];
+  const runGit = (args) => {
+    const result = spawnSync(context.git, [...prefix, ...args], {
+      encoding: "utf8", windowsHide: true, shell: false, env: restrictedEnvironment(), timeout: 10000,
+    });
+    if (result.status !== 0 || result.error) fail("Git provenance verification failed");
+    return result.stdout.trim();
+  };
+  if (runGit(["rev-parse", "HEAD"]) !== context.commit || runGit(["symbolic-ref", "--short", "HEAD"]) !== "codex/lan-e2e-integration") {
+    fail("checkout commit or branch differs from the paired server");
+  }
+  if (runGit(["remote", "get-url", "origin"]).replace(/\/$/, "") !== "https://github.com/Teremoq/teremoq") fail("checkout remote differs from the official repository");
+  if (runGit(["status", "--porcelain=v1", "--untracked-files=normal"]) !== "") fail("checkout changed after pairing");
 }
 
 function runProcess(file, args, cwd, onProgress) {
   return new Promise((resolve) => {
-    const child = spawn(file, args, { cwd, windowsHide: true, shell: false, env: { ...process.env, NO_COLOR: "1" } });
+    const child = spawn(file, args, { cwd, windowsHide: true, shell: false, env: restrictedEnvironment() });
     let output = "";
+    let terminating = false;
     const append = (chunk) => { output = (output + chunk.toString("utf8")).slice(-MAX_MESSAGE); };
+    const terminateTree = () => {
+      if (terminating || !child.pid) return;
+      terminating = true;
+      const taskkill = `${process.env.SystemRoot}\\System32\\taskkill.exe`;
+      spawn(taskkill, ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, shell: false, env: restrictedEnvironment() });
+    };
     child.stdout.on("data", append); child.stderr.on("data", append);
-    const heartbeat = setInterval(() => onProgress(scrub(output || "process is still running")), 15000);
-    const timer = setTimeout(() => child.kill(), 15 * 60 * 1000);
+    const heartbeat = setInterval(() => {
+      Promise.resolve(onProgress(scrub(output || "process is still running")))
+        .then((reply) => { if (reply?.cancel_requested === true) terminateTree(); })
+        .catch(terminateTree);
+    }, 15000);
+    const timer = setTimeout(terminateTree, ACTION_TIMEOUT_MS);
     child.once("exit", (code, signal) => { clearInterval(heartbeat); clearTimeout(timer); resolve({ code: code ?? -1, signal: signal ?? "", output: scrub(output || "no process output") }); });
     child.once("error", (error) => { clearInterval(heartbeat); clearTimeout(timer); resolve({ code: -1, signal: "spawn-error", output: scrub(error.message) }); });
   });
 }
 
 async function execute(action, context, progress) {
+  verifyCheckout(context);
   const powershell = `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   if (action === "diagnose-build") {
-    return runProcess("npm.cmd", ["run", "build:lan"], path.join(context.checkout, "supervisor-web"), progress);
+    return runProcess(context.node, [context.npmCli, "run", "build:lan"], path.join(context.checkout, "supervisor-web"), progress);
   }
   if (action === "prepare-client") {
     const script = path.join(context.checkout, "infra", "lan", "client", "Prepare-LanClientFromGit.ps1");
@@ -135,18 +187,35 @@ async function execute(action, context, progress) {
       "-PrefixLength", "24", "-NetworkProfile", "Public", "-ExpectedWslMode", "nat", "-MaximumClockOffsetMs", "60000",
       "-MinimumMtu", "1280", "-MinimumCpuCores", "2", "-MinimumMemoryMiB", "2048", "-MinimumDiskMiB", "4096"], context.checkout, progress);
   }
-  if (["player-1", "load-5", "load-10", "load-25", "collect"].includes(action)) {
-    const level = action === "player-1" ? "1" : action === "collect" ? "1" : action.split("-")[1];
-    const command = action === "collect" ? "Collect" : "Start";
+  if (["player-1", "load-5", "load-10", "load-25"].includes(action)) {
+    const level = action === "player-1" ? "1" : action.split("-")[1];
     const script = path.join(context.checkout, "infra", "lan", "client", "Invoke-LanLoad.ps1");
-    const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", command,
+    const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Start",
       "-Level", level, "-RunId", context.runId, "-CheckoutRoot", context.checkout, "-StateRoot", context.stateRoot,
-      "-EvidenceRoot", context.evidenceRoot];
-    if (command === "Start") args.push("-ConfirmStart");
+      "-EvidenceRoot", context.evidenceRoot, "-ConfirmStart"];
     return runProcess(powershell, args, context.checkout, progress);
   }
+  if (action === "collect") {
+    if (!context.activeLevel) return { code: -1, signal: "", output: "No client workload is active for collection." };
+    const script = path.join(context.checkout, "infra", "lan", "client", "Invoke-LanLoad.ps1");
+    const common = ["-Level", String(context.activeLevel), "-RunId", context.runId, "-CheckoutRoot", context.checkout,
+      "-StateRoot", context.stateRoot, "-EvidenceRoot", context.evidenceRoot];
+    const collected = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Collect", ...common], context.checkout, progress);
+    if (collected.code !== 0) return collected;
+    const stopped = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Stop", ...common], context.checkout, progress);
+    if (stopped.code === 0) context.activeLevel = 0;
+    return { code: stopped.code, signal: stopped.signal, output: `${collected.output}\n${stopped.output}` };
+  }
   if (action === "wifi-observe") return { code: 0, signal: "", output: "Wi-Fi recovery observation is armed; disconnect/reconnect remains a physical user action." };
-  if (action === "stop") return { code: 0, signal: "", output: "Interactive client agent stopped by the reviewed action queue." };
+  if (action === "stop") {
+    if (!context.activeLevel) return { code: 0, signal: "", output: "No client workload was active; the interactive agent can stop." };
+    const script = path.join(context.checkout, "infra", "lan", "client", "Invoke-LanLoad.ps1");
+    const result = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
+      "-Action", "Stop", "-Level", String(context.activeLevel), "-RunId", context.runId, "-CheckoutRoot", context.checkout,
+      "-StateRoot", context.stateRoot, "-EvidenceRoot", context.evidenceRoot], context.checkout, progress);
+    if (result.code === 0) context.activeLevel = 0;
+    return result;
+  }
   fail("action is not implemented");
 }
 
@@ -159,7 +228,15 @@ async function main() {
     checkout: exactDirectory(values["--checkout"], "checkout"), stateRoot: exactFutureDirectory(values["--state-root"], "state root"),
     evidenceRoot: exactDirectory(values["--evidence-root"], "evidence root"), runId: values["--run-id"], commit: values["--source-commit"],
     fingerprint: values["--fingerprint"],
+    git: "C:\\Program Files\\Git\\cmd\\git.exe",
+    node: "C:\\Program Files\\nodejs\\node.exe",
+    npmCli: "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+    activeLevel: 0,
   };
+  for (const executable of [context.git, context.node, context.npmCli]) {
+    const stat = fs.lstatSync(executable);
+    if (!stat.isFile() || stat.isSymbolicLink()) fail("reviewed Node/npm entrypoint is unavailable");
+  }
   const agent = pinnedAgent(values["--server"], values["--fingerprint"]);
   const identity = { schema_version: 1, run_id: context.runId, source_commit: context.commit };
   let previousRequest = 0;
@@ -184,8 +261,13 @@ async function main() {
       sendQueue = sendQueue.then(() => channelRequest("/v1/event", { ...identity, sequence: task.sequence, event: currentEvent, action: task.action, status, message: scrub(message) }, pair.session));
       return sendQueue;
     };
-    await send("started", `${task.action} started`);
-    const result = await execute(task.action, context, (message) => { void send("progress", message); });
+    const started = await send("started", `${task.action} started`);
+    const result = started.cancel_requested === true
+      ? { code: -1, signal: "cancel-requested", output: "The server cancelled the action before execution." }
+      : await execute(task.action, context, (message) => send("progress", message));
+    if (result.code === 0 && ["player-1", "load-5", "load-10", "load-25"].includes(task.action)) {
+      context.activeLevel = Number(task.action.split("-")[1]);
+    }
     await sendQueue;
     await send(result.code === 0 ? "complete" : "failed", `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`);
     if (task.action === "stop") break;

@@ -18,6 +18,12 @@ private run state. GitHub carries reviewed code only; logs, credentials and
 evidence are never uploaded. The channel uses a separate exact TCP/18443
 firewall rule and is removed during LAN rollback.
 
+If the server requests `stop` while a test command is running, the agent
+terminates that command and its Windows child-process tree before processing
+the final stop action. Every action has a five-minute upper bound, and losing
+the authenticated progress channel also terminates the active child rather
+than leaving an unmanaged load running.
+
 The LAN client no longer runs from a USB or tarball package. The first action
 is a native Git clone of `https://github.com/Teremoq/teremoq` on an explicit
 LAN branch ref. No PowerShell file or compatibility file is required before

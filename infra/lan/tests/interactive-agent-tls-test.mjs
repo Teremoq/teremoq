@@ -11,6 +11,16 @@ if (process.argv.length !== 4) throw new Error("certificate and private key path
 const certificate = fs.readFileSync(process.argv[2]);
 const privateKey = fs.readFileSync(process.argv[3]);
 const fingerprint = crypto.createHash("sha256").update(new crypto.X509Certificate(certificate).raw).digest("hex");
+for (const sensitive of [
+  "-----BEGIN RSA PRIVATE KEY-----\nnot-a-key",
+  "-----BEGIN EC PRIVATE KEY-----\nnot-a-key",
+  "-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-key",
+  "password=not-a-password",
+  "api_key: not-a-token",
+]) {
+  const sanitized = scrub(`prefix ${sensitive}`);
+  if (/not-a-(?:key|password|token)/.test(sanitized)) throw new Error("sensitive diagnostic was not scrubbed");
+}
 const server = https.createServer({ cert: certificate, key: privateKey }, (request, response) => {
   const chunks = [];
   request.on("data", (chunk) => chunks.push(chunk));

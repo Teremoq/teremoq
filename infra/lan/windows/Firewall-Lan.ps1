@@ -249,4 +249,10 @@ if (Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue) { throw '
 if (Get-NetFirewallHyperVRule -Name $hyperVRuleName -ErrorAction SilentlyContinue) { throw 'Hyper-V rule residue remains' }
 if ($CoordinationTlsPort -eq 18443 -and (Get-NetFirewallRule -Name $coordinationRuleName -ErrorAction SilentlyContinue)) { throw 'classic coordination rule residue remains' }
 if ($CoordinationTlsPort -eq 18443 -and (Get-NetFirewallHyperVRule -Name $coordinationHyperVRuleName -ErrorAction SilentlyContinue)) { throw 'Hyper-V coordination rule residue remains' }
-Write-Output "rollback complete for exact classic and Hyper-V rule names; DefaultInboundAction unchanged"
+[ordered]@{
+    schema_version = 1; run_id = $RunId; source_commit = $SourceCommit
+    server_ipv4 = $ServerIPv4; client_ipv4 = $ClientIPv4
+    quic_udp_port = $MoqUdpPort; coordination_tls_port = $CoordinationTlsPort
+    classic_rules_absent = $true; hyperv_rules_absent = $true
+    default_inbound_action_changed = $false; status = 'rolled_back'
+} | ConvertTo-Json -Compress

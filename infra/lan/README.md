@@ -15,6 +15,8 @@ run a load or claim production readiness.
 Windows 10 Chrome/Edge (outbound only)
   -> exact client IPv4 -> exact server IPv4, WebTransport/QUIC UDP/14433
   -> one run-owned Defender rule + one run-owned WSL Hyper-V rule
+  -> optional reviewed coordination HTTPS TCP/18443, same exact two IPs
+  -> one additional run-owned Defender rule + one run-owned Hyper-V rule
   -> WSL mirrored, bounded infra/lan/udp_proxy.py
   -> fixed backend 127.0.0.1:4433, dev_moq_relay
 
@@ -23,7 +25,9 @@ Gateway -> private run-scoped capability -> relay `/publish/<capability>`
 Gateway health/supervisor -> 127.0.0.1:9080 only
 ```
 
-UDP/14433 is the only LAN exposure. SRT/19000, the source, relay, Gateway and
+UDP/14433 is the only media exposure. The optional interactive test channel is
+HTTPS TCP/18443 and carries only a fixed action queue and bounded diagnostics;
+it is never a generic shell, file upload or GitHub log upload. SRT/19000, the source, relay, Gateway and
 supervisor remain server/loopback-only. There is no LAN rule for 19000 or
 4433, no dashboard LAN bind, and no Redis/Valkey, n8n, Ollama, Docker socket,
 router forwarding, UPnP or `netsh portproxy` exposure.
@@ -200,7 +204,71 @@ attestation used by activation with the same exact arguments and commit:
 planned identities, filters and cardinalities, including Defender
 `EdgeTraversalPolicy=Block`, before emitting `firewall_verified=true`.
 
-## 5. Executable activation and stop
+## 5. Optional interactive test channel
+
+This channel removes manual log copying without sending evidence to GitHub or
+another external service. GitHub distributes only the clean reviewed commit.
+The Windows 10 agent makes outbound HTTPS requests to the exact server address,
+pins the temporary certificate fingerprint, consumes a one-time pairing code
+and accepts only the fixed progressive actions `diagnose-build`,
+`prepare-client`, `preflight`, `player-1`, `load-5`, `load-10`, `load-25`,
+`wifi-observe`, `collect` and `stop`. There is no arbitrary command or path in
+the protocol. Diagnostics are bounded, scrubbed and stored under a private
+server directory; passwords, tokens and private-key markers are rejected.
+
+The channel cannot listen until the native server preflight passes and the
+exact Defender and Hyper-V rules for UDP/14433 and TCP/18443 have been applied
+and verified. Include `-CoordinationTlsPort 18443` in the separately authorized
+`Apply` and `Verify` commands from section 4, and save the `Verify` JSON. Then
+create an authorization document in an existing mode-0700 private directory:
+
+```bash
+python3 infra/lan/interactive_channel.py authorize \
+  --run-id RUN_ID --source-commit FULL_INTEGRATED_COMMIT \
+  --server-ip SERVER_EXACT_IP --client-ip CLIENT_EXACT_IP \
+  --certificate /ABSOLUTE/RUNTIME/relay/cert.pem \
+  --fingerprint /ABSOLUTE/RUNTIME/relay/fingerprint.sha256 \
+  --server-preflight /ABSOLUTE/PRIVATE/server-preflight.json \
+  --firewall-attestation /ABSOLUTE/PRIVATE/firewall-verify.json \
+  --output /ABSOLUTE/PRIVATE/channel-authorization.json \
+  --confirm-authorize
+```
+
+Start the server only after that succeeds. This prints the one-time pairing
+code locally; it does not write it to GitHub or a report:
+
+```bash
+infra/lan/interactive-channel-control.sh start --confirm-start \
+  --state-root /ABSOLUTE/PRIVATE/channel-state --run-id RUN_ID \
+  --source-commit FULL_INTEGRATED_COMMIT \
+  --server-ip SERVER_EXACT_IP --client-ip CLIENT_EXACT_IP \
+  --certificate /ABSOLUTE/RUNTIME/relay/cert.pem \
+  --private-key /ABSOLUTE/RUNTIME/relay/key.pem \
+  --fingerprint /ABSOLUTE/RUNTIME/relay/fingerprint.sha256 \
+  --authorization /ABSOLUTE/PRIVATE/channel-authorization.json \
+  --server-preflight /ABSOLUTE/PRIVATE/server-preflight.json \
+  --firewall-attestation /ABSOLUTE/PRIVATE/firewall-verify.json
+```
+
+On the client, from native Windows PowerShell 5 in the clean Git checkout:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  .\infra\lan\client\Start-LanInteractiveClient.ps1 `
+  -ExpectedCommit FULL_INTEGRATED_COMMIT
+```
+
+The server operator enqueues one action at a time with `enqueue` and reads
+bounded progress with `status`. A `stop` request can cancel a running child
+process and then stops the active client load. At final cleanup, enqueue
+`stop`, stop the lab, run the elevated firewall `Rollback` with
+`-CoordinationTlsPort 18443` into a private JSON attestation, and pass that JSON
+to `interactive-channel-control.sh stop`. The listener remains inaccessible
+after firewall rollback and cannot be declared stopped until the exact
+zero-residue rollback attestation is validated. Evidence is retained; the
+channel does not recursively delete directories.
+
+## 6. Executable activation and stop
 
 Prepare run-owned state and private copies of the command/authorization
 templates. The command manifest is an argv array, never a shell string. The
@@ -299,7 +367,7 @@ Rollback first verifies the exact run/source/owner markers, metadata and inode,
 then removes only that run's capability. A partial or foreign capability state
 is preserved and rejected for manual investigation rather than deleted.
 
-## 6. Reproducible client package and evidence
+## 7. Reproducible client package and evidence
 
 `package-client.sh` is deprecated and intentionally fails: no client state,
 player, certificate or configuration is packaged or transferred from the
