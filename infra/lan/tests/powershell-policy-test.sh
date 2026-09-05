@@ -53,9 +53,9 @@ done
 grep -Fq 'StateRoot must be absent; prebuilt or partially built state is not accepted' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq 'Invoke-TeremoqBoundedNativeProcess' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq '[Console]::OutputEncoding = $utf8NoBom' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
-[[ "$(grep -Fc '$global:LASTEXITCODE = $null' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1")" -eq 3 ]]
-[[ "$(grep -Fc '= $global:LASTEXITCODE' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1")" -eq 3 ]]
-! grep -Eq '(^|[^:])\$LASTEXITCODE' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
+[[ "$(grep -Fc 'Invoke-TeremoqBoundedNativeProcess' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1")" -eq 3 ]]
+! grep -Fq '$LASTEXITCODE' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
+grep -Fq -- "-Arguments (@(\$npmCli) + \$arguments)" "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq 'BuilderReceiptPath' "${ROOT}/client/Initialize-LanClientState.ps1"
 if rg -n '^\s*\$[A-Za-z0-9_]+\.ArgumentList\b' "${ROOT}/client"/*.ps1 >/dev/null; then
     printf 'powershell-policy-test: client runner uses ProcessStartInfo.ArgumentList, unsupported by Windows PowerShell 5\n' >&2

@@ -37,6 +37,11 @@ if ($expectedScriptRoot -cne [IO.Path]::GetFullPath($PSScriptRoot) -or
     -not (Test-Path -LiteralPath $project -PathType Container)) {
     throw 'launcher must run from supervisor-web/lan-player in the exact checkout'
 }
+$distributionLibrary = [IO.Path]::GetFullPath((Join-Path $checkout 'infra\lan\client\Client-Distribution.ps1'))
+if (-not (Test-Path -LiteralPath $distributionLibrary -PathType Leaf)) {
+    throw 'reviewed client process library is unavailable'
+}
+. $distributionLibrary
 
 $node = Join-Path $env:ProgramFiles 'nodejs\node.exe'
 $npm = Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
@@ -46,23 +51,21 @@ if (-not (Test-Path -LiteralPath $node -PathType Leaf) -or
     -not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
     throw 'Node 22.x and npm 10.x are required in Program Files'
 }
-$global:LASTEXITCODE = $null
-$nodeVersionOutput = @(& $node --version)
-$nodeVersionExit = $global:LASTEXITCODE
-if ($nodeVersionExit -ne 0 -or $nodeVersionOutput.Count -ne 1) {
+$nodeVersionResult = Invoke-TeremoqBoundedNativeProcess -FilePath $node -WorkingDirectory $project `
+    -Arguments @('--version') -TimeoutMilliseconds 30000 -StdoutMaxBytes 128 -StderrMaxBytes 4096
+if ($nodeVersionResult.ExitCode -ne 0 -or -not [string]::IsNullOrWhiteSpace($nodeVersionResult.Stderr)) {
     throw 'Node runtime version could not be determined'
 }
-$nodeVersion = ([string]$nodeVersionOutput[0]).Trim()
+$nodeVersion = ($nodeVersionResult.Stdout -replace "`r", '').Trim()
 if ($nodeVersion -cnotmatch '^v22[.][0-9]+[.][0-9]+$') {
     throw 'Node runtime must be exact major 22'
 }
-$global:LASTEXITCODE = $null
-$npmVersionOutput = @(& $node $npmCli --version)
-$npmVersionExit = $global:LASTEXITCODE
-if ($npmVersionExit -ne 0 -or $npmVersionOutput.Count -ne 1) {
+$npmVersionResult = Invoke-TeremoqBoundedNativeProcess -FilePath $node -WorkingDirectory $project `
+    -Arguments @($npmCli, '--version') -TimeoutMilliseconds 30000 -StdoutMaxBytes 128 -StderrMaxBytes 4096
+if ($npmVersionResult.ExitCode -ne 0 -or -not [string]::IsNullOrWhiteSpace($npmVersionResult.Stderr)) {
     throw 'npm runtime version could not be determined'
 }
-$npmVersion = ([string]$npmVersionOutput[0]).Trim()
+$npmVersion = ($npmVersionResult.Stdout -replace "`r", '').Trim()
 if ($npmVersion -cnotmatch '^10[.][0-9]+[.][0-9]+$') {
     throw 'npm runtime must be exact major 10'
 }
@@ -80,10 +83,12 @@ if ($Offline) { $arguments += '--offline' }
 
 Push-Location -LiteralPath $project
 try {
-    $global:LASTEXITCODE = $null
-    & $npm @arguments
-    $npmExit = $global:LASTEXITCODE
-    if ($npmExit -isnot [int] -or $npmExit -ne 0) {
+    $buildResult = Invoke-TeremoqBoundedNativeProcess -FilePath $node -WorkingDirectory $project `
+        -Arguments (@($npmCli) + $arguments) -TimeoutMilliseconds 900000 `
+        -StdoutMaxBytes 131072 -StderrMaxBytes 131072
+    if (-not [string]::IsNullOrEmpty($buildResult.Stdout)) { [Console]::Out.Write($buildResult.Stdout) }
+    if (-not [string]::IsNullOrEmpty($buildResult.Stderr)) { [Console]::Error.Write($buildResult.Stderr) }
+    if ($buildResult.ExitCode -ne 0) {
         throw 'local source build/package failed closed'
     }
 } finally {
