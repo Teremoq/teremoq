@@ -67,6 +67,15 @@ plan="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 
 [[ "${plan}" == *'-LocalAddress'* && "${plan}" == *'-RemoteAddress'* && "${plan}" == *'-LocalAddresses'* && "${plan}" == *'-RemoteAddresses'* ]]
 [[ "${plan}" == *'UDP'* && "${plan}" == *'14433'* && "${plan}" == *'Remove-NetFirewallHyperVRule'* ]]
 [[ "${plan}" != *'DefaultInboundAction'* || "${plan}" == *'do not change DefaultInboundAction'* ]]
+coordination_plan="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall}" \
+    -Action Plan -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${client_ip}" \
+    -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" -CoordinationTlsPort 18443 2>/dev/null | tr -d '\r')"
+[[ "${coordination_plan}" == *'TCP'* && "${coordination_plan}" == *'18443'* && "${coordination_plan}" == *'Control'* ]]
+if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall}" \
+    -Action Validate -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${client_ip}" \
+    -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" -CoordinationTlsPort 18444 >/dev/null 2>&1; then
+    printf 'powershell-policy-test: unapproved coordination TCP port accepted\n' >&2; exit 1
+fi
 if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall}" \
     -Action Validate -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${router_ip}" \
     -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" >/dev/null 2>&1; then
@@ -87,6 +96,13 @@ for tamper in edge cardinality; do
         printf 'powershell-policy-test: firewall Verify accepted %s tamper\n' "${tamper}" >&2; exit 1
     fi
 done
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall_fixture}" \
+    -ScriptPath "${firewall}" -Tamper none -WithCoordination \
+    | tr -d '\r' | grep -Fq '"coordination_firewall_verified":true'
+if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall_fixture}" \
+    -ScriptPath "${firewall}" -Tamper coordination-protocol -WithCoordination >/dev/null 2>&1; then
+    printf 'powershell-policy-test: firewall Verify accepted coordination protocol tamper\n' >&2; exit 1
+fi
 wlan_fixture="$(wslpath -w "${TEST_DIR}/preflight-contract-fixture.ps1")"
 contract_helper="$(wslpath -w "${ROOT}/windows/Preflight-Contract.ps1")"
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wlan_fixture}" -ScriptPath "${contract_helper}" >/dev/null

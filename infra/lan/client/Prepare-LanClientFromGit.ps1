@@ -54,7 +54,13 @@ if ($Offline) { $arguments += '-Offline' }
 $result = Invoke-TeremoqBoundedNativeProcess -FilePath $hostPath -WorkingDirectory $checkout.CheckoutRoot -Arguments $arguments -TimeoutMilliseconds 900000 -StdoutMaxBytes 131072 -StderrMaxBytes 131072
 # npm emits bounded warnings on stderr even when its build is successful; stdout's
 # exact closed receipt and the exit status, not silent stderr, determine success.
-if ($result.ExitCode -ne 0) { throw 'Web Git builder failed' }
+if ($result.ExitCode -ne 0) {
+    [Console]::Error.WriteLine('Web Git builder bounded stdout:')
+    [Console]::Error.WriteLine($result.Stdout)
+    [Console]::Error.WriteLine('Web Git builder bounded stderr:')
+    [Console]::Error.WriteLine($result.Stderr)
+    throw 'Web Git builder failed; bounded diagnostics were emitted above'
+}
 $parsed = ConvertFrom-TeremoqWebBuilderReceipt -Output $result.Stdout -ExpectedCommit $ExpectedCommit
 if (-not (Test-Path -LiteralPath $state -PathType Container)) { throw 'Web Git builder did not create StateRoot' }
 [void](Get-TeremoqNonReparseDirectoryPath -Path $state)

@@ -3,6 +3,21 @@
 
 # Remote LAN client checkout
 
+## Interactive laboratory channel
+
+`Start-LanInteractiveClient.ps1` starts the temporary client agent after a
+reviewed Git update. The agent initiates outbound HTTPS only to
+`192.168.1.130:18443`, pins the exact temporary certificate fingerprint and
+exchanges a one-use pairing code for an in-memory session. It never accepts a
+shell command, URL or path from the server. The server can enqueue only the
+closed actions `diagnose-build`, `prepare-client`, `preflight`, `player-1`,
+`load-5`, `load-10`, `load-25`, `wifi-observe`, `collect` and `stop`.
+
+Progress and bounded diagnostics are written automatically to the server's
+private run state. GitHub carries reviewed code only; logs, credentials and
+evidence are never uploaded. The channel uses a separate exact TCP/18443
+firewall rule and is removed during LAN rollback.
+
 The LAN client no longer runs from a USB or tarball package. The first action
 is a native Git clone of `https://github.com/Teremoq/teremoq` on an explicit
 LAN branch ref. No PowerShell file or compatibility file is required before
