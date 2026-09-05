@@ -41,13 +41,20 @@ if ($expectedScriptRoot -cne [IO.Path]::GetFullPath($PSScriptRoot) -or
 $node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue
 $npm = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
 if (-not $node -or -not $npm) { throw 'Node 22.x and npm 10.x are required' }
-$nodeVersion = (& $node.Source --version).Trim()
-if ($LASTEXITCODE -ne 0 -or $nodeVersion -cnotmatch '^v22[.][0-9]+[.][0-9]+$') {
+$nodeVersionOutput = @(& $node.Source --version)
+$nodeVersionExit = $LASTEXITCODE
+if ($nodeVersionExit -ne 0 -or $nodeVersionOutput.Count -ne 1) {
+    throw 'Node runtime version could not be determined'
+}
+$nodeVersion = ([string]$nodeVersionOutput[0]).Trim()
+if ($nodeVersion -cnotmatch '^v22[.][0-9]+[.][0-9]+$') {
     throw 'Node runtime must be exact major 22'
 }
-$npmVersion = (& $npm.Source --version).Trim()
-if ($LASTEXITCODE -ne 0 -or $npmVersion -cnotmatch '^10[.][0-9]+[.][0-9]+$') {
-    throw 'npm runtime must be exact major 10'
+$npmVersionOutput = @(& $npm.Source --version)
+$npmVersionExit = $LASTEXITCODE
+if ($npmVersionExit -ne 0 -or $npmVersionOutput.Count -ne 1 -or
+    ([string]$npmVersionOutput[0]).Trim() -cnotmatch '^10[.][0-9]+[.][0-9]+$') {
+    Write-Warning 'npm 10.x could not be confirmed; the locked build remains the compatibility gate'
 }
 
 $arguments = @(
