@@ -46,8 +46,9 @@ if (-not (Test-Path -LiteralPath $node -PathType Leaf) -or
     -not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
     throw 'Node 22.x and npm 10.x are required in Program Files'
 }
+$global:LASTEXITCODE = $null
 $nodeVersionOutput = @(& $node --version)
-$nodeVersionExit = $LASTEXITCODE
+$nodeVersionExit = $global:LASTEXITCODE
 if ($nodeVersionExit -ne 0 -or $nodeVersionOutput.Count -ne 1) {
     throw 'Node runtime version could not be determined'
 }
@@ -55,8 +56,9 @@ $nodeVersion = ([string]$nodeVersionOutput[0]).Trim()
 if ($nodeVersion -cnotmatch '^v22[.][0-9]+[.][0-9]+$') {
     throw 'Node runtime must be exact major 22'
 }
+$global:LASTEXITCODE = $null
 $npmVersionOutput = @(& $node $npmCli --version)
-$npmVersionExit = $LASTEXITCODE
+$npmVersionExit = $global:LASTEXITCODE
 if ($npmVersionExit -ne 0 -or $npmVersionOutput.Count -ne 1) {
     throw 'npm runtime version could not be determined'
 }
@@ -78,8 +80,12 @@ if ($Offline) { $arguments += '--offline' }
 
 Push-Location -LiteralPath $project
 try {
+    $global:LASTEXITCODE = $null
     & $npm @arguments
-    if ($LASTEXITCODE -ne 0) { throw 'local source build/package failed closed' }
+    $npmExit = $global:LASTEXITCODE
+    if ($npmExit -isnot [int] -or $npmExit -ne 0) {
+        throw 'local source build/package failed closed'
+    }
 } finally {
     Pop-Location
 }
