@@ -19,9 +19,12 @@ import tempfile
 import threading
 import time
 import urllib.request
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lab_runtime import parse_windows_preflight
 
 SCHEMA_VERSION = 1
 PORT = 18443
@@ -199,12 +202,10 @@ def expected_start_authorization(arguments: argparse.Namespace, server_ip: str, 
     if not re.fullmatch(r"[0-9a-f]{64}", fingerprint) or fingerprint != actual_fingerprint:
         fail("coordination certificate fingerprint differs from the verified public pin")
 
-    preflight = decode_json_object(preflight_payload, "server preflight")
-    if preflight.get("run_id") != arguments.run_id or preflight.get("source_commit") != arguments.source_commit or preflight.get("role") != "server":
-        fail("server preflight identity mismatch")
-    checks = preflight.get("checks")
-    if not isinstance(checks, list) or not any(isinstance(item, dict) and item.get("check") == "preflight_gate" and item.get("status") == "pass" and item.get("value") == "ready" for item in checks):
-        fail("server preflight is not activation-ready")
+    # Reuse the runtime's complete, closed native contract.  Do not duplicate a
+    # permissive subset here: bind, authorization, and serve use this same gate.
+    parse_windows_preflight(preflight_payload, "server", arguments.run_id, arguments.source_commit,
+                            server_ip, client_ip, 24, "Public", 25, 1280, 2, 2048, 4096)
 
     firewall = decode_json_object(firewall_payload, "coordination firewall attestation")
     expected_firewall = {
