@@ -10,8 +10,15 @@ reviewed Git update. The agent initiates outbound HTTPS only to
 `192.168.1.130:18443`, pins the exact temporary certificate fingerprint and
 exchanges a one-use pairing code for an in-memory session. It never accepts a
 shell command, URL or path from the server. The server can enqueue only the
-closed actions `diagnose-build`, `prepare-client`, `preflight`, `player-1`,
-`load-5`, `load-10`, `load-25`, `wifi-observe`, `collect` and `stop`.
+closed actions `prepare-client`, `preflight`, `player-1`, `load-5`, `load-10`,
+`load-25`, `wifi-observe`, `collect` and `stop`.
+
+The remote `diagnose-build` action is removed. It previously ran the checkout's
+ignored `node_modules`, which is not part of the reviewed commit. The matching
+server gate must begin with `prepare-client`; that action creates isolated
+detached Git worktrees, runs `npm ci` there and promotes only the reproducible,
+sealed player artifact. An older server that requests `diagnose-build` is
+rejected before checkout verification or process creation.
 
 Progress and bounded diagnostics are written automatically to the server's
 private run state. GitHub carries reviewed code only; logs, credentials and

@@ -210,11 +210,16 @@ This channel removes manual log copying without sending evidence to GitHub or
 another external service. GitHub distributes only the clean reviewed commit.
 The Windows 10 agent makes outbound HTTPS requests to the exact server address,
 pins the temporary certificate fingerprint, consumes a one-time pairing code
-and accepts only the fixed progressive actions `diagnose-build`,
-`prepare-client`, `preflight`, `player-1`, `load-5`, `load-10`, `load-25`,
+and accepts only the fixed progressive actions `prepare-client`, `preflight`,
+`player-1`, `load-5`, `load-10`, `load-25`,
 `wifi-observe`, `collect` and `stop`. There is no arbitrary command or path in
 the protocol. Diagnostics are bounded, scrubbed and stored under a private
 server directory; passwords, tokens and private-key markers are rejected.
+The former remote `diagnose-build` action is deliberately unsupported because
+it executed the checkout's ignored `node_modules`. The management gate paired
+with this client must start with `prepare-client`, whose builder installs
+dependencies in isolated detached Git worktrees and emits the sealed client
+artifact, or the client rejects the task before any process is started.
 
 The channel cannot listen until the native server preflight passes and the
 exact Defender and Hyper-V rules for UDP/14433 and TCP/18443 have been applied

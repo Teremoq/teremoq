@@ -5,10 +5,30 @@
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { parseArguments, runProcess, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
+import os from "node:os";
+import path from "node:path";
+import { execute, parseArguments, runProcess, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+const poisonedCheckout = fs.mkdtempSync(path.join(os.tmpdir(), "teremoq-ignored-runtime-"));
+try {
+  const ignoredNext = path.join(poisonedCheckout, "supervisor-web", "node_modules", "next", "dist", "bin");
+  const executionMarker = path.join(poisonedCheckout, "ignored-runtime-executed");
+  fs.mkdirSync(ignoredNext, { recursive: true });
+  fs.writeFileSync(path.join(ignoredNext, "next"), `require("node:fs").writeFileSync(${JSON.stringify(executionMarker)}, "executed")\n`);
+  let removedBuildRejected = false;
+  try {
+    await execute("diagnose-build", { checkout: poisonedCheckout }, async () => ({}));
+  } catch (error) {
+    removedBuildRejected = error.message === "action is not approved";
+  }
+  expect(removedBuildRejected, "removed diagnose-build action was not rejected before execution");
+  expect(!fs.existsSync(executionMarker), "ignored node_modules code was executed");
+} finally {
+  fs.rmSync(poisonedCheckout, { recursive: true, force: true });
 }
 
 const invalidPid = await terminateProcessTree(0);

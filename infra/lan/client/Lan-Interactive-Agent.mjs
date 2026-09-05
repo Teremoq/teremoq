@@ -10,7 +10,7 @@ import path from "node:path";
 import tls from "node:tls";
 import { pathToFileURL } from "node:url";
 
-const ACTIONS = new Set(["diagnose-build", "prepare-client", "preflight", "player-1", "load-5", "load-10", "load-25", "wifi-observe", "collect", "stop"]);
+const ACTIONS = new Set(["prepare-client", "preflight", "player-1", "load-5", "load-10", "load-25", "wifi-observe", "collect", "stop"]);
 const MAX_RESPONSE = 32768;
 const MAX_MESSAGE = 16384;
 const ACTION_TIMEOUT_MS = 5 * 60 * 1000;
@@ -347,6 +347,7 @@ function runProcess(file, args, cwd, onProgress, options = {}) {
 }
 
 async function execute(action, context, progress) {
+  if (!ACTIONS.has(action)) fail("action is not approved");
   verifyCheckout(context);
   const powershell = `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   const nodeOptions = {
@@ -357,9 +358,6 @@ async function execute(action, context, progress) {
     expectedFileSha256: context.powershellSha256,
     taskkillSha256: context.taskkillSha256,
   };
-  if (action === "diagnose-build") {
-    return runProcess(context.node, [context.npmCli, "run", "build:lan"], path.join(context.checkout, "supervisor-web"), progress, nodeOptions);
-  }
   if (action === "prepare-client") {
     const script = path.join(context.checkout, "infra", "lan", "client", "Prepare-LanClientFromGit.ps1");
     return runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
@@ -468,7 +466,7 @@ async function main() {
   }
 }
 
-export { parseArguments, pinnedAgent, requestJson, runProcess, scrub, terminateProcessTree };
+export { execute, parseArguments, pinnedAgent, requestJson, runProcess, scrub, terminateProcessTree };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });
