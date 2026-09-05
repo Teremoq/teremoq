@@ -306,16 +306,21 @@ class ChannelState:
             or not isinstance(document["last_management_request"], str)
             or not isinstance(document["tasks"], list)
             or len(document["tasks"]) > MAX_TASKS
+            or (document["paired"] and (not isinstance(document["session_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", document["session_sha256"])))
+            or ((not document["paired"]) and document["session_sha256"] is not None)
+            or (document["management_sequence"] == 0 and document["last_management_request"] != "")
         ):
             fail("channel state identity differs from invocation")
         for index, task in enumerate(document["tasks"], 1):
             exact_object(task, {"sequence", "action", "completed", "last_event", "terminal_status", "management_request_id", "cancel_requested"}, "task")
-            if task["sequence"] != index or task["action"] not in ACTIONS or not isinstance(task["completed"], bool):
+            if type(task["sequence"]) is not int or task["sequence"] != index or task["action"] not in ACTIONS or not isinstance(task["completed"], bool):
                 fail("invalid task state")
             if type(task["last_event"]) is not int or task["last_event"] < 0:
                 fail("invalid task event counter")
             if task["terminal_status"] not in ("pending", "complete", "blocked", "failed") or not isinstance(task["management_request_id"], str) or not isinstance(task["cancel_requested"], bool):
                 fail("invalid task terminal state")
+            if not re.fullmatch(r"(?:|[0-9a-f]{64})", task["management_request_id"]) or (task["completed"] != (task["terminal_status"] != "pending")):
+                fail("task state coherence differs from closed contract")
         return document
 
     def _persist(self) -> None:
