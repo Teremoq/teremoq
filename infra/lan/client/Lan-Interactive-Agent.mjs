@@ -87,6 +87,28 @@ function exactFutureDirectory(value, label) {
   return resolved;
 }
 
+function preparedStateRootForTask(context) {
+  if (!Number.isSafeInteger(context.taskSequence) || context.taskSequence < 1 ||
+      !/^lan-[a-z0-9][a-z0-9-]{0,31}$/.test(context.runId) ||
+      !/^[0-9a-f]{40}$/.test(context.commit)) {
+    fail("prepared client state identity is invalid");
+  }
+  const parent = path.dirname(context.stateRoot);
+  const candidate = path.join(parent,
+    `prepared-state-${context.runId}-${context.commit.slice(0, 12)}-${context.taskSequence}`);
+  if (path.dirname(candidate) !== parent || candidate === context.stateRoot) {
+    fail("prepared client state overlaps the channel state");
+  }
+  return candidate;
+}
+
+function activePreparedStateRoot(context) {
+  if (typeof context.preparedStateRoot !== "string") {
+    fail("client preparation must complete before starting a workload");
+  }
+  return exactDirectory(context.preparedStateRoot, "prepared client state root");
+}
+
 function pinnedAgent(url, expectedFingerprint) {
   const agent = new https.Agent({ keepAlive: false, maxSockets: 1 });
   agent.createConnection = (options, callback) => {
@@ -557,11 +579,14 @@ async function execute(action, context, progress) {
   }
   if (action === "prepare-client") {
     const script = path.join(context.checkout, "infra", "lan", "client", "Prepare-LanClientFromGit.ps1");
-    return runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
-      "-CheckoutRoot", context.checkout, "-StateRoot", context.stateRoot, "-RepositoryUrl", "https://github.com/Teremoq/teremoq",
+    const preparedStateRoot = preparedStateRootForTask(context);
+    const result = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
+      "-CheckoutRoot", context.checkout, "-StateRoot", preparedStateRoot, "-RepositoryUrl", "https://github.com/Teremoq/teremoq",
       "-RepositoryRef", "refs/heads/codex/lan-e2e-integration", "-ExpectedCommit", context.commit, "-RunId", context.runId,
       "-ServerIPv4", "192.168.1.130", "-PrefixLength", "24", "-Namespace", "teremoq/live", "-FingerprintSha256", context.fingerprint],
       context.checkout, progress, powershellOptions);
+    if (result.code === 0) context.preparedStateRoot = exactDirectory(preparedStateRoot, "prepared client state root");
+    return result;
   }
   if (action === "preflight") {
     const script = path.join(context.checkout, "infra", "lan", "windows", "Preflight-Client.ps1");
@@ -572,17 +597,19 @@ async function execute(action, context, progress) {
   }
   if (["player-1", "load-5", "load-10", "load-25"].includes(action)) {
     const level = action === "player-1" ? "1" : action.split("-")[1];
+    const preparedStateRoot = activePreparedStateRoot(context);
     const script = path.join(context.checkout, "infra", "lan", "client", "Invoke-LanLoad.ps1");
     const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Start",
-      "-Level", level, "-RunId", context.runId, "-CheckoutRoot", context.checkout, "-StateRoot", context.stateRoot,
+      "-Level", level, "-RunId", context.runId, "-CheckoutRoot", context.checkout, "-StateRoot", preparedStateRoot,
       "-EvidenceRoot", context.evidenceRoot, "-ConfirmStart"];
     return runProcess(powershell, args, context.checkout, progress, powershellOptions);
   }
   if (action === "collect") {
     if (!context.activeLevel) return { code: -1, signal: "", output: "No client workload is active for collection." };
+    const preparedStateRoot = activePreparedStateRoot(context);
     const script = path.join(context.checkout, "infra", "lan", "client", "Invoke-LanLoad.ps1");
     const common = ["-Level", String(context.activeLevel), "-RunId", context.runId, "-CheckoutRoot", context.checkout,
-      "-StateRoot", context.stateRoot, "-EvidenceRoot", context.evidenceRoot];
+      "-StateRoot", preparedStateRoot, "-EvidenceRoot", context.evidenceRoot];
     const collected = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Collect", ...common], context.checkout, progress, powershellOptions);
     if (collected.code !== 0) return collected;
     const stopped = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Stop", ...common], context.checkout, progress, powershellOptions);
@@ -592,10 +619,11 @@ async function execute(action, context, progress) {
   if (action === "wifi-observe") return { code: 0, signal: "", output: "Wi-Fi recovery observation is armed; disconnect/reconnect remains a physical user action." };
   if (action === "stop") {
     if (!context.activeLevel) return { code: 0, signal: "", output: "No client workload was active; the interactive agent can stop." };
+    const preparedStateRoot = activePreparedStateRoot(context);
     const script = path.join(context.checkout, "infra", "lan", "client", "Invoke-LanLoad.ps1");
     const result = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
       "-Action", "Stop", "-Level", String(context.activeLevel), "-RunId", context.runId, "-CheckoutRoot", context.checkout,
-      "-StateRoot", context.stateRoot, "-EvidenceRoot", context.evidenceRoot], context.checkout, progress, powershellOptions);
+      "-StateRoot", preparedStateRoot, "-EvidenceRoot", context.evidenceRoot], context.checkout, progress, powershellOptions);
     if (result.code === 0) context.activeLevel = 0;
     return result;
   }
@@ -743,6 +771,7 @@ async function main() {
     if (!ACTIONS.has(task.action) || task.sequence < 1) fail("server requested an unapproved action");
     if (task.action !== "update-client" && Object.keys(task.parameters).length !== 0) fail("non-update task carried unexpected parameters");
     context.taskParameters = task.parameters;
+    context.taskSequence = task.sequence;
     process.stdout.write(`${formatLocalStatus(task.action, "received", task.sequence)}\n`);
     let event = 1;
     let sendQueue = Promise.resolve();
@@ -778,7 +807,7 @@ async function main() {
   }
 }
 
-export { approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout, waitForChildExit, waitForHandoffAck };
+export { activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });

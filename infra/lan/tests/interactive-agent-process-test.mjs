@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, restartUpdatedClient, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, restartUpdatedClient, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -57,6 +57,24 @@ expect(parsedArgv["--credential-mode"] === "pair", "credential mode was not pars
 const resumedArgv = [...agentArgv];
 resumedArgv[resumedArgv.indexOf("pair")] = "session";
 expect(parseArguments(resumedArgv)["--credential-mode"] === "session", "session resume mode was rejected");
+const channelStateRoot = path.join(os.tmpdir(), "interactive-state-lan-state-canary-222222222222");
+const firstPreparedState = preparedStateRootForTask({
+  stateRoot: channelStateRoot,
+  runId: "lan-state-canary",
+  commit: "2".repeat(40),
+  taskSequence: 1,
+});
+const retryPreparedState = preparedStateRootForTask({
+  stateRoot: channelStateRoot,
+  runId: "lan-state-canary",
+  commit: "2".repeat(40),
+  taskSequence: 2,
+});
+expect(firstPreparedState !== channelStateRoot && retryPreparedState !== firstPreparedState,
+  "client preparation reuses channel state or a failed preparation generation");
+let missingPreparedStateRejected = false;
+try { activePreparedStateRoot({}); } catch { missingPreparedStateRejected = true; }
+expect(missingPreparedStateRejected, "workload accepted an absent prepared client state");
 const restartSource = restartUpdatedClient.toString();
 expect(!restartSource.includes('"--session"') && !restartSource.includes("SESSION="), "session credential can reach child argv or environment");
 expect(restartSource.includes('stdio: ["pipe", "ignore", "ignore"]') && restartSource.includes("credential handoff timed out"),
