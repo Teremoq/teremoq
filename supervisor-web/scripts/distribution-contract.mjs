@@ -3,6 +3,13 @@ import { execFileSync } from "node:child_process";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 
+export const DISTRIBUTION_GIT_PREFIX = Object.freeze([
+  "--no-replace-objects",
+  "-c", "core.hooksPath=NUL",
+  "-c", "core.fsmonitor=false",
+  "-c", "protocol.file.allow=never",
+]);
+
 export const SOURCE_CONTRACT_KEYS = Object.freeze([
   "schema_version",
   "repository_url",
@@ -58,7 +65,7 @@ export function verifyDistributionSource(
   projectRoot,
   request,
   contract,
-  runGit = defaultGit,
+  runGit = runDistributionGit,
 ) {
   if (!request || request.repositoryUrl !== contract.repository_url ||
       typeof request.repositoryRef !== "string" ||
@@ -87,8 +94,13 @@ export function verifyDistributionSource(
   if (runGit(checkoutRoot, ["symbolic-ref", "--quiet", "HEAD"]) !== request.repositoryRef) {
     throw new Error("checkout no está en repository_ref");
   }
-  if (runGit(checkoutRoot, ["status", "--porcelain=v1", "--untracked-files=all"]) !== "") {
-    throw new Error("checkout Git debe estar limpio, incluidos untracked");
+  const status = runGit(checkoutRoot, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  if (status !== "") {
+    const entries = status.split("\n");
+    const tracked = entries.some((entry) => !entry.startsWith("?? "));
+    const untracked = entries.some((entry) => entry.startsWith("?? "));
+    const category = tracked && untracked ? "tracked-and-untracked" : tracked ? "tracked" : "untracked";
+    throw new Error(`checkout Git no está limpio (${category})`);
   }
   const remotes = lines(runGit(checkoutRoot, ["remote"]));
   if (remotes.length !== 1 || remotes[0] !== "origin") {
@@ -130,7 +142,7 @@ export function compareSourceUpdate(
   checkoutRoot,
   previousSourceCommit,
   currentSourceCommit,
-  runGit = defaultGit,
+  runGit = runDistributionGit,
 ) {
   if (previousSourceCommit === null) {
     return Object.freeze({
@@ -264,11 +276,19 @@ function lines(value) {
   return value.split(/\r?\n/).filter((line) => line !== "");
 }
 
-function defaultGit(cwd, args, allowMissing = false) {
+export function runDistributionGit(cwd, args, allowMissing = false) {
+  const environment = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith("GIT_")) delete environment[name];
+  }
+  environment.GIT_CONFIG_NOSYSTEM = "1";
+  environment.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
+  environment.GIT_OPTIONAL_LOCKS = "0";
   try {
-    return execFileSync("git", ["-C", cwd, ...args], {
+    return execFileSync("git", [...DISTRIBUTION_GIT_PREFIX, "-C", cwd, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      env: environment,
       timeout: 60_000,
       maxBuffer: 131_072,
     }).trim();
@@ -276,6 +296,13 @@ function defaultGit(cwd, args, allowMissing = false) {
     if (allowMissing && cause && typeof cause === "object" && "status" in cause && cause.status === 1) {
       return "";
     }
-    throw new Error("validación Git local falló", { cause });
+    const category = cause && typeof cause === "object" && "code" in cause && cause.code === "ETIMEDOUT"
+      ? "timeout"
+      : cause && typeof cause === "object" && "code" in cause && cause.code === "ENOBUFS"
+        ? "output-limit"
+        : cause && typeof cause === "object" && "status" in cause && Number.isInteger(cause.status)
+          ? "exit"
+          : "spawn";
+    throw new Error(`validación Git local falló (${category})`);
   }
 }

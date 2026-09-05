@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -90,6 +91,13 @@ describe("contrato de distribución Git del player LAN", () => {
       sourceCommit: commit,
       sourceTree: tree,
     });
+  });
+
+  it("iguala la vista Git Windows del launcher y rechaza suciedad real sin revelar paths", () => {
+    const output = execFileSync(process.execPath, ["scripts/distribution-git-view.test.mjs"], {
+      cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    });
+    expect(output.trim()).toBe("distribution-git-view-test: PASS");
   });
 
   it.each([
