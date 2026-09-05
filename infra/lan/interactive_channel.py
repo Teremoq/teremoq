@@ -310,6 +310,7 @@ class ChannelState:
             or (document["paired"] and (not isinstance(document["session_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", document["session_sha256"])))
             or ((not document["paired"]) and document["session_sha256"] is not None)
             or (document["management_sequence"] == 0 and document["last_management_request"] != "")
+            or (document["management_sequence"] > 0 and not re.fullmatch(r"[0-9a-f]{32}", document["last_management_request"]))
         ):
             fail("channel state identity differs from invocation")
         for index, task in enumerate(document["tasks"], 1):
@@ -320,7 +321,7 @@ class ChannelState:
                 fail("invalid task event counter")
             if task["terminal_status"] not in ("pending", "complete", "blocked", "failed") or not isinstance(task["management_request_id"], str) or not isinstance(task["cancel_requested"], bool):
                 fail("invalid task terminal state")
-            if not re.fullmatch(r"(?:|[0-9a-f]{64})", task["management_request_id"]) or (task["completed"] != (task["terminal_status"] != "pending")):
+            if not re.fullmatch(r"[0-9a-f]{32}", task["management_request_id"]) or (task["completed"] != (task["terminal_status"] != "pending")):
                 fail("task state coherence differs from closed contract")
         return document
 
