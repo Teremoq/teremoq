@@ -46,9 +46,12 @@ if (-not (Test-Path -LiteralPath $distributionLibrary -PathType Leaf)) {
 $node = Join-Path $env:ProgramFiles 'nodejs\node.exe'
 $npm = Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
 $npmCli = Join-Path $env:ProgramFiles 'nodejs\node_modules\npm\bin\npm-cli.js'
+$gitDirectory = Join-Path $env:ProgramFiles 'Git\cmd'
+$git = Join-Path $gitDirectory 'git.exe'
 if (-not (Test-Path -LiteralPath $node -PathType Leaf) -or
     -not (Test-Path -LiteralPath $npm -PathType Leaf) -or
-    -not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
+    -not (Test-Path -LiteralPath $npmCli -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $git -PathType Leaf)) {
     throw 'Node 22.x and npm 10.x are required in Program Files'
 }
 $nodeVersionResult = Invoke-TeremoqBoundedNativeProcess -FilePath $node -WorkingDirectory $project `
@@ -82,7 +85,11 @@ if ($RefreshDependencies) { $arguments += '--refresh-dependencies' }
 if ($Offline) { $arguments += '--offline' }
 
 Push-Location -LiteralPath $project
+$previousPath = $env:PATH
 try {
+    # npm run resolves the fixed "node" command used by package scripts through
+    # PATH. Keep that child-only search path closed to reviewed installations.
+    $env:PATH = "$(Split-Path -Parent $node);$gitDirectory;$env:SystemRoot\System32;$env:SystemRoot"
     $buildResult = Invoke-TeremoqBoundedNativeProcess -FilePath $node -WorkingDirectory $project `
         -Arguments (@($npmCli) + $arguments) -TimeoutMilliseconds 900000 `
         -StdoutMaxBytes 131072 -StderrMaxBytes 131072
@@ -92,5 +99,6 @@ try {
         throw 'local source build/package failed closed'
     }
 } finally {
+    $env:PATH = $previousPath
     Pop-Location
 }

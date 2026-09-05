@@ -56,6 +56,8 @@ grep -Fq '[Console]::OutputEncoding = $utf8NoBom' "${REPO_ROOT}/supervisor-web/l
 [[ "$(grep -Fc 'Invoke-TeremoqBoundedNativeProcess' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1")" -eq 3 ]]
 ! grep -Fq '$LASTEXITCODE' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq -- "-Arguments (@(\$npmCli) + \$arguments)" "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
+grep -Fq 'Git\cmd' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
+grep -Fq '$env:PATH = "$(Split-Path -Parent $node);$gitDirectory;$env:SystemRoot\System32;$env:SystemRoot"' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq 'BuilderReceiptPath' "${ROOT}/client/Initialize-LanClientState.ps1"
 grep -Fq 'Test-TeremoqReusableCheckout' "${ROOT}/client/Start-LanClientFromGit.ps1"
 grep -Fq "'merge', '--ff-only', \$ExpectedCommit" "${ROOT}/client/Start-LanClientFromGit.ps1"
