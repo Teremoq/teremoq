@@ -91,9 +91,13 @@ try {
   ], launcherEnvironment);
   assert.deepEqual(DISTRIBUTION_GIT_PREFIX, [
     "--no-replace-objects", "-c", "core.hooksPath=NUL", "-c", "core.fsmonitor=false",
+    "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.safecrlf=true",
     "-c", "protocol.file.allow=never",
   ]);
-  assert.ok(launcher.includes("$gitPrefix = @('--no-replace-objects', '-c', 'core.hooksPath=NUL', '-c', 'core.fsmonitor=false', '-c', 'protocol.file.allow=never', '-C', $checkout)"));
+  for (const fragment of ["core.hooksPath=NUL", "core.fsmonitor=false", "core.autocrlf=false", "core.eol=lf",
+    "core.safecrlf=true", "protocol.file.allow=never", "'-C', $checkout"]) {
+    assert.ok(launcher.includes(fragment), `launcher Git view lacks ${fragment}`);
+  }
   assert.ok(launcher.includes("$env:GIT_CONFIG_NOSYSTEM = '1'"));
   assert.ok(launcher.includes("$env:GIT_CONFIG_GLOBAL = 'NUL'"));
   assert.equal(runDistributionGit(checkout, statusArguments), launcherStatus());

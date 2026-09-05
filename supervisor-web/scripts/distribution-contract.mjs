@@ -7,6 +7,9 @@ export const DISTRIBUTION_GIT_PREFIX = Object.freeze([
   "--no-replace-objects",
   "-c", "core.hooksPath=NUL",
   "-c", "core.fsmonitor=false",
+  "-c", "core.autocrlf=false",
+  "-c", "core.eol=lf",
+  "-c", "core.safecrlf=true",
   "-c", "protocol.file.allow=never",
 ]);
 

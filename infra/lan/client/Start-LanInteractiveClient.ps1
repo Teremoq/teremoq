@@ -372,7 +372,11 @@ try {
         -Arguments @('-e','process.exit(process.versions.node.startsWith("22.") ? 0 : 9)') `
         -WorkingDirectory $checkout
     if ($nodeVersionExit -ne 0) { throw 'The interactive client requires the approved Node.js 22.x runtime' }
-    $gitPrefix = @('--no-replace-objects', '-c', 'core.hooksPath=NUL', '-c', 'core.fsmonitor=false', '-c', 'protocol.file.allow=never', '-C', $checkout)
+    $gitPrefix = @(
+        '--no-replace-objects', '-c', 'core.hooksPath=NUL', '-c', 'core.fsmonitor=false',
+        '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', '-c', 'core.safecrlf=true',
+        '-c', 'protocol.file.allow=never', '-C', $checkout
+    )
     $oldNoSystem = $env:GIT_CONFIG_NOSYSTEM
     $oldGlobal = $env:GIT_CONFIG_GLOBAL
     $env:GIT_CONFIG_NOSYSTEM = '1'

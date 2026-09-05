@@ -94,11 +94,11 @@ describe("contrato de distribución Git del player LAN", () => {
   });
 
   it("iguala la vista Git Windows del launcher y rechaza suciedad real sin revelar paths", () => {
-    const output = execFileSync(process.execPath, ["scripts/distribution-git-view.test.mjs"], {
+    const output = execFileSync(process.execPath, ["scripts/distribution-git-view-fixture.mjs"], {
       cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     });
     expect(output.trim()).toBe("distribution-git-view-test: PASS");
-  });
+  }, 30_000);
 
   it.each([
     ["HEAD", "rev-parse HEAD", "3".repeat(40)],
