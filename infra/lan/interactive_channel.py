@@ -670,7 +670,7 @@ def make_handler(state: ChannelState):
     return Handler
 
 
-def initialize(root: Path, run_id: str, source_commit: str, client_ip: str) -> str:
+def initialize(root: Path, run_id: str, source_commit: str, client_ip: str, keep_descriptor: bool = False) -> str | tuple[str, int]:
     if root.exists():
         fail("channel state root must be absent")
     if not root.is_absolute() or root.parent.is_symlink() or not root.parent.is_dir():
@@ -693,8 +693,12 @@ def initialize(root: Path, run_id: str, source_commit: str, client_ip: str) -> s
             "last_management_request": "",
             "tasks": [],
         })
-    finally:
+    except Exception:
         os.close(descriptor)
+        raise
+    if keep_descriptor:
+        return pairing, descriptor
+    os.close(descriptor)
     return pairing
 
 
@@ -734,8 +738,8 @@ def wait_for_process_exit(pid: int, start_ticks: int, root: Path, timeout_second
 
 def daemon_start(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
     validate_server_arguments(arguments, server_ip, client_ip)
-    pairing = initialize(arguments.state_root, arguments.run_id, arguments.source_commit, client_ip)
-    root_descriptor = open_state_root(arguments.state_root)
+    initialized = initialize(arguments.state_root, arguments.run_id, arguments.source_commit, client_ip, keep_descriptor=True)
+    pairing, root_descriptor = initialized
     stdout_descriptor = -1
     stderr_descriptor = -1
     process: subprocess.Popen[bytes] | None = None
