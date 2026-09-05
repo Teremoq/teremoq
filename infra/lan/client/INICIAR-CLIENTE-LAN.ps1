@@ -402,7 +402,7 @@ try {
         throw 'El checkout contiene objetos Git de reemplazo'
     }
     $remoteTip = Get-ExactGitOutput -WorkingDirectory $checkoutRoot -Arguments @('rev-parse', "refs/remotes/origin/$Branch")
-    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('cat-file', '-e', ('{0}^{commit}' -f $ExpectedCommit)))
+    [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('cat-file', '-e', ($ExpectedCommit + '^{commit}')))
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('merge-base', '--is-ancestor', $ExpectedCommit, $remoteTip))
     [void](Invoke-IsolatedGit -WorkingDirectory $checkoutRoot -Arguments @('checkout', '--quiet', '-b', $Branch, $ExpectedCommit))
 

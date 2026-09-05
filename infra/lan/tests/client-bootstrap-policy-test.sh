@@ -13,6 +13,11 @@ grep -Fq "\$ClientIPv4 = '192.168.1.139'" "${bootstrap}"
 grep -Fq 'Este iniciador es exclusivamente para el portatil cliente' "${bootstrap}"
 grep -Fq 'El iniciador del cliente no puede ejecutarse en el servidor' "${bootstrap}"
 grep -Fq "@('fetch', '--quiet', '--no-tags', 'origin'" "${bootstrap}"
+grep -Fq "@('cat-file', '-e', (\$ExpectedCommit + '^{commit}'))" "${bootstrap}"
+if grep -Fq "'{0}^{commit}' -f" "${bootstrap}"; then
+    printf 'client-bootstrap-policy-test: PowerShell format string cannot contain an unescaped Git object suffix\n' >&2
+    exit 1
+fi
 grep -Fq "@('merge-base', '--is-ancestor', \$ExpectedCommit, \$remoteTip)" "${bootstrap}"
 grep -Fq "@('checkout', '--quiet', '-b', \$Branch, \$ExpectedCommit)" "${bootstrap}"
 grep -Fq "@('status', '--porcelain=v1', '--untracked-files=all')" "${bootstrap}"
