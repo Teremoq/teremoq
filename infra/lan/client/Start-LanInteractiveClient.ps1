@@ -4,7 +4,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$ExpectedCommit,
     [string]$ChannelCommit = '',
-    [switch]$ResumeSessionStdin
+    [switch]$ResumeSessionStdin,
+    [string]$HandoffAckPath = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
@@ -419,15 +420,38 @@ try {
     $stateRoot = Join-Path $root ("interactive-state-{0}-{1}" -f $runId, $shortCommit)
     $evidenceRoot = Join-Path $root ("interactive-evidence-{0}-{1}" -f $runId, $shortCommit)
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { New-Item -ItemType Directory -Path $root | Out-Null }
+    if (-not (Test-Path -LiteralPath $stateRoot -PathType Container)) { New-Item -ItemType Directory -Path $stateRoot | Out-Null }
     if (-not (Test-Path -LiteralPath $evidenceRoot -PathType Container)) { New-Item -ItemType Directory -Path $evidenceRoot | Out-Null }
+    Assert-TeremoqNonReparseAncestors $stateRoot
+    Assert-TeremoqNonReparseAncestors $evidenceRoot
 
     Write-Host "Teremoq LAN interactive client: commit $head; $($locks.Count) immutable read handles"
     Write-Host 'The client only initiates outbound HTTPS and executes the reviewed fixed action list.'
     if ($ResumeSessionStdin) {
+        if ([string]::IsNullOrEmpty($HandoffAckPath)) { throw 'resumed session requires a handoff acknowledgement path' }
+        $ackPath = [IO.Path]::GetFullPath($HandoffAckPath)
+        if ([IO.Path]::GetDirectoryName($ackPath) -cne $stateRoot -or
+            [IO.Path]::GetFileName($ackPath) -cnotmatch '^handoff-[0-9a-f]{32}\.ack$' -or
+            (Test-Path -LiteralPath $ackPath)) {
+            throw 'handoff acknowledgement path differs from the closed state contract'
+        }
+        $handoffNonce = [Console]::In.ReadLine()
         $credential = [Console]::In.ReadLine()
+        if ($handoffNonce -cnotmatch '^[0-9a-f]{64}$') { throw 'The handoff nonce is invalid' }
         if ($credential -cnotmatch '^[0-9a-f]{64}$') { throw 'The resumed session credential is invalid' }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $ackValue = ConvertTo-TeremoqLowerHex $sha.ComputeHash([Text.Encoding]::ASCII.GetBytes($handoffNonce))
+        } finally { $sha.Dispose() }
+        $ackBytes = [Text.Encoding]::ASCII.GetBytes($ackValue + "`n")
+        $ackStream = New-Object IO.FileStream($ackPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $ackStream.Write($ackBytes, 0, $ackBytes.Length)
+            $ackStream.Flush($true)
+        } finally { $ackStream.Dispose() }
         $credentialMode = 'session'
     } else {
+        if (-not [string]::IsNullOrEmpty($HandoffAckPath)) { throw 'pairing launch may not carry a handoff path' }
         $credential = Read-Host 'Enter the one-time pairing code shown on the server'
         if ($credential -cnotmatch '^[0-9a-f]{48}$') { throw 'The pairing code must contain exactly 48 lowercase hexadecimal characters' }
         $credentialMode = 'pair'

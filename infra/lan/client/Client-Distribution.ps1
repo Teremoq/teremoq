@@ -602,7 +602,7 @@ function Get-TeremoqGitCheckoutContext {
     if (-not $supportRoot.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $supportRoot -PathType Container)) {
         throw 'approved repository_subdirectory is absent from the checkout'
     }
-    foreach ($required in @('client/Install-LanClient.ps1', 'client/Initialize-LanClientState.ps1', 'client/Update-LanClient.ps1', 'client/Stage-LanClientUpdate.ps1', 'client/Invoke-LanLoad.ps1', 'client/Verify-Package.ps1', 'client/Import-BrowserObservation.ps1', 'client/Client-Distribution.ps1', 'windows/Preflight-Client.ps1', 'windows/Collect-Evidence.ps1', 'windows/Preflight-Contract.ps1')) {
+    foreach ($required in @('client/Install-LanClient.ps1', 'client/Initialize-LanClientState.ps1', 'client/Update-LanClient.ps1', 'client/Stage-LanClientUpdate.ps1', 'client/Pin-LanUpdateLauncher.ps1', 'client/Invoke-LanLoad.ps1', 'client/Verify-Package.ps1', 'client/Import-BrowserObservation.ps1', 'client/Client-Distribution.ps1', 'windows/Preflight-Client.ps1', 'windows/Collect-Evidence.ps1', 'windows/Preflight-Contract.ps1')) {
         if (-not (Test-Path -LiteralPath (Join-Path $supportRoot $required) -PathType Leaf)) {
             throw "required LAN support file is absent from checkout: $required"
         }

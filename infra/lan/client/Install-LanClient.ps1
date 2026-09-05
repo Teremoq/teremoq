@@ -16,7 +16,7 @@ $checkout = [IO.Path]::GetFullPath($CheckoutRoot)
 Assert-TeremoqApprovedGitBootstrapParameters -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
 if (Test-Path -LiteralPath $checkout) {
     $existing = Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $checkout -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
-    Write-Output ("Teremoq LAN Git checkout already validates at {0} for commit {1}; no overwrite occurred." -f $existing.CheckoutRoot, $existing.Head)
+    Write-Output ("Teremoq LAN Git checkout already validates commit {0}; no overwrite occurred." -f $existing.Head)
     exit 0
 }
 $parent = Split-Path -Parent $checkout
@@ -35,7 +35,7 @@ try {
     }
     $cloned = Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $temporary -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
     Move-Item -LiteralPath $temporary -Destination $checkout
-    Write-Output ("Teremoq LAN Git checkout installed at {0} for commit {1}; initialize external state only after this exact clone is verified." -f $checkout, $cloned.Head)
+    Write-Output ("Teremoq LAN Git checkout installed and verified at commit {0}." -f $cloned.Head)
 } finally {
     if (Test-Path -LiteralPath $temporary) {
         Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue

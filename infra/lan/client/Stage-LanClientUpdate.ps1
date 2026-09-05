@@ -55,4 +55,4 @@ $targetState = [pscustomobject]@{
     RepositorySubdirectory = 'infra/lan'
 }
 $verified = Get-TeremoqGitCheckoutContext -CheckoutRoot $target -StateContext $targetState -RequireExactHead
-Write-Output ("update staged commit={0}; checkout={1}" -f $verified.Head, $verified.CheckoutRoot)
+Write-Output ("update staged and verified at commit={0}" -f $verified.Head)

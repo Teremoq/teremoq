@@ -139,6 +139,7 @@ function scrub(value) {
     .replace(/(authorization:\s*bearer\s+)\S+/gi, "$1[blocked]")
     .replace(/(ghp_|github_pat_)[A-Za-z0-9_]+/g, "[token blocked]")
     .replace(/((?:password|passwd|token|secret|api[_-]?key)\s*[=:]\s*)\S+/gi, "$1[blocked]")
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\r\n]*/g, "[local path blocked]")
     .slice(-MAX_MESSAGE);
 }
 
@@ -222,6 +223,96 @@ function verifyCheckout(context) {
   }
   if (runGit(["remote", "get-url", "origin"]).replace(/\/$/, "") !== "https://github.com/Teremoq/teremoq") fail("checkout remote differs from the official repository");
   if (runGit(["status", "--porcelain=v1", "--untracked-files=all"]) !== "") fail("checkout changed after pairing");
+}
+
+function approvedGitBlobId(context, relativePath) {
+  if (!/^[A-Za-z0-9._/-]{1,256}$/.test(relativePath)) fail("approved source path is invalid");
+  verifyApprovedFile(context.git, context.gitSha256);
+  const result = spawnSync(context.git, ["--no-replace-objects", "-c", "core.hooksPath=NUL", "-c", "core.fsmonitor=false",
+    "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.safecrlf=true", "-c", "protocol.file.allow=never",
+    "-C", context.checkout, "rev-parse", `${context.commit}:${relativePath}`], {
+    encoding: "utf8", windowsHide: true, shell: false, env: restrictedEnvironment(), timeout: 10_000,
+  });
+  const blob = result.stdout?.trim() || "";
+  if (result.status !== 0 || result.error || !/^[0-9a-f]{40}$/.test(blob)) fail("approved launcher blob could not be resolved");
+  return blob;
+}
+
+function pinUpdatedLauncher(context, launcher, expectedBlob) {
+  const powershell = `${WINDOWS_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+  verifyApprovedFile(powershell, context.powershellSha256);
+  const helper = path.join(context.checkout, "infra", "lan", "client", "Pin-LanUpdateLauncher.ps1");
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper,
+      "-LauncherPath", launcher, "-ExpectedBlobId", expectedBlob], {
+      cwd: context.checkout, windowsHide: true, shell: false, env: restrictedEnvironment(), stdio: ["pipe", "pipe", "pipe"],
+    });
+    const timer = setTimeout(() => finish(new Error("updated launcher pin timed out")), 5_000);
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        child.stdin.destroy();
+        reject(error);
+      } else {
+        resolve({
+          release: () => new Promise((releaseResolve, releaseReject) => {
+            const releaseTimer = setTimeout(() => {
+              child.kill();
+              releaseReject(new Error("updated launcher pin did not release"));
+            }, 2_000);
+            child.once("exit", (code) => {
+              clearTimeout(releaseTimer);
+              if (code === 0) releaseResolve();
+              else releaseReject(new Error(`updated launcher pin release failed (${code ?? -1})`));
+            });
+            child.stdin.end("release\n", "ascii");
+          }),
+        });
+      }
+    };
+    child.once("error", finish);
+    child.once("exit", (code) => {
+      if (!settled) finish(new Error(`updated launcher pin exited (${code ?? -1}): ${scrub(stderr)}`));
+    });
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("ascii");
+      if (stdout.length > 32) finish(new Error("updated launcher pin output exceeded contract"));
+      else if (stdout === "PINNED\r\n" || stdout === "PINNED\n") finish();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+      if (stderr.length > 2048) finish(new Error("updated launcher pin error exceeded contract"));
+    });
+  });
+}
+
+async function waitForHandoffAck(ackPath, expected, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const stat = fs.lstatSync(ackPath);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== 65) fail("handoff acknowledgement file differs from contract");
+      const descriptor = fs.openSync(ackPath, "r");
+      try {
+        const content = fs.readFileSync(descriptor, { encoding: "ascii" });
+        const after = fs.fstatSync(descriptor);
+        if (after.dev !== stat.dev || after.ino !== stat.ino || after.size !== stat.size || content !== `${expected}\n`) {
+          fail("handoff acknowledgement identity differs from contract");
+        }
+      } finally { fs.closeSync(descriptor); }
+      fs.unlinkSync(ackPath);
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  fail("updated launcher did not acknowledge pinned source files");
 }
 
 function terminateProcessTree(pid, options = {}) {
@@ -453,39 +544,52 @@ async function execute(action, context, progress) {
   fail("action is not implemented");
 }
 
-function restartUpdatedClient(context, handoff, session) {
+async function restartUpdatedClient(context, handoff, session) {
   const updated = { ...context, checkout: exactDirectory(handoff.checkout, "updated checkout"), commit: handoff.commit };
   verifyCheckout(updated);
   const powershell = `${WINDOWS_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   verifyApprovedFile(powershell, context.powershellSha256);
   const launcher = path.join(updated.checkout, "infra", "lan", "client", "Start-LanInteractiveClient.ps1");
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolve();
-    };
-    const child = spawn(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcher,
-      "-ExpectedCommit", updated.commit, "-ChannelCommit", context.channelCommit, "-ResumeSessionStdin"], {
+  const expectedBlob = approvedGitBlobId(updated, "infra/lan/client/Start-LanInteractiveClient.ps1");
+  const pin = await pinUpdatedLauncher(context, launcher, expectedBlob);
+  let pinReleased = false;
+  const releasePin = async () => {
+    if (pinReleased) return;
+    pinReleased = true;
+    await pin.release();
+  };
+  const nonce = crypto.randomBytes(32).toString("hex");
+  const acknowledgement = crypto.createHash("sha256").update(nonce, "ascii").digest("hex");
+  const updatedStateRoot = path.join(process.env.LOCALAPPDATA, "Teremoq",
+    `interactive-state-${context.runId}-${updated.commit.slice(0, 12)}`);
+  const ackPath = path.join(updatedStateRoot, `handoff-${crypto.randomBytes(16).toString("hex")}.ack`);
+  let child = null;
+  try {
+    child = spawn(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", launcher,
+      "-ExpectedCommit", updated.commit, "-ChannelCommit", context.channelCommit, "-ResumeSessionStdin", "-HandoffAckPath", ackPath], {
       cwd: updated.checkout, windowsHide: true, detached: true, shell: false,
       env: restrictedEnvironment(), stdio: ["pipe", "ignore", "ignore"],
     });
-    const timer = setTimeout(() => {
-      child.stdin.destroy();
-      finish(new Error("updated client credential handoff timed out"));
-    }, 5_000);
-    child.once("error", finish);
-    child.once("spawn", () => {
-      child.stdin.once("error", finish);
-      child.stdin.end(`${session}\n`, "ascii", () => {
-        child.unref();
-        finish();
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("updated client credential handoff timed out")), 5_000);
+      child.once("error", (error) => { clearTimeout(timer); reject(error); });
+      child.once("spawn", () => {
+        child.stdin.once("error", (error) => { clearTimeout(timer); reject(error); });
+        child.stdin.end(`${nonce}\n${session}\n`, "ascii", () => { clearTimeout(timer); resolve(); });
       });
     });
-  });
+    await waitForHandoffAck(ackPath, acknowledgement);
+    await releasePin();
+    child.unref();
+  } catch (error) {
+    let releaseError = null;
+    try { await releasePin(); } catch (pinError) { releaseError = pinError; }
+    if (child?.pid) await terminateProcessTree(child.pid, { taskkillSha256: context.taskkillSha256 });
+    try { fs.unlinkSync(ackPath); } catch (cleanupError) {
+      if (cleanupError?.code !== "ENOENT") throw cleanupError;
+    }
+    throw releaseError || error;
+  }
 }
 
 async function confirmUpdateTransition(channelRequest, identity, task, session, targetCommit, event, message) {
@@ -616,7 +720,7 @@ async function main() {
   }
 }
 
-export { confirmUpdateTransition, execute, formatLocalStatus, parseArguments, pinnedAgent, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout };
+export { approvedGitBlobId, confirmUpdateTransition, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });

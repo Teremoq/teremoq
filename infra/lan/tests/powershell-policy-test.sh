@@ -45,11 +45,16 @@ for file in "${ROOT}"/windows/*.ps1 "${ROOT}"/client/*.ps1; do
         '$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile($env:TEREMOQ_PS_PARSE_FILE,[ref]$tokens,[ref]$errors) > $null; if($errors.Count -ne 0){$errors | ForEach-Object {Write-Error $_}; exit 1}' \
         >/dev/null
 done
-for file in "${TEST_DIR}"/Run-GitClientE2E.ps1 "${TEST_DIR}"/client-distribution-fixture.ps1 "${TEST_DIR}"/client-state-security-fixture.ps1; do
+for file in "${TEST_DIR}"/Run-GitClientE2E.ps1 "${TEST_DIR}"/Run-StageUpdateE2E.ps1 "${TEST_DIR}"/client-distribution-fixture.ps1 "${TEST_DIR}"/client-state-security-fixture.ps1 "${TEST_DIR}"/launcher-pin-fixture.ps1; do
     TEREMOQ_PS_PARSE_FILE="${file}" WSLENV="TEREMOQ_PS_PARSE_FILE/p${WSLENV:+:${WSLENV}}" powershell.exe -NoProfile -NonInteractive -Command \
         '$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile($env:TEREMOQ_PS_PARSE_FILE,[ref]$tokens,[ref]$errors) > $null; if($errors.Count -ne 0){$errors | ForEach-Object {Write-Error $_}; exit 1}' \
         >/dev/null
 done
+launcher_pin_fixture="$(wslpath -w "${TEST_DIR}/launcher-pin-fixture.ps1")"
+launcher_pin_script="$(wslpath -w "${ROOT}/client/Pin-LanUpdateLauncher.ps1")"
+launcher_under_test="$(wslpath -w "${ROOT}/client/Start-LanInteractiveClient.ps1")"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${launcher_pin_fixture}" \
+    -PinScript "${launcher_pin_script}" -LauncherPath "${launcher_under_test}" >/dev/null
 grep -Fq 'StateRoot must be absent; prebuilt or partially built state is not accepted' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq 'Invoke-TeremoqBoundedNativeProcess' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq '[Console]::OutputEncoding = $utf8NoBom' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"

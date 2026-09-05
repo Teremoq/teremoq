@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { confirmUpdateTransition, execute, formatLocalStatus, parseArguments, restartUpdatedClient, runProcess, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
+import { confirmUpdateTransition, execute, formatLocalStatus, parseArguments, restartUpdatedClient, runProcess, scrub, terminateProcessTree } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -74,6 +74,8 @@ const reconciled = await confirmUpdateTransition(async (route, body) => {
     client_commit: targetCommit, sequence: 0, action: "wait", parameters: {} };
 }, transitionIdentity, transitionTask, "a".repeat(64), targetCommit, 2, "complete");
 expect(reconciled.client_commit === targetCommit && transitionCalls === 2, "lost update response was not reconciled safely");
+const redactedPath = scrub("At C:\\Users\\private-profile\\AppData\\Local\\Teremoq\\checkout: failed");
+expect(!redactedPath.includes("private-profile") && redactedPath.includes("[local path blocked]"), "local client path reached remote diagnostics");
 let extraArgRejected = false;
 try { parseArguments([...agentArgv, "--extra", "forbidden"]); } catch { extraArgRejected = true; }
 expect(extraArgRejected, "agent accepted an extra argv pair");
