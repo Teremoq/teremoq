@@ -255,20 +255,16 @@ On the client, from native Windows PowerShell 5 in the clean Git checkout:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
   .\infra\lan\client\Start-LanInteractiveClient.ps1 `
-  -ExpectedCommit FULL_INTEGRATED_COMMIT `
-  -ExpectedLauncherSha256 APPROVED_START_LAUNCHER_SHA256 `
-  -ExpectedGitSha256 APPROVED_GIT_EXE_SHA256 `
-  -ExpectedNodeSha256 APPROVED_NODE_EXE_SHA256 `
-  -ExpectedNpmCliSha256 APPROVED_NPM_CLI_SHA256 `
-  -ExpectedPowerShellSha256 APPROVED_POWERSHELL_EXE_SHA256 `
-  -ExpectedTaskkillSha256 APPROVED_TASKKILL_EXE_SHA256
+  -ExpectedCommit FULL_INTEGRATED_COMMIT
 ```
 
-Those values come from the Master-approved handoff, not from hashing the local
-files immediately before execution. The launcher keeps no-write/no-delete
-handles over those exact executables and the complete tracked `infra/lan` and
-`supervisor-web` source inventory, and compares each source handle with its Git
-blob before starting the agent.
+The launcher remains a one-command entrypoint. It validates a non-elevated
+token, protected installed-executable ACLs, non-reparse paths and final handle
+paths, then records local SHA-256 values as session invariants. The agent checks
+each invariant immediately before `spawn` with `shell:false`. Source files,
+launcher, agent and npm-cli.js remain locked against write/delete and are
+compared with the approved Git blobs for the complete tracked `infra/lan` and
+`supervisor-web` inventory.
 
 The server operator enqueues one action at a time with `enqueue` and reads
 bounded progress with `status`. A `stop` request can cancel a running child

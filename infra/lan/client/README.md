@@ -26,13 +26,16 @@ for the original child. A failed kill or surviving process produces a terminal
 failed status containing the bounded residual PID instead of blocking the
 queue indefinitely or claiming successful cleanup.
 
-The launcher requires six SHA-256 values supplied by the approving operator:
-its own reviewed file plus Git, Node, npm-cli.js, Windows PowerShell and
-taskkill. It opens those files and every tracked file under `infra/lan` and
-`supervisor-web` with read-only handles that deny write/delete sharing,
-validates executable SHA-256 and source Git blob identity, and keeps all handles
-open until the agent exits. Hashes calculated ad hoc by the client are not an
-approval manifest.
+The public launcher still requires only the approved commit. It verifies that
+it is non-elevated, checks installed executable paths and ACLs, derives one
+session hash for Git, Node, Windows PowerShell and taskkill, and passes those
+hashes internally to the agent for immediate verification before every spawn.
+The loader cannot start an executable while it is held with the source-file
+sharing policy, so installed executables rely on protected Program Files/System32
+ACLs plus path, handle-final-path and immediate SHA-256 verification. The
+launcher and every tracked file under `infra/lan` and `supervisor-web` remain
+open with handles denying write/delete for the entire agent session. The
+installed npm-cli.js is also hash-verified and held by such a handle while used.
 
 The LAN client no longer runs from a USB or tarball package. The first action
 is a native Git clone of `https://github.com/Teremoq/teremoq` on an explicit
@@ -68,20 +71,9 @@ $EvidenceRoot = 'C:\ABSOLUTE\PRIVATE\teremoq-lan-evidence'
 The checkout and the external state root must remain separate trees. Neither
 may contain the other.
 
-The Master-approved client handoff must also provide these lowercase hashes;
-they are specific to the reviewed checkout and installed Windows toolchain:
-
-```powershell
-$ExpectedLauncherSha256 = 'APPROVED_START_LAUNCHER_SHA256'
-$ExpectedGitSha256 = 'APPROVED_GIT_EXE_SHA256'
-$ExpectedNodeSha256 = 'APPROVED_NODE_EXE_SHA256'
-$ExpectedNpmCliSha256 = 'APPROVED_NPM_CLI_SHA256'
-$ExpectedPowerShellSha256 = 'APPROVED_POWERSHELL_EXE_SHA256'
-$ExpectedTaskkillSha256 = 'APPROVED_TASKKILL_EXE_SHA256'
-```
-
-Do not derive these values from the files immediately before launch: that
-would only describe the local bytes and would not establish approval.
+The operator does not copy machine-specific executable hashes between systems.
+They are local session invariants established only after the approved Git blob,
+non-elevated token, protected ACLs and non-reparse paths have passed.
 
 ## First installation: native Git only
 

@@ -27,10 +27,17 @@ function parseArguments(argv) {
     if (!key?.startsWith("--") || index + 1 >= argv.length || values[key]) fail("invalid or duplicate argument");
     values[key] = argv[index + 1];
   }
-  const required = ["--server", "--fingerprint", "--run-id", "--source-commit", "--pairing-stdin", "--checkout", "--state-root", "--evidence-root"];
+  const required = [
+    "--server", "--fingerprint", "--run-id", "--source-commit", "--pairing-stdin",
+    "--checkout", "--state-root", "--evidence-root", "--git-sha256", "--node-sha256",
+    "--npm-cli-sha256", "--powershell-sha256", "--taskkill-sha256",
+  ];
   if (Object.keys(values).length !== required.length || required.some((key) => !values[key])) fail("agent arguments differ from the closed contract");
   if (values["--server"] !== "https://192.168.1.130:18443") fail("server URL differs from the exact LAN endpoint");
   if (!/^[0-9a-f]{64}$/.test(values["--fingerprint"]) || !/^[0-9a-f]{40}$/.test(values["--source-commit"])) fail("invalid fingerprint or commit");
+  for (const key of ["--git-sha256", "--node-sha256", "--npm-cli-sha256", "--powershell-sha256", "--taskkill-sha256"]) {
+    if (!/^[0-9a-f]{64}$/.test(values[key])) fail("invalid executable approval hash");
+  }
   if (!/^lan-[a-z0-9][a-z0-9-]{0,31}$/.test(values["--run-id"]) || values["--pairing-stdin"] !== "true") fail("invalid run or pairing input policy");
   return values;
 }
@@ -134,9 +141,49 @@ function restrictedEnvironment() {
   };
 }
 
+function verifyApprovedFile(file, expectedSha256) {
+  if (!/^[0-9a-f]{64}$/.test(expectedSha256)) fail("approved executable hash is invalid");
+  const absolute = path.win32.resolve(file);
+  let current = absolute;
+  for (;;) {
+    const stat = fs.lstatSync(current);
+    if (stat.isSymbolicLink()) fail("approved executable path contains a reparse point");
+    const parent = path.win32.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  if (fs.realpathSync.native(absolute).toLowerCase() !== absolute.toLowerCase()) {
+    fail("approved executable resolves outside its reviewed path");
+  }
+  const descriptor = fs.openSync(absolute, "r");
+  try {
+    const before = fs.fstatSync(descriptor);
+    if (!before.isFile() || before.size < 1 || before.size > 134_217_728) {
+      fail("approved executable size is outside contract");
+    }
+    const digest = crypto.createHash("sha256");
+    const buffer = Buffer.allocUnsafe(65_536);
+    let position = 0;
+    for (;;) {
+      const count = fs.readSync(descriptor, buffer, 0, buffer.length, position);
+      if (count === 0) break;
+      digest.update(buffer.subarray(0, count));
+      position += count;
+    }
+    const after = fs.fstatSync(descriptor);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
+        digest.digest("hex") !== expectedSha256) {
+      fail("executable bytes differ from approved SHA-256");
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 function verifyCheckout(context) {
   const prefix = ["--no-replace-objects", "-c", "core.hooksPath=NUL", "-c", "core.fsmonitor=false", "-c", "protocol.file.allow=never", "-C", context.checkout];
   const runGit = (args) => {
+    verifyApprovedFile(context.git, context.gitSha256);
     const result = spawnSync(context.git, [...prefix, ...args], {
       encoding: "utf8", windowsHide: true, shell: false, env: restrictedEnvironment(), timeout: 10000,
     });
@@ -157,6 +204,11 @@ function terminateProcessTree(pid, options = {}) {
   const spawnProcess = options.spawnProcess ?? spawn;
   const taskkill = options.taskkillFile ?? `${WINDOWS_ROOT}\\System32\\taskkill.exe`;
   const taskkillArgs = options.taskkillArguments?.(pid) ?? ["/PID", String(pid), "/T", "/F"];
+  try {
+    verifyApprovedFile(taskkill, options.taskkillSha256);
+  } catch (error) {
+    return Promise.resolve({ status: "verification-failed", exitCode: -1, output: scrub(error.message) });
+  }
   const timeoutMs = options.taskkillTimeoutMs ?? TASKKILL_TIMEOUT_MS;
   return new Promise((resolve) => {
     let killer;
@@ -196,6 +248,7 @@ function terminateProcessTree(pid, options = {}) {
 function runProcess(file, args, cwd, onProgress, options = {}) {
   return new Promise((resolve) => {
     const spawnProcess = options.spawnProcess ?? spawn;
+    verifyApprovedFile(file, options.expectedFileSha256);
     const child = spawnProcess(file, args, {
       cwd,
       windowsHide: true,
@@ -257,10 +310,16 @@ function runProcess(file, args, cwd, onProgress, options = {}) {
         terminationExpired = true;
         maybeFinishTermination();
       }, options.terminationTimeoutMs ?? TERMINATION_TIMEOUT_MS);
-      terminateProcessTree(child.pid, options).then((result) => {
-        taskkillResult = result;
-        maybeFinishTermination();
-      });
+      Promise.resolve().then(() => terminateProcessTree(child.pid, options)).then(
+        (result) => {
+          taskkillResult = result;
+          maybeFinishTermination();
+        },
+        (error) => {
+          taskkillResult = { status: "verification-failed", exitCode: -1, output: scrub(error.message) };
+          maybeFinishTermination();
+        },
+      );
     };
     child.stdout.on("data", append); child.stderr.on("data", append);
     const heartbeat = setInterval(() => {
@@ -290,8 +349,16 @@ function runProcess(file, args, cwd, onProgress, options = {}) {
 async function execute(action, context, progress) {
   verifyCheckout(context);
   const powershell = `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+  const nodeOptions = {
+    expectedFileSha256: context.nodeSha256,
+    taskkillSha256: context.taskkillSha256,
+  };
+  const powershellOptions = {
+    expectedFileSha256: context.powershellSha256,
+    taskkillSha256: context.taskkillSha256,
+  };
   if (action === "diagnose-build") {
-    return runProcess(context.node, [context.npmCli, "run", "build:lan"], path.join(context.checkout, "supervisor-web"), progress);
+    return runProcess(context.node, [context.npmCli, "run", "build:lan"], path.join(context.checkout, "supervisor-web"), progress, nodeOptions);
   }
   if (action === "prepare-client") {
     const script = path.join(context.checkout, "infra", "lan", "client", "Prepare-LanClientFromGit.ps1");
@@ -299,14 +366,14 @@ async function execute(action, context, progress) {
       "-CheckoutRoot", context.checkout, "-StateRoot", context.stateRoot, "-RepositoryUrl", "https://github.com/Teremoq/teremoq",
       "-RepositoryRef", "refs/heads/codex/lan-e2e-integration", "-ExpectedCommit", context.commit, "-RunId", context.runId,
       "-ServerIPv4", "192.168.1.130", "-PrefixLength", "24", "-Namespace", "teremoq/live", "-FingerprintSha256", context.fingerprint],
-      context.checkout, progress);
+      context.checkout, progress, powershellOptions);
   }
   if (action === "preflight") {
     const script = path.join(context.checkout, "infra", "lan", "windows", "Preflight-Client.ps1");
     return runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
       "-RunId", context.runId, "-SourceCommit", context.commit, "-ServerIPv4", "192.168.1.130", "-ClientIPv4", "192.168.1.139",
       "-PrefixLength", "24", "-NetworkProfile", "Public", "-ExpectedWslMode", "nat", "-MaximumClockOffsetMs", "60000",
-      "-MinimumMtu", "1280", "-MinimumCpuCores", "2", "-MinimumMemoryMiB", "2048", "-MinimumDiskMiB", "4096"], context.checkout, progress);
+      "-MinimumMtu", "1280", "-MinimumCpuCores", "2", "-MinimumMemoryMiB", "2048", "-MinimumDiskMiB", "4096"], context.checkout, progress, powershellOptions);
   }
   if (["player-1", "load-5", "load-10", "load-25"].includes(action)) {
     const level = action === "player-1" ? "1" : action.split("-")[1];
@@ -314,16 +381,16 @@ async function execute(action, context, progress) {
     const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Start",
       "-Level", level, "-RunId", context.runId, "-CheckoutRoot", context.checkout, "-StateRoot", context.stateRoot,
       "-EvidenceRoot", context.evidenceRoot, "-ConfirmStart"];
-    return runProcess(powershell, args, context.checkout, progress);
+    return runProcess(powershell, args, context.checkout, progress, powershellOptions);
   }
   if (action === "collect") {
     if (!context.activeLevel) return { code: -1, signal: "", output: "No client workload is active for collection." };
     const script = path.join(context.checkout, "infra", "lan", "client", "Invoke-LanLoad.ps1");
     const common = ["-Level", String(context.activeLevel), "-RunId", context.runId, "-CheckoutRoot", context.checkout,
       "-StateRoot", context.stateRoot, "-EvidenceRoot", context.evidenceRoot];
-    const collected = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Collect", ...common], context.checkout, progress);
+    const collected = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Collect", ...common], context.checkout, progress, powershellOptions);
     if (collected.code !== 0) return collected;
-    const stopped = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Stop", ...common], context.checkout, progress);
+    const stopped = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", "Stop", ...common], context.checkout, progress, powershellOptions);
     if (stopped.code === 0) context.activeLevel = 0;
     return { code: stopped.code, signal: stopped.signal, output: `${collected.output}\n${stopped.output}` };
   }
@@ -333,7 +400,7 @@ async function execute(action, context, progress) {
     const script = path.join(context.checkout, "infra", "lan", "client", "Invoke-LanLoad.ps1");
     const result = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
       "-Action", "Stop", "-Level", String(context.activeLevel), "-RunId", context.runId, "-CheckoutRoot", context.checkout,
-      "-StateRoot", context.stateRoot, "-EvidenceRoot", context.evidenceRoot], context.checkout, progress);
+      "-StateRoot", context.stateRoot, "-EvidenceRoot", context.evidenceRoot], context.checkout, progress, powershellOptions);
     if (result.code === 0) context.activeLevel = 0;
     return result;
   }
@@ -352,12 +419,18 @@ async function main() {
     git: "C:\\Program Files\\Git\\cmd\\git.exe",
     node: "C:\\Program Files\\nodejs\\node.exe",
     npmCli: "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+    gitSha256: values["--git-sha256"],
+    nodeSha256: values["--node-sha256"],
+    npmCliSha256: values["--npm-cli-sha256"],
+    powershellSha256: values["--powershell-sha256"],
+    taskkillSha256: values["--taskkill-sha256"],
     activeLevel: 0,
   };
-  for (const executable of [context.git, context.node, context.npmCli]) {
-    const stat = fs.lstatSync(executable);
-    if (!stat.isFile() || stat.isSymbolicLink()) fail("reviewed Node/npm entrypoint is unavailable");
-  }
+  verifyApprovedFile(context.git, context.gitSha256);
+  verifyApprovedFile(context.node, context.nodeSha256);
+  verifyApprovedFile(context.npmCli, context.npmCliSha256);
+  verifyApprovedFile(`${WINDOWS_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`, context.powershellSha256);
+  verifyApprovedFile(`${WINDOWS_ROOT}\\System32\\taskkill.exe`, context.taskkillSha256);
   const agent = pinnedAgent(values["--server"], values["--fingerprint"]);
   const identity = { schema_version: 1, run_id: context.runId, source_commit: context.commit };
   let previousRequest = 0;
@@ -395,7 +468,7 @@ async function main() {
   }
 }
 
-export { pinnedAgent, requestJson, runProcess, scrub, terminateProcessTree };
+export { parseArguments, pinnedAgent, requestJson, runProcess, scrub, terminateProcessTree };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });
