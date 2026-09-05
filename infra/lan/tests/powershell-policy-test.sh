@@ -11,6 +11,32 @@ if ! command -v powershell.exe >/dev/null 2>&1 || ! command -v wslpath >/dev/nul
     printf 'lan-powershell-policy-test: skipped (Windows PowerShell runtime unavailable)\n'
     exit 0
 fi
+(
+cd -- "$(wslpath -u 'C:\')"
+TEREMOQ_LOCK_LAUNCHER="${ROOT}/client/Start-LanInteractiveClient.ps1" \
+    TEREMOQ_LOCK_TEST="${TEST_DIR}/interactive-client-lock-test.ps1" \
+    WSLENV="TEREMOQ_LOCK_LAUNCHER/p:TEREMOQ_LOCK_TEST/p" \
+    powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command '
+    $ErrorActionPreference = "Stop"
+    $local = Join-Path $env:TEMP ("teremoq-lock-policy-" + [Guid]::NewGuid().ToString("N"))
+    $client = Join-Path $local "client"
+    $tests = Join-Path $local "tests"
+    New-Item -ItemType Directory -Path $client,$tests | Out-Null
+    try {
+        Copy-Item -LiteralPath $env:TEREMOQ_LOCK_LAUNCHER -Destination (Join-Path $client "Start-LanInteractiveClient.ps1")
+        Copy-Item -LiteralPath $env:TEREMOQ_LOCK_TEST -Destination (Join-Path $tests "interactive-client-lock-test.ps1")
+        Set-Location -LiteralPath $local
+        & (Join-Path $tests "interactive-client-lock-test.ps1") | Out-Null
+    } finally {
+        Set-Location -LiteralPath $env:TEMP
+        for ($attempt = 0; $attempt -lt 10 -and (Test-Path -LiteralPath $local); $attempt++) {
+            try { Remove-Item -LiteralPath $local -Recurse -Force -ErrorAction Stop }
+            catch { Start-Sleep -Milliseconds 100 }
+        }
+        if (Test-Path -LiteralPath $local) { throw "local lock canary cleanup did not complete" }
+    }
+' >/dev/null
+)
 scratch="$(mktemp -d /tmp/teremoq-lan-powershell-test.XXXXXX)"
 trap 'find "${scratch}" -depth -delete' EXIT
 for file in "${ROOT}"/windows/*.ps1 "${ROOT}"/client/*.ps1; do

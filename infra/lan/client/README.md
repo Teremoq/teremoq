@@ -20,9 +20,19 @@ firewall rule and is removed during LAN rollback.
 
 If the server requests `stop` while a test command is running, the agent
 terminates that command and its Windows child-process tree before processing
-the final stop action. Every action has a five-minute upper bound, and losing
-the authenticated progress channel also terminates the active child rather
-than leaving an unmanaged load running.
+the final stop action. Every action has a five-minute upper bound. Cancellation
+waits for and validates `taskkill`, then waits at most another fifteen seconds
+for the original child. A failed kill or surviving process produces a terminal
+failed status containing the bounded residual PID instead of blocking the
+queue indefinitely or claiming successful cleanup.
+
+The launcher requires six SHA-256 values supplied by the approving operator:
+its own reviewed file plus Git, Node, npm-cli.js, Windows PowerShell and
+taskkill. It opens those files and every tracked file under `infra/lan` and
+`supervisor-web` with read-only handles that deny write/delete sharing,
+validates executable SHA-256 and source Git blob identity, and keeps all handles
+open until the agent exits. Hashes calculated ad hoc by the client are not an
+approval manifest.
 
 The LAN client no longer runs from a USB or tarball package. The first action
 is a native Git clone of `https://github.com/Teremoq/teremoq` on an explicit
@@ -57,6 +67,21 @@ $EvidenceRoot = 'C:\ABSOLUTE\PRIVATE\teremoq-lan-evidence'
 
 The checkout and the external state root must remain separate trees. Neither
 may contain the other.
+
+The Master-approved client handoff must also provide these lowercase hashes;
+they are specific to the reviewed checkout and installed Windows toolchain:
+
+```powershell
+$ExpectedLauncherSha256 = 'APPROVED_START_LAUNCHER_SHA256'
+$ExpectedGitSha256 = 'APPROVED_GIT_EXE_SHA256'
+$ExpectedNodeSha256 = 'APPROVED_NODE_EXE_SHA256'
+$ExpectedNpmCliSha256 = 'APPROVED_NPM_CLI_SHA256'
+$ExpectedPowerShellSha256 = 'APPROVED_POWERSHELL_EXE_SHA256'
+$ExpectedTaskkillSha256 = 'APPROVED_TASKKILL_EXE_SHA256'
+```
+
+Do not derive these values from the files immediately before launch: that
+would only describe the local bytes and would not establish approval.
 
 ## First installation: native Git only
 

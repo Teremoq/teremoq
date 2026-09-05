@@ -255,12 +255,26 @@ On the client, from native Windows PowerShell 5 in the clean Git checkout:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
   .\infra\lan\client\Start-LanInteractiveClient.ps1 `
-  -ExpectedCommit FULL_INTEGRATED_COMMIT
+  -ExpectedCommit FULL_INTEGRATED_COMMIT `
+  -ExpectedLauncherSha256 APPROVED_START_LAUNCHER_SHA256 `
+  -ExpectedGitSha256 APPROVED_GIT_EXE_SHA256 `
+  -ExpectedNodeSha256 APPROVED_NODE_EXE_SHA256 `
+  -ExpectedNpmCliSha256 APPROVED_NPM_CLI_SHA256 `
+  -ExpectedPowerShellSha256 APPROVED_POWERSHELL_EXE_SHA256 `
+  -ExpectedTaskkillSha256 APPROVED_TASKKILL_EXE_SHA256
 ```
+
+Those values come from the Master-approved handoff, not from hashing the local
+files immediately before execution. The launcher keeps no-write/no-delete
+handles over those exact executables and the complete tracked `infra/lan` and
+`supervisor-web` source inventory, and compares each source handle with its Git
+blob before starting the agent.
 
 The server operator enqueues one action at a time with `enqueue` and reads
 bounded progress with `status`. A `stop` request can cancel a running child
-process and then stops the active client load. At final cleanup, enqueue
+process and then stops the active client load. The agent waits for `taskkill`
+and for the original child under separate closed deadlines; failure or a live
+residual PID is reported as a terminal failed action. At final cleanup, enqueue
 `stop`, stop the lab, run the elevated firewall `Rollback` with
 `-CoordinationTlsPort 18443` into a private JSON attestation, and pass that JSON
 to `interactive-channel-control.sh stop`. The listener remains inaccessible

@@ -14,6 +14,10 @@ const ACTIONS = new Set(["diagnose-build", "prepare-client", "preflight", "playe
 const MAX_RESPONSE = 32768;
 const MAX_MESSAGE = 16384;
 const ACTION_TIMEOUT_MS = 5 * 60 * 1000;
+const TASKKILL_TIMEOUT_MS = 5 * 1000;
+const TERMINATION_TIMEOUT_MS = 15 * 1000;
+const WINDOWS_ROOT = "C:\\Windows";
+const PROGRAM_FILES = "C:\\Program Files";
 
 function fail(message) { throw new Error(message); }
 function parseArguments(argv) {
@@ -107,18 +111,22 @@ function scrub(value) {
 function restrictedEnvironment() {
   const systemRoot = process.env.SystemRoot;
   const programFiles = process.env.ProgramFiles;
-  if (!systemRoot || !programFiles) fail("required Windows roots are unavailable");
+  if (!systemRoot || !programFiles ||
+      path.win32.resolve(systemRoot).toLowerCase() !== WINDOWS_ROOT.toLowerCase() ||
+      path.win32.resolve(programFiles).toLowerCase() !== PROGRAM_FILES.toLowerCase()) {
+    fail("required Windows roots differ from the reviewed locations");
+  }
   return {
-    SystemRoot: systemRoot,
-    WINDIR: systemRoot,
-    ProgramFiles: programFiles,
+    SystemRoot: WINDOWS_ROOT,
+    WINDIR: WINDOWS_ROOT,
+    ProgramFiles: PROGRAM_FILES,
     "ProgramFiles(x86)": process.env["ProgramFiles(x86)"] || "",
     LOCALAPPDATA: process.env.LOCALAPPDATA || "",
     TEMP: process.env.TEMP || "",
     TMP: process.env.TMP || "",
     USERPROFILE: process.env.USERPROFILE || "",
-    ComSpec: `${systemRoot}\\System32\\cmd.exe`,
-    PATH: `${programFiles}\\nodejs;${systemRoot}\\System32;${systemRoot};${programFiles}\\Git\\cmd`,
+    ComSpec: `${WINDOWS_ROOT}\\System32\\cmd.exe`,
+    PATH: `${PROGRAM_FILES}\\nodejs;${WINDOWS_ROOT}\\System32;${WINDOWS_ROOT};${PROGRAM_FILES}\\Git\\cmd`,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "NUL",
     GIT_OPTIONAL_LOCKS: "0",
@@ -139,30 +147,143 @@ function verifyCheckout(context) {
     fail("checkout commit or branch differs from the paired server");
   }
   if (runGit(["remote", "get-url", "origin"]).replace(/\/$/, "") !== "https://github.com/Teremoq/teremoq") fail("checkout remote differs from the official repository");
-  if (runGit(["status", "--porcelain=v1", "--untracked-files=normal"]) !== "") fail("checkout changed after pairing");
+  if (runGit(["status", "--porcelain=v1", "--untracked-files=all"]) !== "") fail("checkout changed after pairing");
 }
 
-function runProcess(file, args, cwd, onProgress) {
+function terminateProcessTree(pid, options = {}) {
+  if (!Number.isSafeInteger(pid) || pid < 1) {
+    return Promise.resolve({ status: "invalid-pid", exitCode: -1, output: "taskkill PID was invalid" });
+  }
+  const spawnProcess = options.spawnProcess ?? spawn;
+  const taskkill = options.taskkillFile ?? `${WINDOWS_ROOT}\\System32\\taskkill.exe`;
+  const taskkillArgs = options.taskkillArguments?.(pid) ?? ["/PID", String(pid), "/T", "/F"];
+  const timeoutMs = options.taskkillTimeoutMs ?? TASKKILL_TIMEOUT_MS;
   return new Promise((resolve) => {
-    const child = spawn(file, args, { cwd, windowsHide: true, shell: false, env: restrictedEnvironment() });
+    let killer;
+    let settled = false;
+    let output = "";
+    const finish = (status, exitCode) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ status, exitCode, output: scrub(output || "no taskkill output") });
+    };
+    try {
+      killer = spawnProcess(taskkill, taskkillArgs, {
+        windowsHide: true,
+        shell: false,
+        env: restrictedEnvironment(),
+      });
+    } catch (error) {
+      resolve({ status: "spawn-error", exitCode: -1, output: scrub(error.message) });
+      return;
+    }
+    const append = (chunk) => { output = (output + chunk.toString("utf8")).slice(-MAX_MESSAGE); };
+    killer.stdout?.on("data", append);
+    killer.stderr?.on("data", append);
+    const timer = setTimeout(() => {
+      killer.kill();
+      finish("timeout", -1);
+    }, timeoutMs);
+    killer.once("error", (error) => {
+      output = error.message;
+      finish("spawn-error", -1);
+    });
+    killer.once("exit", (code) => finish(code === 0 ? "complete" : "failed", code ?? -1));
+  });
+}
+
+function runProcess(file, args, cwd, onProgress, options = {}) {
+  return new Promise((resolve) => {
+    const spawnProcess = options.spawnProcess ?? spawn;
+    const child = spawnProcess(file, args, {
+      cwd,
+      windowsHide: true,
+      shell: false,
+      env: restrictedEnvironment(),
+    });
     let output = "";
     let terminating = false;
+    let childTerminal = null;
+    let taskkillResult = null;
+    let terminationExpired = false;
+    let settled = false;
     const append = (chunk) => { output = (output + chunk.toString("utf8")).slice(-MAX_MESSAGE); };
-    const terminateTree = () => {
-      if (terminating || !child.pid) return;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(heartbeat);
+      clearTimeout(actionTimer);
+      clearTimeout(terminationTimer);
+      resolve(result);
+    };
+    const terminalOutput = (reason) => scrub([
+      output || "no process output",
+      reason,
+      taskkillResult ? `taskkill_status=${taskkillResult.status}; taskkill_exit=${taskkillResult.exitCode}` : "taskkill_status=pending",
+    ].join("\n"));
+    const maybeFinishTermination = () => {
+      if (!terminating || settled || !taskkillResult) return;
+      if (childTerminal) {
+        const taskkillFailed = taskkillResult.status !== "complete";
+        finish({
+          code: -1,
+          signal: taskkillFailed ? "taskkill-failed" : "termination-requested",
+          output: terminalOutput(`child_terminal=${childTerminal.signal || childTerminal.code}`),
+          residualPid: null,
+        });
+        return;
+      }
+      if (!terminationExpired) return;
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.removeAllListeners();
+      child.once("error", () => {});
+      child.unref();
+      finish({
+        code: -1,
+        signal: "termination-residue",
+        output: terminalOutput(`residual_process_pid=${child.pid}`),
+        residualPid: child.pid,
+      });
+    };
+    const terminateTree = (reason = "termination-requested") => {
+      if (settled || terminating || !child.pid) return;
       terminating = true;
-      const taskkill = `${process.env.SystemRoot}\\System32\\taskkill.exe`;
-      spawn(taskkill, ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, shell: false, env: restrictedEnvironment() });
+      clearInterval(heartbeat);
+      clearTimeout(actionTimer);
+      output = `${output}\ntermination_reason=${reason}`;
+      terminationTimer = setTimeout(() => {
+        terminationExpired = true;
+        maybeFinishTermination();
+      }, options.terminationTimeoutMs ?? TERMINATION_TIMEOUT_MS);
+      terminateProcessTree(child.pid, options).then((result) => {
+        taskkillResult = result;
+        maybeFinishTermination();
+      });
     };
     child.stdout.on("data", append); child.stderr.on("data", append);
     const heartbeat = setInterval(() => {
       Promise.resolve(onProgress(scrub(output || "process is still running")))
-        .then((reply) => { if (reply?.cancel_requested === true) terminateTree(); })
-        .catch(terminateTree);
-    }, 15000);
-    const timer = setTimeout(terminateTree, ACTION_TIMEOUT_MS);
-    child.once("exit", (code, signal) => { clearInterval(heartbeat); clearTimeout(timer); resolve({ code: code ?? -1, signal: signal ?? "", output: scrub(output || "no process output") }); });
-    child.once("error", (error) => { clearInterval(heartbeat); clearTimeout(timer); resolve({ code: -1, signal: "spawn-error", output: scrub(error.message) }); });
+        .then((reply) => { if (reply?.cancel_requested === true) terminateTree("cancel-requested"); })
+        .catch(() => terminateTree("progress-channel-failed"));
+    }, options.heartbeatMs ?? 15000);
+    const actionTimer = setTimeout(
+      () => terminateTree("action-timeout"),
+      options.actionTimeoutMs ?? ACTION_TIMEOUT_MS,
+    );
+    let terminationTimer = null;
+    child.once("exit", (code, signal) => {
+      childTerminal = { code: code ?? -1, signal: signal ?? "" };
+      if (terminating) maybeFinishTermination();
+      else finish({ ...childTerminal, output: scrub(output || "no process output"), residualPid: null });
+    });
+    child.once("error", (error) => {
+      childTerminal = { code: -1, signal: "spawn-error" };
+      output = error.message;
+      if (terminating) maybeFinishTermination();
+      else finish({ ...childTerminal, output: scrub(output), residualPid: null });
+    });
   });
 }
 
@@ -274,7 +395,7 @@ async function main() {
   }
 }
 
-export { pinnedAgent, requestJson, scrub };
+export { pinnedAgent, requestJson, runProcess, scrub, terminateProcessTree };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });
