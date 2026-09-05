@@ -93,12 +93,19 @@ Push-Location -LiteralPath $project
 $previousPath = $env:PATH
 $previousPathExt = $env:PATHEXT
 $previousComSpec = $env:ComSpec
+$previousGitNoSystem = $env:GIT_CONFIG_NOSYSTEM
+$previousGitGlobal = $env:GIT_CONFIG_GLOBAL
 try {
     # The orchestrator runs directly under the validated Node executable. npm is
     # still used internally, but no cmd.exe wrapper has to rediscover node.exe.
     $env:PATH = "$(Split-Path -Parent $node);$gitDirectory;$powerShellDirectory;$env:SystemRoot\System32;$env:SystemRoot"
     $env:PATHEXT = '.COM;.EXE;.BAT;.CMD'
     $env:ComSpec = $commandProcessor
+    # The checked-out source is authoritative.  A Windows global autocrlf/eol
+    # setting can make an otherwise exact LF checkout appear dirty to the Node
+    # distribution contract after the launcher has already verified it.
+    $env:GIT_CONFIG_NOSYSTEM = '1'
+    $env:GIT_CONFIG_GLOBAL = 'NUL'
     $buildResult = Invoke-TeremoqBoundedNativeProcess -FilePath $node -WorkingDirectory $project `
         -Arguments $arguments -TimeoutMilliseconds 900000 `
         -StdoutMaxBytes 131072 -StderrMaxBytes 131072
@@ -111,5 +118,7 @@ try {
     $env:PATH = $previousPath
     $env:PATHEXT = $previousPathExt
     $env:ComSpec = $previousComSpec
+    $env:GIT_CONFIG_NOSYSTEM = $previousGitNoSystem
+    $env:GIT_CONFIG_GLOBAL = $previousGitGlobal
     Pop-Location
 }
