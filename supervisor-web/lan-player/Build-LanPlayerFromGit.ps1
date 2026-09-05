@@ -38,10 +38,15 @@ if ($expectedScriptRoot -cne [IO.Path]::GetFullPath($PSScriptRoot) -or
     throw 'launcher must run from supervisor-web/lan-player in the exact checkout'
 }
 
-$node = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue
-$npm = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue
-if (-not $node -or -not $npm) { throw 'Node 22.x and npm 10.x are required' }
-$nodeVersionOutput = @(& $node.Source --version)
+$node = Join-Path $env:ProgramFiles 'nodejs\node.exe'
+$npm = Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
+$npmCli = Join-Path $env:ProgramFiles 'nodejs\node_modules\npm\bin\npm-cli.js'
+if (-not (Test-Path -LiteralPath $node -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $npm -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $npmCli -PathType Leaf)) {
+    throw 'Node 22.x and npm 10.x are required in Program Files'
+}
+$nodeVersionOutput = @(& $node --version)
 $nodeVersionExit = $LASTEXITCODE
 if ($nodeVersionExit -ne 0 -or $nodeVersionOutput.Count -ne 1) {
     throw 'Node runtime version could not be determined'
@@ -50,11 +55,14 @@ $nodeVersion = ([string]$nodeVersionOutput[0]).Trim()
 if ($nodeVersion -cnotmatch '^v22[.][0-9]+[.][0-9]+$') {
     throw 'Node runtime must be exact major 22'
 }
-$npmVersionOutput = @(& $npm.Source --version)
+$npmVersionOutput = @(& $node $npmCli --version)
 $npmVersionExit = $LASTEXITCODE
-if ($npmVersionExit -ne 0 -or $npmVersionOutput.Count -ne 1 -or
-    ([string]$npmVersionOutput[0]).Trim() -cnotmatch '^10[.][0-9]+[.][0-9]+$') {
-    Write-Warning 'npm 10.x could not be confirmed; the locked build remains the compatibility gate'
+if ($npmVersionExit -ne 0 -or $npmVersionOutput.Count -ne 1) {
+    throw 'npm runtime version could not be determined'
+}
+$npmVersion = ([string]$npmVersionOutput[0]).Trim()
+if ($npmVersion -cnotmatch '^10[.][0-9]+[.][0-9]+$') {
+    throw 'npm runtime must be exact major 10'
 }
 
 $arguments = @(
@@ -70,7 +78,7 @@ if ($Offline) { $arguments += '--offline' }
 
 Push-Location -LiteralPath $project
 try {
-    & $npm.Source @arguments
+    & $npm @arguments
     if ($LASTEXITCODE -ne 0) { throw 'local source build/package failed closed' }
 } finally {
     Pop-Location

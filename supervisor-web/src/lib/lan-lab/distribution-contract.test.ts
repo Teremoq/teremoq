@@ -199,11 +199,11 @@ describe("contrato de distribución Git del player LAN", () => {
   it("launcher Windows y orquestador no leen config/evidencia ni ejecutan red Git", () => {
     const launcher = readFileSync("lan-player/Build-LanPlayerFromGit.ps1", "utf8");
     const orchestrator = readFileSync("scripts/distribute-lan-from-git.mjs", "utf8");
-    expect(launcher).toContain("Node 22.x and npm 10.x are required");
-    expect(launcher).toContain("$nodeVersionOutput = @(& $node.Source --version)");
-    expect(launcher).toContain("$npmVersionOutput = @(& $npm.Source --version)");
-    expect(launcher).toContain("the locked build remains the compatibility gate");
-    expect(launcher).not.toMatch(/\(& \$(?:node|npm)\.Source --version\)\.Trim\(\)/);
+    expect(launcher).toContain("Node 22.x and npm 10.x are required in Program Files");
+    expect(launcher).toContain("$nodeVersionOutput = @(& $node --version)");
+    expect(launcher).toContain("$npmVersionOutput = @(& $node $npmCli --version)");
+    expect(launcher).toContain("npm runtime must be exact major 10");
+    expect(launcher).not.toMatch(/\(& \$(?:node|npm)(?:\.Source)? --version\)\.Trim\(\)/);
     expect(launcher).toContain("distribute:lan");
     expect(orchestrator).toContain('"worktree", "add", "--detach"');
     expect(orchestrator).not.toMatch(/\[\s*"(?:clone|fetch|pull|push)"/);
