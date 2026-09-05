@@ -57,6 +57,10 @@ grep -Fq '[Console]::OutputEncoding = $utf8NoBom' "${REPO_ROOT}/supervisor-web/l
 ! grep -Fq '$LASTEXITCODE' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq -- "-Arguments (@(\$npmCli) + \$arguments)" "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 grep -Fq 'BuilderReceiptPath' "${ROOT}/client/Initialize-LanClientState.ps1"
+grep -Fq 'Test-TeremoqReusableCheckout' "${ROOT}/client/Start-LanClientFromGit.ps1"
+grep -Fq "'merge', '--ff-only', \$ExpectedCommit" "${ROOT}/client/Start-LanClientFromGit.ps1"
+grep -Fq 'Se conserva sin modificar el checkout no reutilizable' "${ROOT}/client/Start-LanClientFromGit.ps1"
+! grep -Eq 'reset[[:space:]]+--hard|clean[[:space:]]+-f' "${ROOT}/client/Start-LanClientFromGit.ps1"
 if rg -n '^\s*\$[A-Za-z0-9_]+\.ArgumentList\b' "${ROOT}/client"/*.ps1 >/dev/null; then
     printf 'powershell-policy-test: client runner uses ProcessStartInfo.ArgumentList, unsupported by Windows PowerShell 5\n' >&2
     exit 1
