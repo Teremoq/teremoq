@@ -113,6 +113,8 @@ if ($null -eq $spanishAltOffset -or (Format-TeremoqInvariantDecimal -Value $span
 
 $internalOnly = @(Get-TeremoqDockerPublicationConflicts -Rows @("tramiteplus-redis-1`t6379/tcp"))
 if ($internalOnly.Count -ne 0) { throw 'internal-only EXPOSE was treated as a host publication' }
+$emptyInventory = @(Get-TeremoqDockerPublicationConflicts -Rows @())
+if ($emptyInventory.Count -ne 0) { throw 'empty Docker inventory produced a publication conflict' }
 $crossHostReserved = @(Get-TeremoqDockerPublicationConflicts -Rows @("cross-host`t0.0.0.0:4433->50000/udp"))
 if ($crossHostReserved.Count -ne 1 -or $crossHostReserved[0] -ne 'service=cross-host;port=4433/udp') { throw 'host-port conflict was not detected' }
 $crossContainerReserved = @(Get-TeremoqDockerPublicationConflicts -Rows @("cross-container`t0.0.0.0:50000->4433/udp"))

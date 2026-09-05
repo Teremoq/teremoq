@@ -359,7 +359,7 @@ function Test-TeremoqDockerHostLiteral {
 }
 
 function Get-TeremoqDockerPublicationConflicts {
-    param([Parameter(Mandatory = $true)][string[]]$Rows)
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Rows)
     if ($Rows.Count -gt 128) { throw 'Docker publication row count exceeds 128' }
     $conflicts = New-Object System.Collections.Generic.List[string]
     $seen = New-Object 'System.Collections.Generic.HashSet[string]'
