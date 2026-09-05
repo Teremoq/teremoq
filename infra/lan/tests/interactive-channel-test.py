@@ -16,6 +16,7 @@ assert spec.loader is not None
 spec.loader.exec_module(channel)
 
 commit = "a" * 40
+assert channel.process_start_ticks(os.getpid()) > 0
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary) / "state"
     channel.initialize(root, "lan-channel-test", commit, "192.168.77.20")

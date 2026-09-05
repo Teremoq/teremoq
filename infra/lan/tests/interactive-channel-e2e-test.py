@@ -14,12 +14,56 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
+import sys
 
 source = Path(__file__).parents[1] / "interactive_channel.py"
 spec = importlib.util.spec_from_file_location("interactive_channel", source)
 channel = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(channel)
+sys.path.insert(0, str(source.parent))
+import lab_runtime
+
+
+def check(name, value="measured", status="observed", quality="real"):
+    return {"check": name, "status": status, "value": value, "evidence_quality": quality}
+
+
+def server_preflight(run_id, source_commit, server_ip, client_ip):
+    checks = {name: check(name) for name in lab_runtime.SERVER_WINDOWS_CHECKS}
+    checks.update({
+        "preflight_gate": check("preflight_gate", "ready", "pass"),
+        "capture_origin": check("capture_origin", "native_windows_powershell", "pass"),
+        "network_profile": check("network_profile", "Public", "pass"),
+        "clock_offset": check("clock_offset", "0.079", "pass"),
+        "mtu": check("mtu", "1500", "pass"),
+        "logical_cpu": check("logical_cpu", "8", "pass"),
+        "physical_memory_mib": check("physical_memory_mib", "8192", "pass"),
+        "free_disk_mib": check("free_disk_mib", "16384", "pass"),
+        "wifi_adapter": check("wifi_adapter", "ifindex=11;physical_media=Native 802.11;ndis_medium=9", "pass"),
+        "wifi_radio": check("wifi_radio", "802.11ac"),
+        "wifi_band": check("wifi_band", "5 GHz", "pass"),
+        "expected_wsl_mode_gate": check("expected_wsl_mode_gate", "mirrored", "pass"),
+        "docker_publication_inventory": check("docker_publication_inventory", "bounded-scan", "pass"),
+    })
+    for port in (*lab_runtime.LEGACY_UDP_PORTS, 14433, 19000):
+        checks[f"listener_udp_{port}"] = check(f"listener_udp_{port}", "free", "pass")
+    for port in lab_runtime.LEGACY_TCP_PORTS:
+        checks[f"listener_tcp_{port}"] = check(f"listener_tcp_{port}", "free", "pass")
+    return {
+        "schema_version": 2, "report_kind": "teremoq-lan-windows-preflight-v2", "run_id": run_id,
+        "source_commit": source_commit, "role": "server", "server_ipv4": server_ip, "client_ipv4": client_ip,
+        "prefix_length": 24, "network_profile": "Public", "expected_wsl_mode": "mirrored",
+        "maximum_clock_offset_ms": 25, "minimum_mtu": 1280, "minimum_cpu_cores": 2,
+        "minimum_memory_mib": 2048, "minimum_disk_mib": 4096,
+        "capture_context": {
+            "schema_version": 2, "current_process_name": "powershell.exe",
+            "parent_process_names": ["windowsterminal.exe", "explorer.exe"], "parent_process_count": 2,
+            "traversal_depth_limit": 16, "traversal_outcome": "terminated_parent_pid_nonpositive",
+            "wsl_environment_keys_present": [], "powershell_edition": "Desktop", "powershell_version_major": 5,
+        },
+        "checks": list(checks.values()),
+    }
 
 
 def post(url, body, context, headers=None):
@@ -45,10 +89,9 @@ with tempfile.TemporaryDirectory() as temporary:
     fingerprint_path = root / "fingerprint.sha256"
     fingerprint_path.write_text(fingerprint + "\n", encoding="ascii")
     preflight_path = root / "server-preflight.json"
-    preflight_path.write_text(json.dumps({
-        "schema_version": 2, "run_id": identity["run_id"], "source_commit": commit, "role": "server",
-        "checks": [{"check": "preflight_gate", "status": "pass", "value": "ready", "evidence_quality": "real"}],
-    }), encoding="utf-8")
+    preflight_path.write_text(json.dumps(server_preflight(
+        identity["run_id"], commit, "192.168.77.10", "192.168.77.20"
+    )), encoding="utf-8")
     firewall_path = root / "firewall.json"
     firewall = {
         "schema_version": 1, "run_id": identity["run_id"], "source_commit": commit,

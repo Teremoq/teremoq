@@ -28,31 +28,17 @@ done
 [[ -n "${action}" && "${state_root}" == /* && "${run_id}" =~ ^lan-[a-z0-9][a-z0-9-]{0,31}$ && "${source_commit}" =~ ^[0-9a-f]{40}$ ]] || {
     printf 'action, absolute state root, run id and exact source commit are required\n' >&2; exit 2;
 }
-pid_file="${state_root}/channel.pid"
-
 case "${action}" in
     start)
         [[ "${confirm_start}" == 1 && -n "${server_ip}" && -n "${client_ip}" && "${certificate}" == /* && "${private_key}" == /* &&
            "${fingerprint}" == /* && "${authorization}" == /* && "${server_preflight}" == /* && "${firewall_attestation}" == /* ]] || {
             printf 'start requires opt-in confirmation, exact IPs and absolute PKI/authorization/preflight/firewall evidence\n' >&2; exit 2;
         }
-        pairing="$(python3 "${SCRIPT_DIR}/interactive_channel.py" init --state-root "${state_root}" --run-id "${run_id}" --source-commit "${source_commit}" --client-ip "${client_ip}")"
-        nohup python3 "${SCRIPT_DIR}/interactive_channel.py" serve --state-root "${state_root}" --run-id "${run_id}" \
-            --source-commit "${source_commit}" --client-ip "${client_ip}" --bind "${server_ip}" \
+        python3 "${SCRIPT_DIR}/interactive_channel.py" daemon-start --state-root "${state_root}" --run-id "${run_id}" \
+            --source-commit "${source_commit}" --client-ip "${client_ip}" --server-ip "${server_ip}" \
             --port 18443 --certificate "${certificate}" --private-key "${private_key}" \
             --fingerprint "${fingerprint}" --authorization "${authorization}" --server-preflight "${server_preflight}" \
-            --firewall-attestation "${firewall_attestation}" \
-            >"${state_root}/channel.stdout" 2>"${state_root}/channel.stderr" &
-        pid=$!
-        printf '%s\n' "${pid}" >"${pid_file}"
-        chmod 600 "${pid_file}" "${state_root}/channel.stdout" "${state_root}/channel.stderr"
-        for _ in {1..50}; do
-            kill -0 "${pid}" 2>/dev/null || { printf 'coordination server exited during startup\n' >&2; exit 1; }
-            ss -H -ltn "sport = :18443" 2>/dev/null | grep -Fq "${server_ip}:18443" && break
-            sleep 0.1
-        done
-        ss -H -ltn "sport = :18443" 2>/dev/null | grep -Fq "${server_ip}:18443" || { kill "${pid}" 2>/dev/null || true; printf 'coordination listener did not become ready\n' >&2; exit 1; }
-        printf 'PAIRING_CODE=%s\n' "${pairing}"
+            --firewall-attestation "${firewall_attestation}"
         ;;
     enqueue)
         [[ -n "${server_ip}" && "${certificate}" == /* && -n "${client_ip}" && -n "${task}" ]] || {
@@ -63,32 +49,16 @@ case "${action}" in
             --certificate "${certificate}" --action "${task}"
         ;;
     status)
-        [[ -f "${pid_file}" && ! -L "${pid_file}" ]] || { printf 'coordination channel is stopped\n'; exit 0; }
-        pid="$(<"${pid_file}")"
-        [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || { printf 'invalid coordination pid\n' >&2; exit 1; }
-        kill -0 "${pid}" 2>/dev/null || { printf 'coordination process is not running\n' >&2; exit 1; }
-        if [[ -f "${state_root}/channel-events.jsonl" ]]; then tail -n 20 -- "${state_root}/channel-events.jsonl"; else printf 'coordination channel ready; no client events yet\n'; fi
+        [[ -n "${server_ip}" && -n "${client_ip}" ]] || { printf 'status requires exact server/client IPs\n' >&2; exit 2; }
+        python3 "${SCRIPT_DIR}/interactive_channel.py" status --state-root "${state_root}" --run-id "${run_id}" \
+            --source-commit "${source_commit}" --client-ip "${client_ip}" --server-ip "${server_ip}"
         ;;
     stop)
         [[ -n "${server_ip}" && -n "${client_ip}" && "${rollback_attestation}" == /* ]] || {
             printf 'stop requires exact IPs and the elevated firewall rollback attestation\n' >&2; exit 2;
         }
-        python3 "${SCRIPT_DIR}/interactive_channel.py" verify-rollback --state-root "${state_root}" --run-id "${run_id}" \
+        python3 "${SCRIPT_DIR}/interactive_channel.py" daemon-stop --state-root "${state_root}" --run-id "${run_id}" \
             --source-commit "${source_commit}" --client-ip "${client_ip}" --server-ip "${server_ip}" \
-            --attestation "${rollback_attestation}" >/dev/null
-        if [[ -f "${pid_file}" && ! -L "${pid_file}" ]]; then
-            pid="$(<"${pid_file}")"
-            [[ "${pid}" =~ ^[1-9][0-9]*$ ]] || { printf 'invalid coordination pid\n' >&2; exit 1; }
-            cmdline="$(tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null || true)"
-            [[ "${cmdline}" == *"interactive_channel.py serve"* && "${cmdline}" == *"${state_root}"* ]] || {
-                printf 'coordination pid ownership mismatch\n' >&2; exit 1;
-            }
-            kill -TERM "${pid}"
-            for _ in {1..100}; do kill -0 "${pid}" 2>/dev/null || break; sleep 0.1; done
-            kill -0 "${pid}" 2>/dev/null && { printf 'coordination server did not stop\n' >&2; exit 1; }
-            rm -f -- "${pid_file}"
-        fi
-        rm -f -- "${state_root}/pairing-code" "${state_root}/management-token"
-        printf 'coordination listener and credentials removed; evidence retained\n'
+            --attestation "${rollback_attestation}"
         ;;
 esac

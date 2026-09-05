@@ -13,8 +13,11 @@ import json
 import os
 import re
 import secrets
+import signal
+import socket
 import ssl
 import stat
+import subprocess
 import tempfile
 import threading
 import time
@@ -110,11 +113,11 @@ def decode_json_object(data: bytes, label: str) -> dict[str, Any]:
 
 
 def read_regular(path: Path, maximum: int, mode: int | None = None) -> bytes:
-    if path.is_symlink() or not path.is_file():
-        fail(f"unsafe file: {path}")
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            fail(f"unsafe file: {path}")
         if mode is not None and metadata.st_mode & 0o777 != mode:
             fail(f"unsafe permissions: {path}")
         if metadata.st_size < 1 or metadata.st_size > maximum:
@@ -139,6 +142,8 @@ def read_regular_at(directory: int, name: str, maximum: int, mode: int | None = 
     descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory)
     try:
         metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            fail(f"unsafe file: {name}")
         if mode is not None and metadata.st_mode & 0o777 != mode:
             fail(f"unsafe permissions: {name}")
         if metadata.st_size < 1 or metadata.st_size > maximum:
@@ -186,6 +191,85 @@ def atomic_json_at(directory: int, name: str, value: Any) -> None:
             os.unlink(temporary, dir_fd=directory)
         except FileNotFoundError:
             pass
+
+
+def write_new_at(directory: int, name: str, payload: bytes) -> None:
+    descriptor = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=directory)
+    try:
+        written = 0
+        while written < len(payload):
+            count = os.write(descriptor, payload[written:])
+            if count < 1:
+                fail(f"partial write: {name}")
+            written += count
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def open_state_root(root: Path) -> int:
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    path_metadata = os.lstat(root)
+    descriptor_metadata = os.fstat(descriptor)
+    if (not stat.S_ISDIR(path_metadata.st_mode)
+            or (path_metadata.st_dev, path_metadata.st_ino) != (descriptor_metadata.st_dev, descriptor_metadata.st_ino)
+            or descriptor_metadata.st_mode & 0o777 != 0o700
+            or descriptor_metadata.st_uid != os.getuid()):
+        os.close(descriptor)
+        fail("channel state root identity or permissions differ from policy")
+    return descriptor
+
+
+def read_proc_file(path: Path, maximum: int) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            fail("coordination process metadata is not regular")
+        data = bytearray()
+        while len(data) <= maximum:
+            chunk = os.read(descriptor, min(65536, maximum + 1 - len(data)))
+            if not chunk:
+                break
+            data.extend(chunk)
+        if not data or len(data) > maximum:
+            fail("coordination process metadata is outside policy")
+        return bytes(data)
+    finally:
+        os.close(descriptor)
+
+
+def process_start_ticks(pid: int) -> int:
+    payload = read_proc_file(Path(f"/proc/{pid}/stat"), 8192).decode("ascii")
+    closing = payload.rfind(")")
+    fields = payload[closing + 2:].split()
+    if closing < 1 or len(fields) < 20:
+        fail("coordination process identity is unavailable")
+    return int(fields[19])
+
+
+def read_process_record(directory: int, run_id: str, source_commit: str) -> tuple[int, int]:
+    record = decode_json_object(read_regular_at(directory, "channel-process.json", 4096, 0o600), "channel process")
+    exact_object(record, {"schema_version", "run_id", "source_commit", "pid", "start_ticks"}, "channel process")
+    if (type(record["schema_version"]) is not int or record["schema_version"] != SCHEMA_VERSION
+            or record["run_id"] != run_id or record["source_commit"] != source_commit
+            or type(record["pid"]) is not int or record["pid"] < 2
+            or type(record["start_ticks"]) is not int or record["start_ticks"] < 1):
+        fail("channel process identity differs from invocation")
+    return record["pid"], record["start_ticks"]
+
+
+def matching_process(pid: int, start_ticks: int, root: Path) -> bool:
+    try:
+        if process_start_ticks(pid) != start_ticks:
+            return False
+        command = read_proc_file(Path(f"/proc/{pid}/cmdline"), 65536)
+        if process_start_ticks(pid) != start_ticks:
+            return False
+    except (FileNotFoundError, ProcessLookupError, ValueError):
+        return False
+    arguments = command.rstrip(b"\0").split(b"\0")
+    return (b"serve-fd" in arguments and os.fsencode(str(root)) in arguments
+            and os.fsencode(str(Path(__file__).resolve())) in arguments)
 
 
 def sha256_file(path: Path, maximum: int) -> tuple[bytes, str]:
@@ -262,7 +346,8 @@ def verify_rollback_evidence(path: Path, run_id: str, source_commit: str, server
 
 
 class ChannelState:
-    def __init__(self, root: Path, run_id: str, source_commit: str, server_ip: str, client_ip: str):
+    def __init__(self, root: Path, run_id: str, source_commit: str, server_ip: str, client_ip: str,
+                 root_descriptor: int | None = None):
         self.root = root
         self.run_id = run_id
         self.source_commit = source_commit
@@ -274,8 +359,11 @@ class ChannelState:
         self.events_path = root / "channel-events.jsonl"
         self.pairing_path = root / "pairing-code"
         self.management_path = root / "management-token"
-        self.root_descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+        self.root_descriptor = open_state_root(root) if root_descriptor is None else os.dup(root_descriptor)
         root_metadata = os.fstat(self.root_descriptor)
+        if root_metadata.st_mode & 0o777 != 0o700 or root_metadata.st_uid != os.getuid():
+            os.close(self.root_descriptor)
+            fail("channel state root ownership or permissions differ from policy")
         self.root_identity = (root_metadata.st_dev, root_metadata.st_ino)
         self.document = self._load()
 
@@ -582,37 +670,183 @@ def make_handler(state: ChannelState):
     return Handler
 
 
-def initialize(root: Path, run_id: str, source_commit: str, client_ip: str) -> None:
+def initialize(root: Path, run_id: str, source_commit: str, client_ip: str) -> str:
     if root.exists():
         fail("channel state root must be absent")
-    root.mkdir(mode=0o700, parents=True)
+    if not root.is_absolute() or root.parent.is_symlink() or not root.parent.is_dir():
+        fail("channel state root parent must be an existing absolute directory")
+    root.mkdir(mode=0o700)
     pairing = secrets.token_hex(24)
     management = secrets.token_hex(32)
-    pairing_path = root / "pairing-code"
-    pairing_path.write_text(pairing + "\n", encoding="ascii")
-    os.chmod(pairing_path, 0o600)
-    management_path = root / "management-token"
-    management_path.write_text(management + "\n", encoding="ascii")
-    os.chmod(management_path, 0o600)
-    atomic_json(root / "channel-state.json", {
-        "schema_version": SCHEMA_VERSION,
-        "run_id": run_id,
-        "source_commit": source_commit,
-        "client_ipv4": client_ip,
-        "paired": False,
-        "session_sha256": None,
-        "management_sequence": 0,
-        "last_management_request": "",
-        "tasks": [],
-    })
-    print(pairing)
+    descriptor = open_state_root(root)
+    try:
+        write_new_at(descriptor, "pairing-code", (pairing + "\n").encode("ascii"))
+        write_new_at(descriptor, "management-token", (management + "\n").encode("ascii"))
+        atomic_json_at(descriptor, "channel-state.json", {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": run_id,
+            "source_commit": source_commit,
+            "client_ipv4": client_ip,
+            "paired": False,
+            "session_sha256": None,
+            "management_sequence": 0,
+            "last_management_request": "",
+            "tasks": [],
+        })
+    finally:
+        os.close(descriptor)
+    return pairing
+
+
+def validate_server_arguments(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
+    if arguments.port != PORT or ipaddress.ip_network(f"{server_ip}/24", strict=False) != ipaddress.ip_network(f"{client_ip}/24", strict=False):
+        fail("server/client binding differs from the exact LAN policy")
+    read_regular(arguments.certificate, 32768)
+    read_regular(arguments.private_key, 32768, 0o600)
+    verify_start_evidence(arguments, server_ip, client_ip)
+
+
+def run_server(arguments: argparse.Namespace, server_ip: str, client_ip: str, root_descriptor: int | None = None) -> None:
+    validate_server_arguments(arguments, server_ip, client_ip)
+    state = ChannelState(arguments.state_root, arguments.run_id, arguments.source_commit, server_ip, client_ip, root_descriptor)
+    if root_descriptor is not None:
+        os.close(root_descriptor)
+    server = BoundedThreadingHTTPServer((server_ip, PORT), make_handler(state))
+    try:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(arguments.certificate, arguments.private_key)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        server.serve_forever(poll_interval=0.25)
+    finally:
+        server.server_close()
+        os.close(state.root_descriptor)
+
+
+def wait_for_process_exit(pid: int, start_ticks: int, root: Path, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not matching_process(pid, start_ticks, root):
+            return True
+        time.sleep(0.05)
+    return not matching_process(pid, start_ticks, root)
+
+
+def daemon_start(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
+    validate_server_arguments(arguments, server_ip, client_ip)
+    pairing = initialize(arguments.state_root, arguments.run_id, arguments.source_commit, client_ip)
+    root_descriptor = open_state_root(arguments.state_root)
+    stdout_descriptor = -1
+    stderr_descriptor = -1
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        stdout_descriptor = os.open("channel.stdout", os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                                    0o600, dir_fd=root_descriptor)
+        stderr_descriptor = os.open("channel.stderr", os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                                    0o600, dir_fd=root_descriptor)
+        command = [
+            sys.executable, str(Path(__file__).resolve()), "serve-fd",
+            "--state-root", str(arguments.state_root), "--state-fd", str(root_descriptor),
+            "--run-id", arguments.run_id, "--source-commit", arguments.source_commit,
+            "--server-ip", server_ip, "--client-ip", client_ip, "--port", str(PORT),
+            "--certificate", str(arguments.certificate), "--private-key", str(arguments.private_key),
+            "--fingerprint", str(arguments.fingerprint), "--authorization", str(arguments.authorization),
+            "--server-preflight", str(arguments.server_preflight),
+            "--firewall-attestation", str(arguments.firewall_attestation),
+        ]
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout_descriptor, stderr=stderr_descriptor,
+                                   pass_fds=(root_descriptor,), close_fds=True, start_new_session=True)
+        start_ticks = process_start_ticks(process.pid)
+        atomic_json_at(root_descriptor, "channel-process.json", {
+            "schema_version": SCHEMA_VERSION, "run_id": arguments.run_id, "source_commit": arguments.source_commit,
+            "pid": process.pid, "start_ticks": start_ticks,
+        })
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                fail("coordination server exited during startup")
+            try:
+                with socket.create_connection((server_ip, PORT), timeout=0.2):
+                    print(f"PAIRING_CODE={pairing}")
+                    return
+            except OSError:
+                time.sleep(0.05)
+        fail("coordination listener did not become ready")
+    except Exception:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        try:
+            os.unlink("channel-process.json", dir_fd=root_descriptor)
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        if stdout_descriptor >= 0:
+            os.close(stdout_descriptor)
+        if stderr_descriptor >= 0:
+            os.close(stderr_descriptor)
+        os.close(root_descriptor)
+
+
+def channel_status(arguments: argparse.Namespace, server_ip: str) -> None:
+    descriptor = open_state_root(arguments.state_root)
+    try:
+        pid, start_ticks = read_process_record(descriptor, arguments.run_id, arguments.source_commit)
+        if not matching_process(pid, start_ticks, arguments.state_root):
+            fail("coordination process is not running with the recorded identity")
+        try:
+            with socket.create_connection((server_ip, PORT), timeout=1):
+                pass
+        except OSError as error:
+            raise ValueError("coordination listener is not reachable") from error
+        try:
+            events = read_regular_at(descriptor, "channel-events.jsonl", MAX_EVENT_LOG, 0o600).decode("utf-8", errors="strict").splitlines()
+        except FileNotFoundError:
+            events = []
+        if events:
+            print("\n".join(events[-20:]))
+        else:
+            print("coordination channel ready; no client events yet")
+    finally:
+        os.close(descriptor)
+
+
+def daemon_stop(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
+    verify_rollback_evidence(arguments.attestation, arguments.run_id, arguments.source_commit, server_ip, client_ip)
+    descriptor = open_state_root(arguments.state_root)
+    try:
+        pid, start_ticks = read_process_record(descriptor, arguments.run_id, arguments.source_commit)
+        if not matching_process(pid, start_ticks, arguments.state_root):
+            fail("coordination process ownership differs from the recorded identity")
+        os.kill(pid, signal.SIGTERM)
+        if not wait_for_process_exit(pid, start_ticks, arguments.state_root, 5.0):
+            os.kill(pid, signal.SIGKILL)
+            if not wait_for_process_exit(pid, start_ticks, arguments.state_root, 2.0):
+                fail("coordination server did not stop within the bounded deadline")
+        for name in ("channel-process.json", "pairing-code", "management-token"):
+            try:
+                os.unlink(name, dir_fd=descriptor)
+            except FileNotFoundError:
+                pass
+        print("coordination listener and credentials removed; evidence retained")
+    finally:
+        os.close(descriptor)
 
 
 def enqueue(server_ip: str, certificate: Path, root: Path, run_id: str, source_commit: str, action: str) -> None:
     if action not in ACTIONS:
         fail("management action is outside the allowlist")
-    management = read_regular(root / "management-token", 128, 0o600).decode("ascii").strip()
-    document = decode_json_object(read_regular(root / "channel-state.json", 65536, 0o600), "channel state")
+    descriptor = open_state_root(root)
+    try:
+        management = read_regular_at(descriptor, "management-token", 128, 0o600).decode("ascii").strip()
+        document = decode_json_object(read_regular_at(descriptor, "channel-state.json", 65536, 0o600), "channel state")
+    finally:
+        os.close(descriptor)
     management_sequence = document.get("management_sequence")
     if type(management_sequence) is not int or management_sequence < 0:
         fail("management state sequence is invalid")
@@ -637,10 +871,15 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
     initialize_parser = subparsers.add_parser("init")
     serve_parser = subparsers.add_parser("serve")
+    serve_fd_parser = subparsers.add_parser("serve-fd")
+    daemon_start_parser = subparsers.add_parser("daemon-start")
+    status_parser = subparsers.add_parser("status")
+    daemon_stop_parser = subparsers.add_parser("daemon-stop")
     enqueue_parser = subparsers.add_parser("enqueue")
     rollback_parser = subparsers.add_parser("verify-rollback")
     authorize_parser = subparsers.add_parser("authorize")
-    for item in (initialize_parser, serve_parser, enqueue_parser, rollback_parser):
+    for item in (initialize_parser, serve_parser, serve_fd_parser, daemon_start_parser, status_parser,
+                 daemon_stop_parser, enqueue_parser, rollback_parser):
         item.add_argument("--state-root", required=True, type=Path)
         item.add_argument("--run-id", required=True)
         item.add_argument("--source-commit", required=True)
@@ -655,14 +894,19 @@ def main() -> None:
     authorize_parser.add_argument("--firewall-attestation", required=True, type=Path)
     authorize_parser.add_argument("--output", required=True, type=Path)
     authorize_parser.add_argument("--confirm-authorize", required=True, action="store_true")
-    serve_parser.add_argument("--bind", required=True)
-    serve_parser.add_argument("--port", required=True, type=int)
-    serve_parser.add_argument("--certificate", required=True, type=Path)
-    serve_parser.add_argument("--private-key", required=True, type=Path)
-    serve_parser.add_argument("--fingerprint", required=True, type=Path)
-    serve_parser.add_argument("--authorization", required=True, type=Path)
-    serve_parser.add_argument("--server-preflight", required=True, type=Path)
-    serve_parser.add_argument("--firewall-attestation", required=True, type=Path)
+    for item in (serve_parser, serve_fd_parser, daemon_start_parser):
+        item.add_argument("--server-ip", required=True)
+        item.add_argument("--port", required=True, type=int)
+        item.add_argument("--certificate", required=True, type=Path)
+        item.add_argument("--private-key", required=True, type=Path)
+        item.add_argument("--fingerprint", required=True, type=Path)
+        item.add_argument("--authorization", required=True, type=Path)
+        item.add_argument("--server-preflight", required=True, type=Path)
+        item.add_argument("--firewall-attestation", required=True, type=Path)
+    serve_fd_parser.add_argument("--state-fd", required=True, type=int)
+    status_parser.add_argument("--server-ip", required=True)
+    daemon_stop_parser.add_argument("--server-ip", required=True)
+    daemon_stop_parser.add_argument("--attestation", required=True, type=Path)
     enqueue_parser.add_argument("--server-ip", required=True)
     enqueue_parser.add_argument("--certificate", required=True, type=Path)
     enqueue_parser.add_argument("--action", required=True)
@@ -680,32 +924,30 @@ def main() -> None:
         print('{"status":"authorized"}')
         return
     if arguments.command == "init":
-        initialize(arguments.state_root.resolve(), arguments.run_id, arguments.source_commit, client_ip)
+        print(initialize(arguments.state_root, arguments.run_id, arguments.source_commit, client_ip))
         return
     if arguments.command == "enqueue":
         server_ip = exact_private_ipv4(arguments.server_ip, "server IP")
-        enqueue(server_ip, arguments.certificate, arguments.state_root.resolve(), arguments.run_id, arguments.source_commit, arguments.action)
+        enqueue(server_ip, arguments.certificate, arguments.state_root, arguments.run_id, arguments.source_commit, arguments.action)
         return
     if arguments.command == "verify-rollback":
         server_ip = exact_private_ipv4(arguments.server_ip, "server IP")
         verify_rollback_evidence(arguments.attestation, arguments.run_id, arguments.source_commit, server_ip, client_ip)
         print('{"status":"verified"}')
         return
-    server_ip = exact_private_ipv4(arguments.bind, "server IP")
-    if arguments.port != PORT or ipaddress.ip_network(f"{server_ip}/24", strict=False) != ipaddress.ip_network(f"{client_ip}/24", strict=False):
-        fail("server/client binding differs from the exact LAN policy")
-    if arguments.state_root.is_symlink() or arguments.state_root.stat().st_mode & 0o777 != 0o700:
-        fail("channel state root permissions must be 0700")
-    read_regular(arguments.certificate, 32768)
-    read_regular(arguments.private_key, 32768, 0o600)
-    verify_start_evidence(arguments, server_ip, client_ip)
-    state = ChannelState(arguments.state_root, arguments.run_id, arguments.source_commit, server_ip, client_ip)
-    server = BoundedThreadingHTTPServer((server_ip, PORT), make_handler(state))
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.load_cert_chain(arguments.certificate, arguments.private_key)
-    server.socket = context.wrap_socket(server.socket, server_side=True)
-    server.serve_forever(poll_interval=0.25)
+    server_ip = exact_private_ipv4(arguments.server_ip, "server IP")
+    if arguments.command == "daemon-start":
+        daemon_start(arguments, server_ip, client_ip)
+    elif arguments.command == "status":
+        channel_status(arguments, server_ip)
+    elif arguments.command == "daemon-stop":
+        daemon_stop(arguments, server_ip, client_ip)
+    elif arguments.command == "serve-fd":
+        if arguments.state_fd < 3:
+            fail("inherited state descriptor is invalid")
+        run_server(arguments, server_ip, client_ip, arguments.state_fd)
+    else:
+        run_server(arguments, server_ip, client_ip)
 
 
 if __name__ == "__main__":
