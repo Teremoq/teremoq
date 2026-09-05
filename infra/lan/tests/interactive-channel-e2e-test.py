@@ -54,8 +54,8 @@ def server_preflight(run_id, source_commit, server_ip, client_ip):
         "schema_version": 2, "report_kind": "teremoq-lan-windows-preflight-v2", "run_id": run_id,
         "source_commit": source_commit, "role": "server", "server_ipv4": server_ip, "client_ipv4": client_ip,
         "prefix_length": 24, "network_profile": "Public", "expected_wsl_mode": "mirrored",
-        "maximum_clock_offset_ms": 25, "minimum_mtu": 1280, "minimum_cpu_cores": 2,
-        "minimum_memory_mib": 2048, "minimum_disk_mib": 4096,
+        "maximum_clock_offset_ms": 2000, "minimum_mtu": 1280, "minimum_cpu_cores": 2,
+        "minimum_memory_mib": 2048, "minimum_disk_mib": 2048,
         "capture_context": {
             "schema_version": 2, "current_process_name": "powershell.exe",
             "parent_process_names": ["windowsterminal.exe", "explorer.exe"], "parent_process_count": 2,

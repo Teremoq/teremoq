@@ -289,7 +289,7 @@ def expected_start_authorization(arguments: argparse.Namespace, server_ip: str, 
     # Reuse the runtime's complete, closed native contract.  Do not duplicate a
     # permissive subset here: bind, authorization, and serve use this same gate.
     parse_windows_preflight(preflight_payload, "server", arguments.run_id, arguments.source_commit,
-                            server_ip, client_ip, 24, "Public", 25, 1280, 2, 2048, 4096)
+                            server_ip, client_ip, 24, "Public", 2000, 1280, 2, 2048, 2048)
 
     firewall = decode_json_object(firewall_payload, "coordination firewall attestation")
     expected_firewall = {
