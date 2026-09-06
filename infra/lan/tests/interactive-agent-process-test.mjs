@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, restartUpdatedClient, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, restartUpdatedClient, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -75,6 +75,27 @@ expect(firstPreparedState !== channelStateRoot && retryPreparedState !== firstPr
 let missingPreparedStateRejected = false;
 try { activePreparedStateRoot({}); } catch { missingPreparedStateRejected = true; }
 expect(missingPreparedStateRejected, "workload accepted an absent prepared client state");
+const resumedIdentity = {
+  schema_version: 1,
+  run_id: "lan-resume-canary",
+  source_commit: "2".repeat(40),
+  client_commit: "3".repeat(40),
+};
+let resumedProbeCalls = 0;
+const prefetchedWait = await probeResumedSession(async (route, body, session) => {
+  resumedProbeCalls += 1;
+  expect(route === "/v1/poll" && body === resumedIdentity && session === "4".repeat(64),
+    "resumed session probe changed its authenticated request");
+  return { ...resumedIdentity, sequence: 0, action: "wait", parameters: {} };
+}, resumedIdentity, "4".repeat(64));
+expect(resumedProbeCalls === 1 && prefetchedWait.action === "wait",
+  "resumed client acknowledged before one authenticated poll");
+let invalidResumeProbeRejected = false;
+try {
+  await probeResumedSession(async () => ({ ...resumedIdentity, sequence: 0, action: "wait", parameters: {}, extra: true }),
+    resumedIdentity, "4".repeat(64));
+} catch { invalidResumeProbeRejected = true; }
+expect(invalidResumeProbeRejected, "resumed client accepted an invalid authenticated probe response");
 const restartSource = restartUpdatedClient.toString();
 expect(!restartSource.includes('"--session"') && !restartSource.includes("SESSION="), "session credential can reach child argv or environment");
 expect(restartSource.includes('stdio: ["pipe", "ignore", "ignore"]') && restartSource.includes("credential handoff timed out"),

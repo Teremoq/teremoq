@@ -155,6 +155,18 @@ function requestJson(agent, server, route, body, session = "") {
   });
 }
 
+async function probeResumedSession(channelRequest, identity, session) {
+  const task = await channelRequest("/v1/poll", identity, session);
+  if (Object.keys(task).sort().join(",") !== "action,client_commit,parameters,run_id,schema_version,sequence,source_commit" ||
+      task.schema_version !== 1 || task.run_id !== identity.run_id ||
+      task.source_commit !== identity.source_commit || task.client_commit !== identity.client_commit ||
+      !Number.isSafeInteger(task.sequence) || !task.parameters ||
+      typeof task.parameters !== "object" || Array.isArray(task.parameters)) {
+    fail("resumed session probe returned an invalid task");
+  }
+  return task;
+}
+
 function scrub(value) {
   return value
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*/gi, "[private key blocked]")
@@ -750,15 +762,19 @@ async function main() {
     return response;
   };
   let session = credential;
+  let prefetchedTask = null;
   if (values["--credential-mode"] === "pair") {
     const pair = await channelRequest("/v1/pair", { ...identity, pairing_code: credential });
     if (pair.schema_version !== 1 || pair.run_id !== context.runId || pair.source_commit !== context.channelCommit ||
         pair.client_commit !== context.commit || !/^[0-9a-f]{64}$/.test(pair.session)) fail("invalid pairing response");
     session = pair.session;
+  } else {
+    prefetchedTask = await probeResumedSession(channelRequest, identity, session);
   }
   process.stdout.write("[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...\n");
   for (;;) {
-    const task = await channelRequest("/v1/poll", identity, session);
+    const task = prefetchedTask ?? await channelRequest("/v1/poll", identity, session);
+    prefetchedTask = null;
     if (Object.keys(task).sort().join(",") !== "action,client_commit,parameters,run_id,schema_version,sequence,source_commit" ||
         task.schema_version !== 1 || task.run_id !== context.runId || task.source_commit !== context.channelCommit ||
         task.client_commit !== context.commit || !Number.isSafeInteger(task.sequence) ||
@@ -807,7 +823,7 @@ async function main() {
   }
 }
 
-export { activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout, waitForChildExit, waitForHandoffAck };
+export { activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });
