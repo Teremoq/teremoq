@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -41,6 +41,11 @@ expect(
 let arbitraryStatusRejected = false;
 try { formatLocalStatus("prepare-client", "C:\\secret", 1); } catch { arbitraryStatusRejected = true; }
 expect(arbitraryStatusRejected, "arbitrary local status text was accepted");
+expect(actionTimeoutMs("prepare-client") === 15 * 60 * 1000,
+  "client preparation does not have the bounded extended timeout");
+for (const action of ["update-client", "preflight", "player-1", "load-5", "load-10", "load-25", "wifi-observe", "collect", "stop"]) {
+  expect(actionTimeoutMs(action) === 5 * 60 * 1000, `${action} timeout was broadened`);
+}
 const nodeSha256 = crypto.createHash("sha256").update(fs.readFileSync(process.execPath)).digest("hex");
 const agentArgv = [
   "--server", "https://192.168.1.130:18443", "--fingerprint", "1".repeat(64),

@@ -14,6 +14,7 @@ const ACTIONS = new Set(["update-client", "prepare-client", "preflight", "player
 const MAX_RESPONSE = 32768;
 const MAX_MESSAGE = 16384;
 const ACTION_TIMEOUT_MS = 5 * 60 * 1000;
+const PREPARE_ACTION_TIMEOUT_MS = 15 * 60 * 1000;
 const TASKKILL_TIMEOUT_MS = 5 * 1000;
 const TERMINATION_TIMEOUT_MS = 15 * 1000;
 const WINDOWS_ROOT = "C:\\Windows";
@@ -234,6 +235,10 @@ function restrictedEnvironment() {
     GIT_OPTIONAL_LOCKS: "0",
     NO_COLOR: "1",
   };
+}
+
+function actionTimeoutMs(action) {
+  return action === "prepare-client" ? PREPARE_ACTION_TIMEOUT_MS : ACTION_TIMEOUT_MS;
 }
 
 function verifyApprovedFile(file, expectedSha256) {
@@ -600,6 +605,7 @@ async function execute(action, context, progress) {
   const powershellOptions = {
     expectedFileSha256: context.powershellSha256,
     taskkillSha256: context.taskkillSha256,
+    actionTimeoutMs: actionTimeoutMs(action),
   };
   if (action === "update-client") {
     const update = context.taskParameters;
@@ -849,7 +855,7 @@ async function main() {
   }
 }
 
-export { activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, runProcess, scrub, terminateProcessTree, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
+export { actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, runProcess, scrub, terminateProcessTree, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });
