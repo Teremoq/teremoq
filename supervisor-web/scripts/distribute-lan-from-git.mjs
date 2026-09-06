@@ -92,7 +92,7 @@ if (artifactExists) {
   const receipt = await buildArtifact({
     finalPlayerRoot, artifactEvidencePath, playerIdentity,
     relativePlayerPath, source, files, runtime, request, contract, npmCli,
-    checkoutPin, projectPin, statePin, buildStatePin, playersPin, identityParentPin,
+    checkoutPin, projectPin, statePin, buildStatePin, buildStateRoot, playersPin, identityParentPin,
     generationPin, npmIsolationPin, npmIsolationRoot, playerVersion, sourceUpdate,
   });
   await writeUpdateState(updateStatePath, source.sourceCommit, buildStateRoot);

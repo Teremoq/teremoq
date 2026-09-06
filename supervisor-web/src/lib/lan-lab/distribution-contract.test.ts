@@ -238,6 +238,7 @@ describe("contrato de distribución Git del player LAN", () => {
     expect(orchestrator).toContain('"worktree", "add", "--detach"');
     expect(orchestrator).toContain('values["--build-mode"] ?? "integration"');
     expect(orchestrator).toContain("createBuildPlan(context.request.buildMode)");
+    expect(orchestrator).toContain("buildStatePin, buildStateRoot, playersPin");
     expect(orchestrator).toContain("serializeDistributionReceipt(receipt)");
     expect(orchestrator).toContain("measureDependencySnapshot(snapshotRoot)");
     expect(orchestrator).toContain('context.request.buildMode === "node" && dependencyEvidence !== null');
