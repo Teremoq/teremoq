@@ -292,6 +292,7 @@ function Invoke-TeremoqPinnedNodeProcess {
     $startInfo.EnvironmentVariables.Clear()
     $childEnvironment = @{
         'SystemRoot' = 'C:\Windows'; 'WINDIR' = 'C:\Windows';
+        'SystemDrive' = 'C:'; 'ProgramData' = 'C:\ProgramData';
         'ProgramFiles' = 'C:\Program Files';
         'LOCALAPPDATA' = $env:LOCALAPPDATA; 'TEMP' = $env:TEMP; 'TMP' = $env:TEMP;
         'USERPROFILE' = $env:USERPROFILE; 'ComSpec' = 'C:\Windows\System32\cmd.exe';

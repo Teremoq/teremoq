@@ -219,6 +219,8 @@ function restrictedEnvironment() {
   return {
     SystemRoot: WINDOWS_ROOT,
     WINDIR: WINDOWS_ROOT,
+    SystemDrive: "C:",
+    ProgramData: "C:\\ProgramData",
     ProgramFiles: PROGRAM_FILES,
     "ProgramFiles(x86)": process.env["ProgramFiles(x86)"] || "",
     LOCALAPPDATA: process.env.LOCALAPPDATA || "",
@@ -847,7 +849,7 @@ async function main() {
   }
 }
 
-export { activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
+export { activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, runProcess, scrub, terminateProcessTree, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });

@@ -60,6 +60,11 @@ try {
         -Arguments @('-e','process.exit(process.versions.node.startsWith("22.") ? 0 : 9)') `
         -WorkingDirectory $root
     if ($nodeExit -ne 0) { throw 'Approved Node executable did not start' }
+    $windowsRootsExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath `
+        -ExpectedSha256 $nodeHash `
+        -Arguments @('-e','process.exit(process.env.SystemDrive === "C:" && process.env.ProgramData === "C:\\ProgramData" ? 0 : 8)') `
+        -WorkingDirectory $root
+    if ($windowsRootsExit -ne 0) { throw 'Pinned Node environment omitted canonical Windows shared-data roots' }
 
     $safeStatus = '[Teremoq] Paso 1 - Preparar y verificar el cliente: en ejecucion'
     if ((Get-TeremoqSafeAgentOutput -Line $safeStatus) -cne $safeStatus) {

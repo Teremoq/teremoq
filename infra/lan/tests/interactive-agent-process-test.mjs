@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -54,6 +54,20 @@ const parsedArgv = parseArguments(agentArgv);
 expect(agentArgv.length === 28 && Object.keys(parsedArgv).length === 14, "closed agent argv cardinality drifted");
 expect(parsedArgv["--taskkill-sha256"] === "7".repeat(64), "taskkill session hash was not parsed");
 expect(parsedArgv["--credential-mode"] === "pair", "credential mode was not parsed");
+const originalProgramFiles = process.env.ProgramFiles;
+const originalEnvironmentSystemRoot = process.env.SystemRoot;
+try {
+  process.env.ProgramFiles = "C:\\Program Files";
+  process.env.SystemRoot = "C:\\Windows";
+  const childEnvironment = restrictedEnvironment();
+  expect(childEnvironment.SystemDrive === "C:" && childEnvironment.ProgramData === "C:\\ProgramData",
+    "restricted agent environment omitted canonical Windows shared-data roots");
+} finally {
+  if (originalProgramFiles === undefined) delete process.env.ProgramFiles;
+  else process.env.ProgramFiles = originalProgramFiles;
+  if (originalEnvironmentSystemRoot === undefined) delete process.env.SystemRoot;
+  else process.env.SystemRoot = originalEnvironmentSystemRoot;
+}
 const resumedArgv = [...agentArgv];
 resumedArgv[resumedArgv.indexOf("pair")] = "session";
 expect(parseArguments(resumedArgv)["--credential-mode"] === "session", "session resume mode was rejected");
