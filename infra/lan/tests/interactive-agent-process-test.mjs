@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, restartUpdatedClient, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -96,6 +96,32 @@ try {
     resumedIdentity, "4".repeat(64));
 } catch { invalidResumeProbeRejected = true; }
 expect(invalidResumeProbeRejected, "resumed client accepted an invalid authenticated probe response");
+const invalidResumedTasks = [
+  { ...resumedIdentity, sequence: 1, action: "shell", parameters: {} },
+  { ...resumedIdentity, sequence: 1, action: "wait", parameters: {} },
+  { ...resumedIdentity, sequence: 0, action: "prepare-client", parameters: {} },
+  { ...resumedIdentity, sequence: 1, action: "prepare-client", parameters: { path: "C:\\untrusted" } },
+  { ...resumedIdentity, sequence: 1, action: "update-client", parameters: {} },
+];
+for (const invalidTask of invalidResumedTasks) {
+  let rejected = false;
+  try { await probeResumedSession(async () => invalidTask, resumedIdentity, "4".repeat(64)); }
+  catch { rejected = true; }
+  expect(rejected, `resumed client acknowledged invalid ${invalidTask.action} task semantics`);
+}
+const pendingTask = { ...resumedIdentity, sequence: 1, action: "prepare-client", parameters: {} };
+const prefetchedHolder = { value: pendingTask };
+let postHandoffPolls = 0;
+const firstReceived = await receiveNextTask(prefetchedHolder, async () => {
+  postHandoffPolls += 1;
+  return { ...resumedIdentity, sequence: 0, action: "wait", parameters: {} };
+});
+const secondReceived = await receiveNextTask(prefetchedHolder, async () => {
+  postHandoffPolls += 1;
+  return { ...resumedIdentity, sequence: 0, action: "wait", parameters: {} };
+});
+expect(firstReceived === pendingTask && secondReceived.action === "wait" && postHandoffPolls === 1,
+  "prefetched task was lost, duplicated or followed by more than one poll");
 const restartSource = restartUpdatedClient.toString();
 expect(!restartSource.includes('"--session"') && !restartSource.includes("SESSION="), "session credential can reach child argv or environment");
 expect(restartSource.includes('stdio: ["pipe", "ignore", "ignore"]') && restartSource.includes("credential handoff timed out"),

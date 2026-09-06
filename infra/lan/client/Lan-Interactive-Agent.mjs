@@ -155,16 +155,47 @@ function requestJson(agent, server, route, body, session = "") {
   });
 }
 
-async function probeResumedSession(channelRequest, identity, session) {
-  const task = await channelRequest("/v1/poll", identity, session);
+function validatePolledTask(task, identity) {
   if (Object.keys(task).sort().join(",") !== "action,client_commit,parameters,run_id,schema_version,sequence,source_commit" ||
       task.schema_version !== 1 || task.run_id !== identity.run_id ||
       task.source_commit !== identity.source_commit || task.client_commit !== identity.client_commit ||
       !Number.isSafeInteger(task.sequence) || !task.parameters ||
       typeof task.parameters !== "object" || Array.isArray(task.parameters)) {
-    fail("resumed session probe returned an invalid task");
+    fail("channel returned an invalid task");
+  }
+  if (task.action === "wait") {
+    if (task.sequence !== 0 || Object.keys(task.parameters).length !== 0) {
+      fail("wait response differs from the closed contract");
+    }
+    return task;
+  }
+  if (!ACTIONS.has(task.action) || task.sequence < 1) fail("server requested an unapproved action");
+  if (task.action === "update-client") {
+    const update = task.parameters;
+    if (Object.keys(update).sort().join(",") !== "repository_ref,repository_url,target_commit" ||
+        update.repository_url !== "https://github.com/Teremoq/teremoq" ||
+        update.repository_ref !== "refs/heads/codex/lan-e2e-integration" ||
+        !/^[0-9a-f]{40}$/.test(update.target_commit) || update.target_commit === identity.client_commit) {
+      fail("update task differs from the closed Git policy");
+    }
+  } else if (Object.keys(task.parameters).length !== 0) {
+    fail("non-update task carried unexpected parameters");
   }
   return task;
+}
+
+async function probeResumedSession(channelRequest, identity, session) {
+  return validatePolledTask(await channelRequest("/v1/poll", identity, session), identity);
+}
+
+async function receiveNextTask(prefetched, poll) {
+  if (!prefetched || !Object.hasOwn(prefetched, "value")) fail("prefetched task holder is invalid");
+  if (prefetched.value !== null) {
+    const task = prefetched.value;
+    prefetched.value = null;
+    return task;
+  }
+  return poll();
 }
 
 function scrub(value) {
@@ -762,30 +793,23 @@ async function main() {
     return response;
   };
   let session = credential;
-  let prefetchedTask = null;
+  const prefetchedTask = { value: null };
   if (values["--credential-mode"] === "pair") {
     const pair = await channelRequest("/v1/pair", { ...identity, pairing_code: credential });
     if (pair.schema_version !== 1 || pair.run_id !== context.runId || pair.source_commit !== context.channelCommit ||
         pair.client_commit !== context.commit || !/^[0-9a-f]{64}$/.test(pair.session)) fail("invalid pairing response");
     session = pair.session;
   } else {
-    prefetchedTask = await probeResumedSession(channelRequest, identity, session);
+    prefetchedTask.value = await probeResumedSession(channelRequest, identity, session);
   }
   process.stdout.write("[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...\n");
   for (;;) {
-    const task = prefetchedTask ?? await channelRequest("/v1/poll", identity, session);
-    prefetchedTask = null;
-    if (Object.keys(task).sort().join(",") !== "action,client_commit,parameters,run_id,schema_version,sequence,source_commit" ||
-        task.schema_version !== 1 || task.run_id !== context.runId || task.source_commit !== context.channelCommit ||
-        task.client_commit !== context.commit || !Number.isSafeInteger(task.sequence) ||
-        !task.parameters || typeof task.parameters !== "object" || Array.isArray(task.parameters)) fail("invalid task response");
+    const task = validatePolledTask(await receiveNextTask(prefetchedTask,
+      () => channelRequest("/v1/poll", identity, session)), identity);
     if (task.action === "wait") {
-      if (task.sequence !== 0 || Object.keys(task.parameters).length !== 0) fail("wait response differs from the closed contract");
       await new Promise((resolve) => setTimeout(resolve, 2000));
       continue;
     }
-    if (!ACTIONS.has(task.action) || task.sequence < 1) fail("server requested an unapproved action");
-    if (task.action !== "update-client" && Object.keys(task.parameters).length !== 0) fail("non-update task carried unexpected parameters");
     context.taskParameters = task.parameters;
     context.taskSequence = task.sequence;
     process.stdout.write(`${formatLocalStatus(task.action, "received", task.sequence)}\n`);
@@ -823,7 +847,7 @@ async function main() {
   }
 }
 
-export { activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, verifyCheckout, waitForChildExit, waitForHandoffAck };
+export { activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, runProcess, scrub, terminateProcessTree, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });
