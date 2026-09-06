@@ -15,6 +15,10 @@ export function buildIsolatedNpmEnvironment(processEnvironment, isolation) {
   Object.assign(env, {
     CI: "1",
     NO_COLOR: "1",
+    NEXT_TELEMETRY_DISABLED: "1",
+    npm_config_audit: "false",
+    npm_config_fund: "false",
+    npm_config_update_notifier: "false",
     HOME: isolation.home,
     USERPROFILE: isolation.userProfile,
     APPDATA: isolation.appData,

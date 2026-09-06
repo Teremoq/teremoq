@@ -71,6 +71,10 @@ describe("aislamiento completo de configuración npm", () => {
     expect(env.HOME).toBe(paths.home);
     expect(env.USERPROFILE).toBe(paths.userProfile);
     expect(env.NPM_CONFIG_GLOBALCONFIG).toBe(paths.globalConfig);
+    expect(env.NEXT_TELEMETRY_DISABLED).toBe("1");
+    expect(env.npm_config_audit).toBe("false");
+    expect(env.npm_config_fund).toBe("false");
+    expect(env.npm_config_update_notifier).toBe("false");
     expect(JSON.stringify(env)).not.toContain("DO_NOT_READ_THIS_TOKEN");
     const npmCli = process.env.npm_execpath;
     expect(npmCli).toBeTruthy();
