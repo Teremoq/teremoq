@@ -15,17 +15,23 @@
   Windows una política adicional abre cada directorio con un handle Win32,
   compara `GetFinalPathNameByHandleW` y rechaza cualquier atributo
   `ReparsePoint`; se revalida antes de consumo, build, comparación y promoción.
-- El cache de descargas npm se selecciona por SHA-256 del lock. Un lock igual se
-  reutiliza; un lock distinto se bloquea hasta que el operador declara
-  `-RefreshDependencies`. Cada construcción sigue usando `npm ci` en un
+- El cache de descargas npm se selecciona por SHA-256 del lock y versiones
+  exactas de Node/npm. Sólo se reutiliza con una evidencia JSON v1 cerrada que
+  coincida byte por byte; cualquier evidencia inválida falla cerrado y un
+  cambio válido exige `-RefreshDependencies`. Cada construcción sigue usando `npm ci` en un
   worktree nuevo: nunca reutiliza `node_modules`.
 - Tras la primera generación, el estado conserva el último commit aceptado. La
   siguiente ejecución calcula un `git diff --name-status --no-renames` limitado
   a `supervisor-web`, valida paths/cardinalidad/tamaño y sella número de ficheros
   y SHA-256 del diff en la procedencia exterior.
-- Dos builds independientes deben tener exactamente el mismo inventario,
-  tamaño y SHA-256 de cada fichero. Sólo entonces se promueve
-  `StateRoot\players\<source_commit>`.
+- La identidad pública del player es SHA-256 de una serialización canónica del
+  árbol Git exacto de `supervisor-web` y del SHA-256 de `package-lock.json`.
+  La ruta conserva además `source_commit`, porque el paquete lo incorpora:
+  `StateRoot\players\sha256-<identidad>\<source_commit>`.
+- El modo `integration` (por defecto) ejecuta dos builds independientes y exige
+  inventario, tamaño y SHA-256 idénticos. El modo `node` ejecuta uno. Un player
+  existente sólo se reutiliza si su evidencia cerrada coincide con identidad,
+  commit, runtime, modo admisible e inventario medido.
 - El constructor no abre puertos, no arranca el player, no lee `VERSION.tsv`,
   `LAN-CONFIG.json`, fingerprints ni evidencia y no ejecuta clone/fetch/pull,
   push o publicación. La adquisición/actualización Git es una fase explícita y
@@ -33,7 +39,7 @@
 
 ## Contrato versionado mínimo
 
-`lan-player/source-contract.tsv` es un TSV cerrado de catorce claves y máximo
+`lan-player/source-contract.tsv` es un TSV cerrado de veinte claves y máximo
 4096 bytes. Fija repositorio HTTPS canónico, subdirectorio, paths y SHA-256 de
 lock/package, Node 22, npm 10, scripts, salida exterior y la futura frontera
 `teremoq-client`. `source_commit` se resuelve en runtime contra el HEAD exacto;
@@ -97,8 +103,9 @@ configuración efectiva antes de cada instalación. No se usa
 `--offline` en la primera instalación salvo que el cache hash-bound ya haya
 sido aprovisionado por un mecanismo revisado.
 
-La salida JSON devuelve `player_relative_path`; actualmente será
-`players/<source_commit>`. Platform debe resolverla bajo el `StateRoot` y usar
+La salida JSON cerrada devuelve `status` (`built|reused`), `build_mode`,
+`builds_executed`, verificación, identidad y digests. `player_relative_path` es
+`players/sha256-<player_identity>/<source_commit>`. Platform debe resolverla bajo el `StateRoot` y usar
 ese directorio como player. No debe esperar ni copiar un
 `supervisor-web/lan-player` generado dentro del checkout.
 
@@ -124,7 +131,7 @@ $Ref = (git -C $Checkout symbolic-ref --quiet HEAD).Trim()
 
 El constructor rechaza cambios tracked o untracked, detached HEAD, ref que no
 resuelva al commit, más de un remote, URL no exacta y un directorio de salida
-ya existente para ese commit. Su JSON de resultado incluye el commit anterior,
+existente sin evidencia sellada coincidente. Su JSON de resultado incluye el commit anterior,
 el número de paths cambiados y el SHA-256 del diff que comparó.
 
 Si cambió `package-lock.json`, la primera ejecución se detiene antes de
@@ -150,8 +157,8 @@ El estado generado queda en:
 
 ```text
 StateRoot/
-  .teremoq-web-build/       cache, generaciones y worktrees efímeros
-  players/<source_commit>/  player promovido y manifests
+  .teremoq-web-build/                         cache y evidencias JSON
+  players/sha256-<identity>/<source_commit>/ player promovido y manifests
 ```
 
 Los worktrees temporales se eliminan incluso ante error. Una generación previa
@@ -170,5 +177,11 @@ El canario crea junction padre, junction intermedio y un symlink de directorio
 si el host concede el privilegio; si no, exige un tercer junction como reparse
 leaf y lo etiqueta explícitamente. Los tests Vitest cubren además symlinks en
 cada posición, sustitución posterior de inode/handle y un global npmrc hostil
-con registry, proxy y token señuelo. `generation.tsv` conserva exactamente sus
-claves anteriores; no cambia el parser contractual de Platform.
+con registry, proxy y token señuelo. Los schemas v1 de recibo, evidencia de
+dependencias y evidencia de artefacto rechazan campos desconocidos, faltantes,
+orden o serialización no canónica; no contienen configuración LAN, secretos ni
+material de identidad.
+
+Para el modo reducido de un único nodo de ejecución, Platform añade
+`-BuildMode node` al launcher (que emite `--build-mode node`). La omisión conserva el modo
+`integration` de dos builds; no cambia `npm run build` ni `build:lan`.

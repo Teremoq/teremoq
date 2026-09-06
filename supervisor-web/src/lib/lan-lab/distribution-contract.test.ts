@@ -100,6 +100,13 @@ describe("contrato de distribución Git del player LAN", () => {
     expect(output.trim()).toBe("distribution-git-view-test: PASS");
   }, 30_000);
 
+  it("valida identidad, modos, cache, artefacto y recibos JSON cerrados", () => {
+    const output = execFileSync(process.execPath, ["scripts/lan-distribution-contract.test.mjs"], {
+      cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    });
+    expect(output.trim()).toBe("lan-distribution-contract-test: PASS");
+  }, 30_000);
+
   it.each([
     ["HEAD", "rev-parse HEAD", "3".repeat(40)],
     ["ref", `rev-parse --verify ${repositoryRef}^{commit}`, "3".repeat(40)],
@@ -211,6 +218,8 @@ describe("contrato de distribución Git del player LAN", () => {
     expect(launcher).toContain("Invoke-TeremoqBoundedNativeProcess -FilePath $node");
     expect(launcher).toContain("$distributionScript");
     expect(launcher).toContain("npm runtime must be exact major 10");
+    expect(launcher).toContain("[string]$BuildMode = 'integration'");
+    expect(launcher).toContain("'--build-mode', $BuildMode");
     expect(launcher).not.toMatch(/\(& \$(?:node|npm)(?:\.Source)? --version\)\.Trim\(\)/);
     expect(launcher).not.toContain("'run', 'distribute:lan'");
     expect(orchestrator).toContain('resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")');
@@ -219,6 +228,9 @@ describe("contrato de distribución Git del player LAN", () => {
     expect(orchestrator).toContain('["EBUSY", "EPERM"].includes(cause.code)');
     expect(orchestrator).toContain("revalidateSecureDirectoryPins(sourcePin, destinationParentPin)");
     expect(orchestrator).toContain('"worktree", "add", "--detach"');
+    expect(orchestrator).toContain('values["--build-mode"] ?? "integration"');
+    expect(orchestrator).toContain("createBuildPlan(context.request.buildMode)");
+    expect(orchestrator).toContain("serializeDistributionReceipt(receipt)");
     expect(orchestrator).not.toMatch(/\[\s*"(?:clone|fetch|pull|push)"/);
     for (const forbidden of ["LAN-CONFIG.json", "VERSION.tsv", "EvidenceDirectory", "FingerprintPath"]) {
       expect(`${launcher}\n${orchestrator}`).not.toContain(forbidden);

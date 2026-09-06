@@ -28,6 +28,12 @@ export const SOURCE_CONTRACT_KEYS = Object.freeze([
   "output_contract",
   "future_repository_boundary",
   "source_commit",
+  "player_identity_scheme",
+  "receipt_schema_version",
+  "dependency_evidence_schema_version",
+  "artifact_evidence_schema_version",
+  "integration_builds",
+  "node_builds",
 ]);
 
 export function parseClosedSourceContract(text) {
@@ -47,7 +53,7 @@ export function parseClosedSourceContract(text) {
   if (Object.keys(values).length !== SOURCE_CONTRACT_KEYS.length) {
     throw new Error("contrato de fuente incompleto");
   }
-  if (values.schema_version !== "1" ||
+  if (values.schema_version !== "2" ||
       values.repository_url !== "https://github.com/Teremoq/teremoq" ||
       values.source_subdirectory !== "supervisor-web" ||
       values.package_lock_relative_path !== "package-lock.json" ||
@@ -58,7 +64,12 @@ export function parseClosedSourceContract(text) {
       values.build_script !== "build:lan" || values.package_script !== "package:lan" ||
       values.output_contract !== "external-state-root-only" ||
       values.future_repository_boundary !== "teremoq-client" ||
-      values.source_commit !== "<runtime-exact-head>") {
+      values.source_commit !== "<runtime-exact-head>" ||
+      values.player_identity_scheme !== "sha256-git-tree-lock-v1" ||
+      values.receipt_schema_version !== "1" ||
+      values.dependency_evidence_schema_version !== "1" ||
+      values.artifact_evidence_schema_version !== "1" ||
+      values.integration_builds !== "2" || values.node_builds !== "1") {
     throw new Error("valores del contrato de fuente fuera de política");
   }
   return Object.freeze(values);
@@ -220,7 +231,7 @@ export async function verifyContractFiles(projectRoot, contract) {
 }
 
 export async function compareDirectories(leftRoot, rightRoot) {
-  const [left, right] = await Promise.all([inventory(leftRoot), inventory(rightRoot)]);
+  const [left, right] = await Promise.all([inventoryDirectory(leftRoot), inventoryDirectory(rightRoot)]);
   if (left.length !== right.length) throw new Error("builds independientes difieren en inventario");
   for (let index = 0; index < left.length; index += 1) {
     const a = left[index];
@@ -233,7 +244,7 @@ export async function compareDirectories(leftRoot, rightRoot) {
   return Object.freeze(left);
 }
 
-async function inventory(root) {
+export async function inventoryDirectory(root) {
   const entries = [];
   await walk(resolve(root), resolve(root), entries);
   return entries.sort((a, b) => {

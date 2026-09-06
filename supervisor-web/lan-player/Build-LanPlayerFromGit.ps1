@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory = $true)][string]$RepositoryUrl,
     [Parameter(Mandatory = $true)][string]$RepositoryRef,
     [Parameter(Mandatory = $true)][string]$SourceCommit,
+    [string]$BuildMode = 'integration',
     [switch]$RefreshDependencies,
     [switch]$Offline
 )
@@ -25,7 +26,8 @@ if (-not [IO.Path]::IsPathRooted($CheckoutRoot) -or
     $RepositoryUrl -cne 'https://github.com/Teremoq/teremoq' -or
     $RepositoryRef -cnotmatch '^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$' -or
     $SourceCommit -cnotmatch '^[0-9a-f]{40}$' -or
-    @(@($CheckoutRoot, $StateRoot, $RepositoryUrl, $RepositoryRef, $SourceCommit) |
+    $BuildMode -cnotin @('integration', 'node') -or
+    @(@($CheckoutRoot, $StateRoot, $RepositoryUrl, $RepositoryRef, $SourceCommit, $BuildMode) |
         Where-Object { $_ -match "[`r`n]" }).Count -ne 0) {
     throw 'LAN Git distribution parameters are outside the closed policy'
 }
@@ -84,7 +86,8 @@ $arguments = @(
     '--state-root', [IO.Path]::GetFullPath($StateRoot),
     '--repository-url', $RepositoryUrl,
     '--repository-ref', $RepositoryRef,
-    '--source-commit', $SourceCommit
+    '--source-commit', $SourceCommit,
+    '--build-mode', $BuildMode
 )
 if ($RefreshDependencies) { $arguments += '--refresh-dependencies' }
 if ($Offline) { $arguments += '--offline' }

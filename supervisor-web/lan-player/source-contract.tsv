@@ -1,4 +1,4 @@
-schema_version	1
+schema_version	2
 repository_url	https://github.com/Teremoq/teremoq
 source_subdirectory	supervisor-web
 package_lock_relative_path	package-lock.json
@@ -12,3 +12,9 @@ package_script	package:lan
 output_contract	external-state-root-only
 future_repository_boundary	teremoq-client
 source_commit	<runtime-exact-head>
+player_identity_scheme	sha256-git-tree-lock-v1
+receipt_schema_version	1
+dependency_evidence_schema_version	1
+artifact_evidence_schema_version	1
+integration_builds	2
+node_builds	1
