@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { dirname, resolve } from "node:path";
 import { verifyPackageSource } from "../../../scripts/verify-package-source.mjs";
 
 const commit = "1".repeat(40);
 const tree = "a".repeat(40);
-const project = "/repo/supervisor-web";
+const project = resolve("/repo/supervisor-web");
+const root = dirname(project);
 
 function runner(overrides: Record<string, string | Error> = {}) {
   return (args: string[]) => {
@@ -11,7 +13,7 @@ function runner(overrides: Record<string, string | Error> = {}) {
     const value = overrides[command];
     if (value instanceof Error) throw value;
     if (value !== undefined) return value;
-    if (command === "rev-parse --show-toplevel") return "/repo";
+    if (command === "rev-parse --show-toplevel") return root;
     if (command === `rev-parse --verify ${commit}^{commit}`) return commit;
     if (command === "rev-parse HEAD") return commit;
     if (command === "status --porcelain=v1 --untracked-files=all") return "";
@@ -23,7 +25,7 @@ function runner(overrides: Record<string, string | Error> = {}) {
 describe("procedencia Git del paquete LAN", () => {
   it("acepta únicamente HEAD resoluble y checkout totalmente limpio", () => {
     expect(verifyPackageSource(project, commit, runner())).toEqual({
-      root: "/repo",
+      root,
       sourceCommit: commit,
       sourceTree: tree,
     });

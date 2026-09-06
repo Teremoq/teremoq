@@ -60,10 +60,11 @@ tipos, límites, invariantes y fixtures diferenciados, está en
 
 ## Contrato Platform y paquete
 
-`package:lan` exige `--source-commit <40 hex>`, comprueba que resuelve al HEAD
+`package:lan` exige `--player-identity <sha256:64 hex>`, comprueba internamente el HEAD
 local y que todo el checkout —incluidos untracked— está limpio. Genera
-`lan-launcher.tsv` de nueve claves y un manifest con `package_version` y
-`source_commit`.
+`lan-launcher.tsv` de doce claves y un manifest con versiones separadas de
+updater/player/config e identidad árbol+lock; el commit queda en VERSION como
+procedencia exterior de la petición, no en los bytes del player.
 
 El launcher valida `VERSION.tsv` exterior, `LAN-CONFIG.json` de siete claves y
 sus hashes; cruza run, commit, IPv4/URL MoQT, fingerprint y namespace. Verifica

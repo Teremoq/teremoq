@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import {
   serializeBuildProvenance,
 } from "./lan-build-provenance.mjs";
 import { verifyPackageSource } from "./verify-package-source.mjs";
+import { computePlayerIdentity, CONFIG_SCHEMA_VERSION } from "./lan-distribution-contract.mjs";
 
 const require = createRequire(import.meta.url);
 const scriptRoot = dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,7 @@ const projectRoot = resolve(scriptRoot, "..");
 const nextCli = require.resolve("next/dist/bin/next");
 const sourceCommit = git(["-C", projectRoot, "rev-parse", "HEAD"]);
 const source = verifyPackageSource(projectRoot, sourceCommit);
+const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const npmCli = process.env.npm_execpath;
 if (!npmCli || !isAbsolute(npmCli)) throw new Error("build:lan exige npm local explícito");
 const npmVersion = execFileSync(process.execPath, [npmCli, "--version"], {
@@ -27,11 +29,15 @@ if (!/^v22\.[0-9]+\.[0-9]+$/.test(process.version) ||
     !/^10\.[0-9]+\.[0-9]+$/.test(npmVersion)) {
   throw new Error("build:lan exige Node 22.x y npm 10.x");
 }
+const packageLockSha256 = await hashRegularFile(join(projectRoot, "package-lock.json"), 1_048_576);
+const playerIdentity = computePlayerIdentity(source.sourceTree, packageLockSha256);
 const provenance = {
   schema_version: 1,
-  source_commit: source.sourceCommit,
+  player_identity: playerIdentity,
+  player_version: packageMetadata.version,
+  config_schema_version: CONFIG_SCHEMA_VERSION,
   source_tree: source.sourceTree,
-  package_lock_sha256: await hashRegularFile(join(projectRoot, "package-lock.json"), 1_048_576),
+  package_lock_sha256: packageLockSha256,
   package_json_sha256: await hashRegularFile(join(projectRoot, "package.json"), 65_536),
   node_version: process.version,
   npm_version: npmVersion,
@@ -44,7 +50,7 @@ const child = spawn(process.execPath, [nextCli, "build"], {
   env: {
     ...process.env,
     TEREMOQ_LAN_LAB: "1",
-    TEREMOQ_LAN_SOURCE_COMMIT: source.sourceCommit,
+    TEREMOQ_LAN_PLAYER_IDENTITY: playerIdentity,
   },
 });
 

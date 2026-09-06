@@ -60,7 +60,8 @@ function Test-ExactProperties([object]$Value, [string[]]$ExpectedKeys) {
 
 $PackageKeys = @(
   "schema_version", "launcher_relative_path", "launcher_sha256", "actions",
-  "levels", "max_clients", "network_contract", "loopback_http_only", "source_commit"
+  "levels", "max_clients", "network_contract", "loopback_http_only", "updater_version",
+  "player_identity", "player_version", "config_schema_version"
 )
 $Package = Read-ClosedTsv $PackageContractPath $PackageKeys
 if ($Package.schema_version -cne "1" -or
@@ -69,7 +70,10 @@ if ($Package.schema_version -cne "1" -or
     $Package.levels -cne "1,5,10,25" -or $Package.max_clients -cne "25" -or
     $Package.network_contract -cne "outbound_udp_14433_only" -or
     $Package.loopback_http_only -cne "true" -or
-    $Package.source_commit -cnotmatch "^[0-9a-f]{40}$") {
+    $Package.updater_version -cnotmatch "^[0-9]+[.][0-9]+[.][0-9]+$" -or
+    $Package.player_identity -cnotmatch "^sha256:[0-9a-f]{64}$" -or
+    $Package.player_version -cnotmatch "^[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$" -or
+    $Package.config_schema_version -cne "1") {
   throw "Contrato del launcher fuera de versión."
 }
 $SelfHash = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -143,14 +147,20 @@ if (-not [string]::IsNullOrEmpty($env:TEREMOQ_LAN_LAB_CONFIG) -and
 }
 
 $VersionKeys = @(
-  "schema_version", "package_version", "run_id", "source_commit", "server_ipv4",
+  "schema_version", "updater_version", "player_identity", "player_version",
+  "config_schema_version", "package_version", "run_id", "source_commit", "server_ipv4",
   "moq_url", "player_manifest_sha256", "launcher_contract_sha256",
   "lan_config_sha256", "player_evidence", "load_launcher_status"
 )
 $Version = Read-ClosedTsv $ResolvedVersionPath $VersionKeys
 if ($Version.schema_version -cne "1" -or
+    $Version.updater_version -cne $Package.updater_version -or
+    $Version.player_identity -cne $Package.player_identity -or
+    $Version.player_version -cne $Package.player_version -or
+    $Version.config_schema_version -cne $Package.config_schema_version -or
     $Version.package_version -cnotmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" -or
-    $Version.run_id -cne $RunId -or $Version.source_commit -cne $Package.source_commit -or
+    $Version.package_version -cne $Package.player_version -or
+    $Version.run_id -cne $RunId -or
     $LocalConfig.run_id -cne $Version.run_id -or
     $LocalConfig.source_commit -cne $Version.source_commit -or
     $Version.server_ipv4 -cne $MoqUri.Host -or $Version.moq_url -cne $LocalConfig.relay_url -or
@@ -172,13 +182,17 @@ if ($ManifestItem.Length -gt 8MB -or ($ManifestItem.Attributes -band [System.IO.
 }
 $Manifest = [System.IO.File]::ReadAllText($ManifestItem.FullName) | ConvertFrom-Json
 $ManifestKeys = @(
-  "schema_version", "artifact", "entrypoint", "package_version", "source_commit", "files", "total_bytes"
+  "schema_version", "artifact", "entrypoint", "package_version", "updater_version",
+  "player_identity", "player_version", "config_schema_version", "files", "total_bytes"
 )
 if (-not (Test-ExactProperties $Manifest $ManifestKeys) -or
     $Manifest.schema_version -ne 1 -or $Manifest.artifact -cne "teremoq-lan-lab-standalone" -or
     $Manifest.entrypoint -cne "start.mjs" -or
     $Manifest.package_version -cne $Version.package_version -or
-    $Manifest.source_commit -cne $Package.source_commit -or
+    $Manifest.updater_version -cne $Package.updater_version -or
+    $Manifest.player_identity -cne $Package.player_identity -or
+    $Manifest.player_version -cne $Package.player_version -or
+    $Manifest.config_schema_version -ne 1 -or
     $Manifest.files.Count -lt 1 -or $Manifest.files.Count -gt 10000 -or
     (($Manifest.total_bytes -isnot [int]) -and ($Manifest.total_bytes -isnot [long])) -or
     $Manifest.total_bytes -lt 1) {

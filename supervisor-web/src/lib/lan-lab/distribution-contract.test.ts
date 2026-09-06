@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   SOURCE_CONTRACT_KEYS,
@@ -16,8 +16,8 @@ import {
   verifyDistributionSource,
 } from "../../../scripts/distribution-contract.mjs";
 
-const checkout = "/checkout";
-const project = `${checkout}/supervisor-web`;
+const checkout = resolve("/checkout");
+const project = join(checkout, "supervisor-web");
 const commit = "1".repeat(40);
 const tree = "2".repeat(40);
 const repositoryRef = "refs/heads/codex/lan-player-client";
@@ -101,10 +101,17 @@ describe("contrato de distribución Git del player LAN", () => {
   }, 30_000);
 
   it("valida identidad, modos, cache, artefacto y recibos JSON cerrados", () => {
-    const output = execFileSync(process.execPath, ["scripts/lan-distribution-contract.test.mjs"], {
+    const output = execFileSync(process.execPath, ["scripts/lan-distribution-contract.canary.mjs"], {
       cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
     });
     expect(output.trim()).toBe("lan-distribution-contract-test: PASS");
+  }, 30_000);
+
+  it("detecta adulteración del snapshot de dependencias", () => {
+    const output = execFileSync(process.execPath, ["scripts/dependency-snapshot.canary.mjs"], {
+      cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    });
+    expect(output.trim()).toBe("dependency-snapshot-test: PASS");
   }, 30_000);
 
   it.each([
@@ -134,7 +141,7 @@ describe("contrato de distribución Git del player LAN", () => {
     expect(() => validateToolVersions("v20.0.0", "10.9.2", contract)).toThrow();
     expect(() => validateToolVersions("v22.14.0", "11.0.0", contract)).toThrow();
     expect(() => assertExternalStateRoot(checkout, `${checkout}/state`)).toThrow();
-    expect(assertExternalStateRoot(checkout, "/external/state")).toBe("/external/state");
+    expect(assertExternalStateRoot(checkout, "/external/state")).toBe(resolve("/external/state"));
     expect(() => assertExternalStateRoot(
       checkout,
       "/external/alias/state",
@@ -207,7 +214,8 @@ describe("contrato de distribución Git del player LAN", () => {
     writeFileSync(join(right, "nested", "a"), "different");
     await expect(compareDirectories(left, right)).rejects.toThrow("byte-identical");
     rmSync(join(right, "nested", "a"));
-    symlinkSync(join(left, "nested", "a"), join(right, "nested", "a"));
+    symlinkSync(join(left, "nested"), join(right, "linked"),
+      process.platform === "win32" ? "junction" : "dir");
     await expect(compareDirectories(left, right)).rejects.toThrow("symlinks");
   });
 
@@ -231,6 +239,8 @@ describe("contrato de distribución Git del player LAN", () => {
     expect(orchestrator).toContain('values["--build-mode"] ?? "integration"');
     expect(orchestrator).toContain("createBuildPlan(context.request.buildMode)");
     expect(orchestrator).toContain("serializeDistributionReceipt(receipt)");
+    expect(orchestrator).toContain("measureDependencySnapshot(snapshotRoot)");
+    expect(orchestrator).toContain('context.request.buildMode === "node" && dependencyEvidence !== null');
     expect(orchestrator).not.toMatch(/\[\s*"(?:clone|fetch|pull|push)"/);
     for (const forbidden of ["LAN-CONFIG.json", "VERSION.tsv", "EvidenceDirectory", "FingerprintPath"]) {
       expect(`${launcher}\n${orchestrator}`).not.toContain(forbidden);

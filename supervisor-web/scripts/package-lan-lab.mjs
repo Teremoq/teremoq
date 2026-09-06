@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
   cp,
   lstat,
@@ -18,22 +19,27 @@ import {
   readBuildProvenanceFile,
 } from "./lan-build-provenance.mjs";
 import { verifyPackageSource } from "./verify-package-source.mjs";
+import {
+  computePlayerIdentity,
+  CONFIG_SCHEMA_VERSION,
+  UPDATER_VERSION,
+} from "./lan-distribution-contract.mjs";
 
 const MAX_PACKAGE_BYTES = 128 * 1024 * 1024;
 const MAX_LAUNCHER_CONTRACT_BYTES = 4_096;
 const PLATFORM_LAUNCHER_NAME = "teremoq-lan-platform.ps1";
 const EVIDENCE_VALIDATOR_NAME = "validate-lan-evidence.mjs";
 const outputFlag = process.argv.indexOf("--output");
-const sourceCommitFlag = process.argv.indexOf("--source-commit");
+const playerIdentityFlag = process.argv.indexOf("--player-identity");
 if (outputFlag === -1 || !process.argv[outputFlag + 1] ||
-    sourceCommitFlag === -1 || !process.argv[sourceCommitFlag + 1]) {
+    playerIdentityFlag === -1 || !process.argv[playerIdentityFlag + 1]) {
   throw new Error(
-    "Uso: npm run package:lan -- --output <directorio-nuevo> --source-commit <40 hex>",
+    "Uso: npm run package:lan -- --output <directorio-nuevo> --player-identity <sha256:64 hex>",
   );
 }
-const sourceCommit = process.argv[sourceCommitFlag + 1];
-if (!/^[0-9a-f]{40}$/.test(sourceCommit)) {
-  throw new Error("--source-commit debe ser un commit SHA-1 canónico de 40 hex");
+const requestedPlayerIdentity = process.argv[playerIdentityFlag + 1];
+if (!/^sha256:[0-9a-f]{64}$/.test(requestedPlayerIdentity)) {
+  throw new Error("--player-identity debe ser sha256: seguido de 64 hex minúsculas");
 }
 const packageMetadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 if (typeof packageMetadata.version !== "string" ||
@@ -43,6 +49,7 @@ if (typeof packageMetadata.version !== "string" ||
 const packageVersion = packageMetadata.version;
 
 const projectRoot = process.cwd();
+const sourceCommit = execHead(projectRoot);
 const source = verifyPackageSource(projectRoot, sourceCommit);
 const standaloneRoot = join(projectRoot, ".next", "standalone");
 const standaloneServer = join(standaloneRoot, "server.js");
@@ -57,11 +64,18 @@ if (
 }
 await requireRegularFile(standaloneServer, "Ejecuta npm run build:lan antes de empaquetar");
 const npmVersion = npmVersionFromEnvironment();
+const packageLockSha256 = await hashRegularFile(join(projectRoot, "package-lock.json"), 1_048_576);
+const playerIdentity = computePlayerIdentity(source.sourceTree, packageLockSha256);
+if (playerIdentity !== requestedPlayerIdentity) {
+  throw new Error("player_identity no coincide con árbol Git y lock actuales");
+}
 const expectedProvenance = {
   schema_version: 1,
-  source_commit: source.sourceCommit,
+  player_identity: playerIdentity,
+  player_version: packageVersion,
+  config_schema_version: CONFIG_SCHEMA_VERSION,
   source_tree: source.sourceTree,
-  package_lock_sha256: await hashRegularFile(join(projectRoot, "package-lock.json"), 1_048_576),
+  package_lock_sha256: packageLockSha256,
   package_json_sha256: await hashRegularFile(join(projectRoot, "package.json"), 65_536),
   node_version: process.version,
   npm_version: npmVersion,
@@ -103,7 +117,7 @@ await writeFile(
 const packagedPrerenderManifest = join(outputRoot, ".next", "prerender-manifest.json");
 await writeFile(
   packagedPrerenderManifest,
-  normalizePrerenderManifest(await readFile(packagedPrerenderManifest, "utf8"), sourceCommit),
+  normalizePrerenderManifest(await readFile(packagedPrerenderManifest, "utf8"), playerIdentity),
   { encoding: "utf8" },
 );
 const serverReferenceJson = join(outputRoot, ".next", "server", "server-reference-manifest.json");
@@ -111,7 +125,7 @@ const serverReferenceJs = join(outputRoot, ".next", "server", "server-reference-
 const normalizedServerReferences = normalizeEmptyServerReferenceManifests(
   await readFile(serverReferenceJson, "utf8"),
   await readFile(serverReferenceJs, "utf8"),
-  sourceCommit,
+  playerIdentity,
 );
 await Promise.all([
   writeFile(serverReferenceJson, normalizedServerReferences.json, { encoding: "utf8" }),
@@ -148,7 +162,10 @@ const launcherContract = [
   "max_clients\t25",
   "network_contract\toutbound_udp_14433_only",
   "loopback_http_only\ttrue",
-  `source_commit\t${sourceCommit}`,
+  `updater_version\t${UPDATER_VERSION}`,
+  `player_identity\t${playerIdentity}`,
+  `player_version\t${packageVersion}`,
+  `config_schema_version\t${CONFIG_SCHEMA_VERSION}`,
   "",
 ].join("\n");
 if (Buffer.byteLength(launcherContract, "utf8") > MAX_LAUNCHER_CONTRACT_BYTES) {
@@ -169,7 +186,10 @@ const manifest = {
   artifact: "teremoq-lan-lab-standalone",
   entrypoint: "start.mjs",
   package_version: packageVersion,
-  source_commit: sourceCommit,
+  updater_version: UPDATER_VERSION,
+  player_identity: playerIdentity,
+  player_version: packageVersion,
+  config_schema_version: CONFIG_SCHEMA_VERSION,
   files,
   total_bytes: totalBytes,
 };
@@ -225,4 +245,10 @@ function npmVersionFromEnvironment() {
     throw new Error("package:lan exige Node 22.x");
   }
   return match[1];
+}
+
+function execHead(projectRoot) {
+  return execFileSync("git", ["-C", projectRoot, "rev-parse", "HEAD"], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000, maxBuffer: 131_072,
+  }).trim();
 }

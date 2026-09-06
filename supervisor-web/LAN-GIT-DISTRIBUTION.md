@@ -15,19 +15,18 @@
   Windows una política adicional abre cada directorio con un handle Win32,
   compara `GetFinalPathNameByHandleW` y rechaza cualquier atributo
   `ReparsePoint`; se revalida antes de consumo, build, comparación y promoción.
-- El cache de descargas npm se selecciona por SHA-256 del lock y versiones
-  exactas de Node/npm. Sólo se reutiliza con una evidencia JSON v1 cerrada que
-  coincida byte por byte; cualquier evidencia inválida falla cerrado y un
-  cambio válido exige `-RefreshDependencies`. Cada construcción sigue usando `npm ci` en un
-  worktree nuevo: nunca reutiliza `node_modules`.
+- El modo nodo reutiliza un snapshot inmutable de `node_modules` sólo tras
+  revalidar lock, Node/npm exactos, Windows x64 y el inventario completo; también
+  valida la copia antes de construir. Su primera ejecución usa `npm ci`. El modo
+  integración no reutiliza el snapshot y ejecuta `npm ci` en ambos worktrees.
 - Tras la primera generación, el estado conserva el último commit aceptado. La
   siguiente ejecución calcula un `git diff --name-status --no-renames` limitado
   a `supervisor-web`, valida paths/cardinalidad/tamaño y sella número de ficheros
   y SHA-256 del diff en la procedencia exterior.
 - La identidad pública del player es SHA-256 de una serialización canónica del
   árbol Git exacto de `supervisor-web` y del SHA-256 de `package-lock.json`.
-  La ruta conserva además `source_commit`, porque el paquete lo incorpora:
-  `StateRoot\players\sha256-<identidad>\<source_commit>`.
+  La ruta es únicamente `StateRoot\players\sha256-<identidad>`. El commit de la
+  petición se conserva fuera del player como procedencia del updater.
 - El modo `integration` (por defecto) ejecuta dos builds independientes y exige
   inventario, tamaño y SHA-256 idénticos. El modo `node` ejecuta uno. Un player
   existente sólo se reutiliza si su evidencia cerrada coincide con identidad,
@@ -39,7 +38,7 @@
 
 ## Contrato versionado mínimo
 
-`lan-player/source-contract.tsv` es un TSV cerrado de veinte claves y máximo
+`lan-player/source-contract.tsv` es un TSV cerrado de veinticinco claves y máximo
 4096 bytes. Fija repositorio HTTPS canónico, subdirectorio, paths y SHA-256 de
 lock/package, Node 22, npm 10, scripts, salida exterior y la futura frontera
 `teremoq-client`. `source_commit` se resuelve en runtime contra el HEAD exacto;
@@ -48,8 +47,9 @@ una plantilla no puede afirmar de antemano el hash de una versión futura.
 `build:lan` genera `.next/TEREMOQ-LAN-BUILD.json` después de un build correcto.
 `package:lan` valida ese sello cerrado y lo incorpora como
 `BUILD-PROVENANCE.json`; el manifest y `lan-launcher.tsv` conservan el mismo
-`source_commit`. Un `.next` antiguo, otro árbol o herramientas distintas no se
-pueden empaquetar como el HEAD actual.
+`player_identity`, árbol y lock. Un `.next` antiguo, otro árbol o herramientas
+distintas no se pueden empaquetar como el player actual; el commit exterior no
+entra en sus bytes.
 
 Next 16 genera metadata aleatorio para Draft/Preview aunque el cliente LAN no
 expone esa capacidad. Durante el empaquetado se valida exactamente esa
@@ -105,7 +105,7 @@ sido aprovisionado por un mecanismo revisado.
 
 La salida JSON cerrada devuelve `status` (`built|reused`), `build_mode`,
 `builds_executed`, verificación, identidad y digests. `player_relative_path` es
-`players/sha256-<player_identity>/<source_commit>`. Platform debe resolverla bajo el `StateRoot` y usar
+`players/sha256-<player_identity>`. Platform debe resolverla bajo el `StateRoot` y usar
 ese directorio como player. No debe esperar ni copiar un
 `supervisor-web/lan-player` generado dentro del checkout.
 
@@ -158,7 +158,7 @@ El estado generado queda en:
 ```text
 StateRoot/
   .teremoq-web-build/                         cache y evidencias JSON
-  players/sha256-<identity>/<source_commit>/ player promovido y manifests
+  players/sha256-<identity>/                 player promovido y manifests
 ```
 
 Los worktrees temporales se eliminan incluso ante error. Una generación previa

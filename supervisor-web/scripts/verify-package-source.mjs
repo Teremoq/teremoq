@@ -14,7 +14,7 @@ export function verifyPackageSource(
   const resolved = runGit(["-C", root, "rev-parse", "--verify", `${sourceCommit}^{commit}`]);
   if (resolved !== sourceCommit) throw new Error("source_commit no es un commit resoluble exacto");
   const head = runGit(["-C", root, "rev-parse", "HEAD"]);
-  if (head !== sourceCommit) throw new Error("--source-commit no coincide con HEAD");
+  if (head !== sourceCommit) throw new Error("commit Git interno no coincide con HEAD");
   const status = runGit(["-C", root, "status", "--porcelain=v1", "--untracked-files=all"]);
   if (status !== "") throw new Error("el checkout Git debe estar limpio antes de empaquetar");
   const sourceTree = runGit(["-C", root, "rev-parse", `${sourceCommit}:supervisor-web`]);

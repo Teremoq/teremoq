@@ -88,7 +88,7 @@ En PowerShell del ordenador cliente, prepara el artefacto y arráncalo así:
 ```powershell
 npm ci
 npm run build:lan
-npm run package:lan -- --output C:\teremoq-lan-lab --source-commit <40 hex minúsculas>
+npm run package:lan -- --output C:\teremoq-lan-lab --player-identity <sha256:64 hex minúsculas>
 Set-Location C:\teremoq-lan-lab
 $env:TEREMOQ_LAN_LAB_CONFIG='{"schema_version":1,"relay_url":"https://192.168.10.20:14433/watch","fingerprint_sha256":"<64 hex minúsculas>","prefix_length":24,"namespace":"teremoq/live","run_id":"lan-manual-01","source_commit":"<40 hex minúsculas>"}'
 node start.mjs
@@ -146,14 +146,16 @@ refresco explícito de dependencias están documentados en
 ### Launcher cerrado para Platform y carga progresiva
 
 El paquete contiene `lan-launcher.tsv`, `teremoq-lan-platform.ps1` y un
-validador cerrado de evidencia. `package:lan` exige `--source-commit` y enlaza
-ese commit tanto al TSV de nueve claves como al manifest, que también conserva
-la versión de `package.json`. Un SHA ausente, no canónico o distinto del
+validador cerrado de evidencia. `package:lan` exige `--player-identity` y enlaza
+esa identidad tanto al TSV de doce claves como al manifest, que conserva por
+separado versiones de updater, player y schema de configuración. El commit se
+mantiene sólo en los contratos exteriores de la petición. Una identidad ausente, no canónica o distinta del
 `VERSION.tsv` exterior se rechaza.
 
 Platform coloca junto al directorio del player `VERSION.tsv` y
 `LAN-CONFIG.json`, ambos públicos, regulares y sin symlinks. `VERSION.tsv`
-contiene exactamente `schema_version`, `package_version`, `run_id`,
+contiene exactamente `schema_version`, `updater_version`, `player_identity`,
+`player_version`, `config_schema_version`, `package_version`, `run_id`,
 `source_commit`, `server_ipv4`, `moq_url`, `player_manifest_sha256`,
 `launcher_contract_sha256`, `lan_config_sha256`, `player_evidence` y
 `load_launcher_status`. Al arrancar, los dos últimos estados son

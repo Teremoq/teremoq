@@ -1,9 +1,12 @@
 schema_version	1
 launcher_relative_path	teremoq-lan-platform.ps1
-launcher_sha256	285e69bc00fc672dae508f5e4784d9f23d1d7a58b6ae6fd41a14391c465286c5
+launcher_sha256	71b1224a13ee77a540122478157012f58b88b48cfe5a03984debf5657bc8ba3d
 actions	start,status,stop,collect
 levels	1,5,10,25
 max_clients	25
 network_contract	outbound_udp_14433_only
 loopback_http_only	true
-source_commit	<required-by-package-lan>
+updater_version	2.0.0
+player_identity	sha256:<runtime-tree-lock-identity>
+player_version	<package-json-version>
+config_schema_version	1

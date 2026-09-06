@@ -8,11 +8,11 @@ const nextConfig: NextConfig = {
   ...(isLanLabEnabled(process.env) ? {
     output: "standalone" as const,
     generateBuildId: async () => {
-      const sourceCommit = process.env.TEREMOQ_LAN_SOURCE_COMMIT;
-      if (!sourceCommit || !/^[0-9a-f]{40}$/.test(sourceCommit)) {
-        throw new Error("LAN build requires an exact source commit");
+      const playerIdentity = process.env.TEREMOQ_LAN_PLAYER_IDENTITY;
+      if (!playerIdentity || !/^sha256:[0-9a-f]{64}$/.test(playerIdentity)) {
+        throw new Error("LAN build requires an exact player identity");
       }
-      return sourceCommit;
+      return playerIdentity.replace(":", "-");
     },
   } : {}),
   allowedDevOrigins: ["127.0.0.1", "localhost"],

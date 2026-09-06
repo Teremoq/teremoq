@@ -13,7 +13,7 @@ describe("contrato del paquete LAN", () => {
 
   it("activa standalone únicamente durante el build LAN explícito", () => {
     expect(buildScript).toContain('TEREMOQ_LAN_LAB: "1"');
-    expect(buildScript).toContain("TEREMOQ_LAN_SOURCE_COMMIT: source.sourceCommit");
+    expect(buildScript).toContain("TEREMOQ_LAN_PLAYER_IDENTITY: playerIdentity");
     expect(nextConfig).toContain('output: "standalone"');
     expect(nextConfig).toContain("generateBuildId");
     expect(nextConfig).toContain("isLanLabEnabled(process.env)");
@@ -33,7 +33,8 @@ describe("contrato del paquete LAN", () => {
     expect(packageScript).toContain("MAX_LAUNCHER_CONTRACT_BYTES");
     expect(packageScript).toContain("EVIDENCE_VALIDATOR_NAME");
     expect(packageScript).toContain("package_version: packageVersion");
-    expect(packageScript).toContain("source_commit: sourceCommit");
+    expect(packageScript).toContain("player_identity: playerIdentity");
+    expect(packageScript).not.toContain("source_commit: sourceCommit");
     expect(packageScript).toContain('"BUILD-PROVENANCE.json"');
     expect(packageScript).toContain("readBuildProvenanceFile");
     expect(packageScript).toContain("normalizePrerenderManifest");
@@ -51,7 +52,7 @@ describe("contrato del paquete LAN", () => {
   it("versiona un contrato cerrado y trazable para Platform", () => {
     expect(Buffer.byteLength(launcherContract, "utf8")).toBeLessThanOrEqual(4_096);
     const entries = launcherContract.trimEnd().split("\n").map((line) => line.split("\t"));
-    expect(entries).toHaveLength(9);
+    expect(entries).toHaveLength(12);
     expect(Object.fromEntries(entries)).toEqual({
       schema_version: "1",
       launcher_relative_path: "teremoq-lan-platform.ps1",
@@ -61,24 +62,27 @@ describe("contrato del paquete LAN", () => {
       max_clients: "25",
       network_contract: "outbound_udp_14433_only",
       loopback_http_only: "true",
-      source_commit: "<required-by-package-lan>",
+      updater_version: "2.0.0",
+      player_identity: "sha256:<runtime-tree-lock-identity>",
+      player_version: "<package-json-version>",
+      config_schema_version: "1",
     });
   });
 
-  it("requiere source_commit canónico y lo inserta en contrato y manifest", () => {
+  it("requiere player_identity canónica y no liga bytes al commit exterior", () => {
     const missing = spawnSync(process.execPath, [
       "scripts/package-lan-lab.mjs", "--output", "/tmp/teremoq-package-missing-source",
     ], { encoding: "utf8" });
     expect(missing.status).not.toBe(0);
-    expect(missing.stderr).toContain("--source-commit");
+    expect(missing.stderr).toContain("--player-identity");
 
     const invalid = spawnSync(process.execPath, [
       "scripts/package-lan-lab.mjs", "--output", "/tmp/teremoq-package-invalid-source",
-      "--source-commit", "ABC",
+      "--player-identity", "ABC",
     ], { encoding: "utf8" });
     expect(invalid.status).not.toBe(0);
-    expect(invalid.stderr).toContain("40 hex");
-    expect(packageScript).toContain("`source_commit\\t${sourceCommit}`");
+    expect(invalid.stderr).toContain("64 hex");
+    expect(packageScript).not.toContain("`source_commit\\t${sourceCommit}`");
   });
 
   it("launcher valida parámetros, hash, fingerprint y rutas antes de actuar", () => {
@@ -93,7 +97,7 @@ describe("contrato del paquete LAN", () => {
     expect(source).toContain("Get-FileHash");
     expect(source).toContain('HOSTNAME = "127.0.0.1"');
     expect(source).toContain("VERSION.tsv canónico exterior al paquete");
-    expect(source).toContain("$Version.source_commit -cne $Package.source_commit");
+    expect(source).toContain("$Version.player_identity -cne $Package.player_identity");
     expect(source).toContain("$Version.moq_url -cne $LocalConfig.relay_url");
     expect(source).toContain("$Version.player_evidence -cne \"not_measured\"");
     expect(source).toContain("$Version.load_launcher_status -cne \"ready\"");

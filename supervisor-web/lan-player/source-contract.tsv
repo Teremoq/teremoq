@@ -1,4 +1,4 @@
-schema_version	2
+schema_version	3
 repository_url	https://github.com/Teremoq/teremoq
 source_subdirectory	supervisor-web
 package_lock_relative_path	package-lock.json
@@ -18,3 +18,8 @@ dependency_evidence_schema_version	1
 artifact_evidence_schema_version	1
 integration_builds	2
 node_builds	1
+updater_version	2.0.0
+player_version_source	package-json-version
+config_schema_version	1
+player_path_scheme	identity-only-v1
+dependency_snapshot_scheme	lock-runtime-platform-arch-v1

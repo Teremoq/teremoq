@@ -4,7 +4,9 @@ import { lstat, readFile } from "node:fs/promises";
 export const BUILD_PROVENANCE_NAME = "TEREMOQ-LAN-BUILD.json";
 export const BUILD_PROVENANCE_KEYS = Object.freeze([
   "schema_version",
-  "source_commit",
+  "player_identity",
+  "player_version",
+  "config_schema_version",
   "source_tree",
   "package_lock_sha256",
   "package_json_sha256",
@@ -59,9 +61,9 @@ export async function readBuildProvenanceFile(path, expected) {
   return { text, value: parseBuildProvenance(text, expected) };
 }
 
-export function normalizePrerenderManifest(text, sourceCommit) {
+export function normalizePrerenderManifest(text, playerIdentity) {
   if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 1_048_576 ||
-      !/^[0-9a-f]{40}$/.test(sourceCommit)) {
+      !/^sha256:[0-9a-f]{64}$/.test(playerIdentity)) {
     throw new Error("prerender manifest fuera de límite");
   }
   let value;
@@ -84,9 +86,9 @@ export function normalizePrerenderManifest(text, sourceCommit) {
     throw new Error("preview metadata fuera del contrato Next 16 fijado");
   }
   value.preview = {
-    previewModeId: derive("id", sourceCommit).slice(0, 32),
-    previewModeSigningKey: derive("signing", sourceCommit),
-    previewModeEncryptionKey: derive("encryption", sourceCommit),
+    previewModeId: derive("id", playerIdentity).slice(0, 32),
+    previewModeSigningKey: derive("signing", playerIdentity),
+    previewModeEncryptionKey: derive("encryption", playerIdentity),
   };
   return `${JSON.stringify(value)}\n`;
 }
@@ -118,11 +120,11 @@ export function normalizeRequiredServerFiles(text, projectRoot) {
   return normalized;
 }
 
-export function normalizeEmptyServerReferenceManifests(jsonText, jsText, sourceCommit) {
+export function normalizeEmptyServerReferenceManifests(jsonText, jsText, playerIdentity) {
   if (typeof jsonText !== "string" || typeof jsText !== "string" ||
       Buffer.byteLength(jsonText, "utf8") > 65_536 ||
       Buffer.byteLength(jsText, "utf8") > 131_072 ||
-      !/^[0-9a-f]{40}$/.test(sourceCommit) ||
+      !/^sha256:[0-9a-f]{64}$/.test(playerIdentity) ||
       jsText !== `self.__RSC_SERVER_MANIFEST=${JSON.stringify(jsonText)}`) {
     throw new Error("server reference manifests no coinciden");
   }
@@ -139,7 +141,7 @@ export function normalizeEmptyServerReferenceManifests(jsonText, jsText, sourceC
       !/^[A-Za-z0-9+/]{43}=$/.test(value.encryptionKey)) {
     throw new Error("Server Actions no está vacío o queda fuera de contrato");
   }
-  value.encryptionKey = Buffer.from(derive("server-actions-disabled", sourceCommit), "hex")
+  value.encryptionKey = Buffer.from(derive("server-actions-disabled", playerIdentity), "hex")
     .toString("base64");
   const json = JSON.stringify(value, null, 2);
   return Object.freeze({
@@ -186,7 +188,9 @@ function validateBuildProvenance(value) {
   if (!isRecord(value) || Object.keys(value).length !== BUILD_PROVENANCE_KEYS.length ||
       BUILD_PROVENANCE_KEYS.some((key) => !Object.hasOwn(value, key)) ||
       value.schema_version !== 1 ||
-      !/^[0-9a-f]{40}$/.test(value.source_commit) ||
+      !/^sha256:[0-9a-f]{64}$/.test(value.player_identity) ||
+      !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(value.player_version) ||
+      value.config_schema_version !== 1 ||
       !/^[0-9a-f]{40}$/.test(value.source_tree) ||
       !/^[0-9a-f]{64}$/.test(value.package_lock_sha256) ||
       !/^[0-9a-f]{64}$/.test(value.package_json_sha256) ||
@@ -201,8 +205,8 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function derive(purpose, sourceCommit) {
+function derive(purpose, playerIdentity) {
   return createHash("sha256")
-    .update(`teremoq-lan-next-preview-disabled-v1\0${purpose}\0${sourceCommit}`)
+    .update(`teremoq-lan-next-preview-disabled-v1\0${purpose}\0${playerIdentity}`)
     .digest("hex");
 }

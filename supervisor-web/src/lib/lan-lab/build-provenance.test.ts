@@ -11,7 +11,9 @@ import {
 
 const valid = {
   schema_version: 1,
-  source_commit: "1".repeat(40),
+  player_identity: `sha256:${"1".repeat(64)}`,
+  player_version: "0.1.0",
+  config_schema_version: 1,
   source_tree: "2".repeat(40),
   package_lock_sha256: "3".repeat(64),
   package_json_sha256: "4".repeat(64),
@@ -30,7 +32,7 @@ describe("sello de procedencia del build LAN", () => {
   it.each([
     ["campo desconocido", { ...valid, extra: true }],
     ["campo ausente", Object.fromEntries(Object.entries(valid).slice(0, -1))],
-    ["commit inválido", { ...valid, source_commit: "A".repeat(40) }],
+    ["identidad inválida", { ...valid, player_identity: "sha256:ABC" }],
     ["Node incorrecto", { ...valid, node_version: "v20.18.0" }],
     ["npm incorrecto", { ...valid, npm_version: "11.0.0" }],
   ])("rechaza %s", (_label, value) => {
@@ -56,11 +58,11 @@ describe("sello de procedencia del build LAN", () => {
     });
     const first = normalizePrerenderManifest(
       manifest("1".repeat(32), "2".repeat(64), "3".repeat(64)),
-      valid.source_commit,
+      valid.player_identity,
     );
     const second = normalizePrerenderManifest(
       manifest("4".repeat(32), "5".repeat(64), "6".repeat(64)),
-      valid.source_commit,
+      valid.player_identity,
     );
     expect(first).toBe(second);
     expect(first).not.toContain("1".repeat(32));
@@ -71,7 +73,7 @@ describe("sello de procedencia del build LAN", () => {
     ["preview ausente", { previewModeId: "1".repeat(32), previewModeSigningKey: "2".repeat(64) }],
     ["longitud inválida", { previewModeId: "1", previewModeSigningKey: "2".repeat(64), previewModeEncryptionKey: "3".repeat(64) }],
   ])("rechaza prerender %s", (_label, preview) => {
-    expect(() => normalizePrerenderManifest(JSON.stringify({ preview }), valid.source_commit)).toThrow();
+    expect(() => normalizePrerenderManifest(JSON.stringify({ preview }), valid.player_identity)).toThrow();
   });
 
   it("elimina sólo los cuatro paths absolutos fijados por Next 16", () => {
@@ -111,7 +113,7 @@ describe("sello de procedencia del build LAN", () => {
       return normalizeEmptyServerReferenceManifests(
         json,
         `self.__RSC_SERVER_MANIFEST=${JSON.stringify(json)}`,
-        valid.source_commit,
+        valid.player_identity,
       );
     };
     expect(normalize("A".repeat(43) + "=")).toEqual(normalize("B".repeat(43) + "="));
@@ -122,11 +124,11 @@ describe("sello de procedencia del build LAN", () => {
       node: { action: {} }, edge: {}, encryptionKey: "A".repeat(43) + "=",
     }, null, 2);
     expect(() => normalizeEmptyServerReferenceManifests(
-      json, `self.__RSC_SERVER_MANIFEST=${JSON.stringify(json)}`, valid.source_commit,
+      json, `self.__RSC_SERVER_MANIFEST=${JSON.stringify(json)}`, valid.player_identity,
     )).toThrow("no está vacío");
     const empty = JSON.stringify({ node: {}, edge: {}, encryptionKey: "A".repeat(43) + "=" }, null, 2);
     expect(() => normalizeEmptyServerReferenceManifests(
-      empty, "self.__RSC_SERVER_MANIFEST=\"forged\"", valid.source_commit,
+      empty, "self.__RSC_SERVER_MANIFEST=\"forged\"", valid.player_identity,
     )).toThrow("no coinciden");
   });
 

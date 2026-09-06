@@ -1,23 +1,28 @@
 import { createHash } from "node:crypto";
 
 export const DISTRIBUTION_RECEIPT_KEYS = Object.freeze([
-  "schema_version", "status", "build_mode", "player_identity", "source_commit",
-  "source_tree", "package_lock_sha256", "node_version", "npm_version",
+  "schema_version", "status", "updater_version", "player_identity", "player_version",
+  "config_schema_version", "build_mode", "source_commit", "source_tree",
+  "package_lock_sha256", "node_version", "npm_version", "platform", "architecture",
   "dependency_status", "previous_source_commit", "source_diff_files",
   "source_diff_sha256", "builds_executed", "build_verification",
   "manifest_sha256", "launcher_contract_sha256", "artifact_inventory_sha256",
   "player_relative_path",
 ]);
 export const DEPENDENCY_EVIDENCE_KEYS = Object.freeze([
-  "schema_version", "status", "source_commit", "package_lock_sha256",
-  "node_version", "npm_version", "cache_relative_path",
+  "schema_version", "status", "package_lock_sha256", "node_version", "npm_version",
+  "platform", "architecture", "snapshot_relative_path", "inventory_files",
+  "total_bytes", "inventory_sha256",
 ]);
 export const ARTIFACT_EVIDENCE_KEYS = Object.freeze([
-  "schema_version", "status", "player_identity", "source_commit", "source_tree",
-  "package_lock_sha256", "node_version", "npm_version", "created_build_mode",
+  "schema_version", "status", "player_identity", "player_version", "config_schema_version",
+  "source_tree", "package_lock_sha256", "node_version", "npm_version", "platform",
+  "architecture", "created_build_mode",
   "created_builds", "build_verification", "manifest_sha256",
   "launcher_contract_sha256", "artifact_inventory_sha256", "player_relative_path",
 ]);
+export const UPDATER_VERSION = "2.0.0";
+export const CONFIG_SCHEMA_VERSION = 1;
 
 export function computePlayerIdentity(sourceTree, packageLockSha256) {
   requireHex(sourceTree, 40, "source tree");
@@ -29,10 +34,9 @@ export function computePlayerIdentity(sourceTree, packageLockSha256) {
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
-export function playerRelativePath(playerIdentity, sourceCommit) {
+export function playerRelativePath(playerIdentity) {
   requireIdentity(playerIdentity);
-  requireHex(sourceCommit, 40, "source commit");
-  return `players/${playerIdentity.replace(":", "-")}/${sourceCommit}`;
+  return `players/${playerIdentity.replace(":", "-")}`;
 }
 
 export function buildCountForMode(buildMode) {
@@ -49,15 +53,18 @@ export function createBuildPlan(buildMode) {
   })));
 }
 
-export function dependencyCacheRelativePath(packageLockSha256, nodeVersion, npmVersion) {
+export function dependencyCacheRelativePath(
+  packageLockSha256, nodeVersion, npmVersion, platform, architecture,
+) {
   requireHex(packageLockSha256, 64, "package lock");
   requireRuntime(nodeVersion, npmVersion);
-  return `npm-cache/${packageLockSha256}/node-${nodeVersion}/npm-${npmVersion}`;
+  requireHost(platform, architecture);
+  return `dependency-snapshots/${packageLockSha256}/node-${nodeVersion}/npm-${npmVersion}/${platform}-${architecture}`;
 }
 
 export function createDependencyEvidence(value) {
   return freezeValidated(DEPENDENCY_EVIDENCE_KEYS, {
-    schema_version: 1, status: "npm-ci-cache-verified", ...value,
+    schema_version: 1, status: "npm-ci-snapshot-verified", ...value,
   }, validateDependencyEvidence);
 }
 export function serializeDependencyEvidence(value) {
@@ -72,20 +79,21 @@ export function parseDependencyEvidence(text) {
 export function decideDependencyCache(previousEvidence, current, refresh) {
   const expectedPath = dependencyCacheRelativePath(
     current.package_lock_sha256, current.node_version, current.npm_version,
+    current.platform, current.architecture,
   );
-  requireHex(current.source_commit, 40, "source commit");
   if (typeof refresh !== "boolean") throw new Error("refresh de dependencias inválido");
   if (previousEvidence === null) {
-    return Object.freeze({ status: "created", cache_relative_path: expectedPath });
+    return Object.freeze({ status: "snapshot-created", snapshot_relative_path: expectedPath });
   }
   validateDependencyEvidence(previousEvidence);
   const matches = previousEvidence.package_lock_sha256 === current.package_lock_sha256 &&
     previousEvidence.node_version === current.node_version &&
     previousEvidence.npm_version === current.npm_version &&
-    previousEvidence.cache_relative_path === expectedPath;
-  if (matches) return Object.freeze({ status: "reused-verified", cache_relative_path: expectedPath });
-  if (!refresh) throw new Error("evidencia de dependencias no coincide; exige refresh explícito");
-  return Object.freeze({ status: "refreshed", cache_relative_path: expectedPath });
+    previousEvidence.platform === current.platform &&
+    previousEvidence.architecture === current.architecture &&
+    previousEvidence.snapshot_relative_path === expectedPath;
+  if (matches) return Object.freeze({ status: "snapshot-reused-verified", snapshot_relative_path: expectedPath });
+  throw new Error("evidencia de dependencias no coincide; snapshot adulterado");
 }
 
 export function createArtifactEvidence(value) {
@@ -105,8 +113,9 @@ export function validateReusableArtifact(evidence, expected, requestedMode) {
   validateArtifactEvidence(evidence);
   buildCountForMode(requestedMode);
   for (const key of [
-    "player_identity", "source_commit", "source_tree", "package_lock_sha256",
-    "node_version", "npm_version", "player_relative_path",
+    "player_identity", "player_version", "config_schema_version", "source_tree",
+    "package_lock_sha256", "node_version", "npm_version", "platform", "architecture",
+    "player_relative_path",
   ]) {
     if (evidence[key] !== expected[key]) throw new Error("player existente no coincide con identidad/runtime");
   }
@@ -131,15 +140,21 @@ export function parseDistributionReceipt(text) {
 
 function validateDependencyEvidence(value) {
   requireClosed(value, DEPENDENCY_EVIDENCE_KEYS, "evidencia de dependencias");
-  if (value.schema_version !== 1 || value.status !== "npm-ci-cache-verified") {
+  if (value.schema_version !== 1 || value.status !== "npm-ci-snapshot-verified") {
     throw new Error("evidencia de dependencias fuera de versión/estado");
   }
-  requireHex(value.source_commit, 40, "source commit");
   requireHex(value.package_lock_sha256, 64, "package lock");
   requireRuntime(value.node_version, value.npm_version);
-  if (value.cache_relative_path !== dependencyCacheRelativePath(
+  requireHost(value.platform, value.architecture);
+  if (value.snapshot_relative_path !== dependencyCacheRelativePath(
     value.package_lock_sha256, value.node_version, value.npm_version,
-  )) throw new Error("path de cache no coincide con lock/runtime");
+    value.platform, value.architecture,
+  ) || !Number.isSafeInteger(value.inventory_files) || value.inventory_files < 1 ||
+      value.inventory_files > 200_000 || !Number.isSafeInteger(value.total_bytes) ||
+      value.total_bytes < 1 || value.total_bytes > 1_073_741_824) {
+    throw new Error("snapshot de dependencias fuera de contrato");
+  }
+  requireHex(value.inventory_sha256, 64, "inventario de dependencias");
 }
 
 function validateArtifactEvidence(value) {
@@ -148,12 +163,13 @@ function validateArtifactEvidence(value) {
     throw new Error("evidencia de player fuera de versión/estado");
   }
   requireIdentity(value.player_identity);
-  requireHex(value.source_commit, 40, "source commit");
+  requirePlayerVersion(value.player_version, value.config_schema_version);
   requireHex(value.source_tree, 40, "source tree");
   requireHex(value.package_lock_sha256, 64, "package lock");
   requireRuntime(value.node_version, value.npm_version);
+  requireHost(value.platform, value.architecture);
   if (value.player_identity !== computePlayerIdentity(value.source_tree, value.package_lock_sha256) ||
-      value.player_relative_path !== playerRelativePath(value.player_identity, value.source_commit)) {
+      value.player_relative_path !== playerRelativePath(value.player_identity)) {
     throw new Error("identidad/path de player incoherentes");
   }
   const expectedBuilds = buildCountForMode(value.created_build_mode);
@@ -173,16 +189,19 @@ function validateDistributionReceipt(value) {
     throw new Error("recibo fuera de versión/estado");
   }
   buildCountForMode(value.build_mode);
+  if (value.updater_version !== UPDATER_VERSION) throw new Error("updater fuera de versión");
   requireIdentity(value.player_identity);
+  requirePlayerVersion(value.player_version, value.config_schema_version);
   requireHex(value.source_commit, 40, "source commit");
   requireHex(value.source_tree, 40, "source tree");
   requireHex(value.package_lock_sha256, 64, "package lock");
   requireRuntime(value.node_version, value.npm_version);
+  requireHost(value.platform, value.architecture);
   if (value.player_identity !== computePlayerIdentity(value.source_tree, value.package_lock_sha256) ||
-      value.player_relative_path !== playerRelativePath(value.player_identity, value.source_commit)) {
+      value.player_relative_path !== playerRelativePath(value.player_identity)) {
     throw new Error("recibo contiene identidad/path incoherentes");
   }
-  if (!["created", "reused-verified", "refreshed", "not-used"].includes(value.dependency_status) ||
+  if (!["snapshot-created", "snapshot-reused-verified", "integration-npm-ci", "not-used"].includes(value.dependency_status) ||
       !/^(none|[0-9a-f]{40})$/.test(value.previous_source_commit) ||
       !Number.isSafeInteger(value.source_diff_files) || value.source_diff_files < 0 ||
       value.source_diff_files > 4_096) throw new Error("recibo contiene estado/diff inválido");
@@ -192,15 +211,14 @@ function validateDistributionReceipt(value) {
       value.build_verification === "double-build-byte-identical") ||
     (value.build_mode === "node" && value.builds_executed === 1 &&
       value.build_verification === "single-build")
-  ) && value.dependency_status !== "not-used";
+  ) && ((value.build_mode === "integration" && value.dependency_status === "integration-npm-ci") ||
+        (value.build_mode === "node" && ["snapshot-created", "snapshot-reused-verified"].includes(value.dependency_status)));
   const reused = value.status === "reused" && value.builds_executed === 0 &&
     ((value.build_mode === "integration" &&
       value.build_verification === "reused-integration-double") ||
      (value.build_mode === "node" &&
       ["reused-integration-double", "reused-node-single"].includes(value.build_verification))) &&
-    value.dependency_status === "not-used" && value.previous_source_commit === "none" &&
-    value.source_diff_files === 0 &&
-    value.source_diff_sha256 === createHash("sha256").update("").digest("hex");
+    value.dependency_status === "not-used";
   if (!built && !reused) throw new Error("recibo contiene conteo/verificación incoherente");
   for (const key of ["manifest_sha256", "launcher_contract_sha256", "artifact_inventory_sha256"]) {
     requireHex(value[key], 64, key);
@@ -234,6 +252,17 @@ function requireClosed(value, keys, label) {
 function requireRuntime(nodeVersion, npmVersion) {
   if (!/^v22\.[0-9]+\.[0-9]+$/.test(nodeVersion) || !/^10\.[0-9]+\.[0-9]+$/.test(npmVersion)) {
     throw new Error("runtime Node/npm fuera de contrato");
+  }
+}
+function requireHost(platform, architecture) {
+  if (platform !== "win32" || architecture !== "x64") {
+    throw new Error("plataforma/arquitectura fuera de contrato");
+  }
+}
+function requirePlayerVersion(playerVersion, configSchemaVersion) {
+  if (!/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(playerVersion) ||
+      configSchemaVersion !== CONFIG_SCHEMA_VERSION) {
+    throw new Error("versión de player/config fuera de contrato");
   }
 }
 function requireIdentity(value) {

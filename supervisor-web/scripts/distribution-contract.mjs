@@ -34,6 +34,11 @@ export const SOURCE_CONTRACT_KEYS = Object.freeze([
   "artifact_evidence_schema_version",
   "integration_builds",
   "node_builds",
+  "updater_version",
+  "player_version_source",
+  "config_schema_version",
+  "player_path_scheme",
+  "dependency_snapshot_scheme",
 ]);
 
 export function parseClosedSourceContract(text) {
@@ -53,7 +58,7 @@ export function parseClosedSourceContract(text) {
   if (Object.keys(values).length !== SOURCE_CONTRACT_KEYS.length) {
     throw new Error("contrato de fuente incompleto");
   }
-  if (values.schema_version !== "2" ||
+  if (values.schema_version !== "3" ||
       values.repository_url !== "https://github.com/Teremoq/teremoq" ||
       values.source_subdirectory !== "supervisor-web" ||
       values.package_lock_relative_path !== "package-lock.json" ||
@@ -69,7 +74,12 @@ export function parseClosedSourceContract(text) {
       values.receipt_schema_version !== "1" ||
       values.dependency_evidence_schema_version !== "1" ||
       values.artifact_evidence_schema_version !== "1" ||
-      values.integration_builds !== "2" || values.node_builds !== "1") {
+      values.integration_builds !== "2" || values.node_builds !== "1" ||
+      values.updater_version !== "2.0.0" ||
+      values.player_version_source !== "package-json-version" ||
+      values.config_schema_version !== "1" ||
+      values.player_path_scheme !== "identity-only-v1" ||
+      values.dependency_snapshot_scheme !== "lock-runtime-platform-arch-v1") {
     throw new Error("valores del contrato de fuente fuera de política");
   }
   return Object.freeze(values);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,10 +11,12 @@ import {
 import {
   computePlayerIdentity, createArtifactEvidence, createBuildPlan,
   createDependencyEvidence, createDistributionReceipt, decideDependencyCache,
+  CONFIG_SCHEMA_VERSION, dependencyCacheRelativePath,
   parseArtifactEvidence, parseDependencyEvidence, playerRelativePath,
   serializeArtifactEvidence, serializeDependencyEvidence,
-  serializeDistributionReceipt, validateReusableArtifact,
+  serializeDistributionReceipt, UPDATER_VERSION, validateReusableArtifact,
 } from "./lan-distribution-contract.mjs";
+import { assertDependencySnapshot, measureDependencySnapshot } from "./dependency-snapshot.mjs";
 import {
   buildIsolatedNpmEnvironment, rejectProjectNpmConfiguration,
   requireEmptyRegularNpmConfig, verifyEffectiveNpmConfiguration,
@@ -41,8 +43,9 @@ await revalidateSecureDirectoryPins(checkoutPin, projectPin);
 const source = verifyDistributionSource(projectRoot, request, contract);
 await rejectProjectNpmConfiguration(source.checkoutRoot, projectRoot);
 const files = await verifyContractFiles(projectRoot, contract);
+const playerVersion = await readPlayerVersion(projectRoot);
 const playerIdentity = computePlayerIdentity(source.sourceTree, files.lockSha256);
-const relativePlayerPath = playerRelativePath(playerIdentity, source.sourceCommit);
+const relativePlayerPath = playerRelativePath(playerIdentity);
 
 assertExternalStateRoot(source.checkoutRoot, request.stateRoot);
 await pinSecureDirectoryPath(request.stateRoot, { allowMissing: true });
@@ -64,14 +67,14 @@ const buildStatePin = await pinSecureDirectoryPath(buildStateRoot);
 const playersPin = await pinSecureDirectoryPath(playersRoot);
 const generationPin = await pinSecureDirectoryPath(generationRoot);
 const npmIsolationPin = await pinSecureDirectoryPath(npmIsolationRoot);
-const identityDirectory = join(playersRoot, playerIdentity.replace(":", "-"));
-await mkdir(identityDirectory, { recursive: true });
-const identityPin = await pinSecureDirectoryPath(identityDirectory);
+const identityParentPin = playersPin;
 const finalPlayerRoot = join(stateRoot, relativePlayerPath);
-const artifactEvidencePath = join(
-  generationRoot, `${playerIdentity.replace(":", "-")}-${source.sourceCommit}.json`,
+const artifactEvidencePath = join(generationRoot, `${playerIdentity.replace(":", "-")}.json`);
+const updateStatePath = join(buildStateRoot, "update-state.json");
+const previousUpdate = await readUpdateState(updateStatePath);
+const sourceUpdate = compareSourceUpdate(
+  source.checkoutRoot, previousUpdate?.source_commit ?? null, source.sourceCommit,
 );
-const dependencyEvidencePath = join(buildStateRoot, "dependency-evidence.json");
 
 const artifactExists = await pathExists(finalPlayerRoot);
 const evidenceExists = await pathExists(artifactEvidencePath);
@@ -81,31 +84,35 @@ if (artifactExists !== evidenceExists) {
 if (artifactExists) {
   const receipt = await reuseExistingArtifact({
     finalPlayerRoot, artifactEvidencePath, playerIdentity, relativePlayerPath,
-    source, files, runtime, request, identityPin, generationPin,
+    source, files, runtime, request, identityParentPin, generationPin, playerVersion, sourceUpdate,
   });
+  await writeUpdateState(updateStatePath, source.sourceCommit, buildStateRoot);
   process.stdout.write(serializeDistributionReceipt(receipt));
 } else {
   const receipt = await buildArtifact({
-    finalPlayerRoot, artifactEvidencePath, dependencyEvidencePath, playerIdentity,
+    finalPlayerRoot, artifactEvidencePath, playerIdentity,
     relativePlayerPath, source, files, runtime, request, contract, npmCli,
-    checkoutPin, projectPin, statePin, buildStatePin, playersPin, identityPin,
-    generationPin, npmIsolationPin, npmIsolationRoot,
+    checkoutPin, projectPin, statePin, buildStatePin, playersPin, identityParentPin,
+    generationPin, npmIsolationPin, npmIsolationRoot, playerVersion, sourceUpdate,
   });
+  await writeUpdateState(updateStatePath, source.sourceCommit, buildStateRoot);
   process.stdout.write(serializeDistributionReceipt(receipt));
 }
 
 async function reuseExistingArtifact(context) {
   const playerPin = await pinSecureDirectoryPath(context.finalPlayerRoot);
   const evidencePin = await pinSecureRegularFile(context.artifactEvidencePath);
-  await revalidateSecureDirectoryPins(context.identityPin, playerPin, context.generationPin);
+  await revalidateSecureDirectoryPins(context.identityParentPin, playerPin, context.generationPin);
   await revalidateSecureRegularFilePin(evidencePin);
   const evidence = parseArtifactEvidence(
     (await readBoundedRegular(context.artifactEvidencePath, 8_192)).toString("utf8"),
   );
   validateReusableArtifact(evidence, {
-    player_identity: context.playerIdentity, source_commit: context.source.sourceCommit,
-    source_tree: context.source.sourceTree, package_lock_sha256: context.files.lockSha256,
+    player_identity: context.playerIdentity, player_version: context.playerVersion,
+    config_schema_version: CONFIG_SCHEMA_VERSION, source_tree: context.source.sourceTree,
+    package_lock_sha256: context.files.lockSha256,
     node_version: context.runtime.nodeVersion, npm_version: context.runtime.npmVersion,
+    platform: process.platform, architecture: process.arch,
     player_relative_path: context.relativePlayerPath,
   }, context.request.buildMode);
   const inventory = await inventoryDirectory(context.finalPlayerRoot);
@@ -121,11 +128,15 @@ async function reuseExistingArtifact(context) {
   }
   return createDistributionReceipt({
     status: "reused", build_mode: context.request.buildMode,
-    player_identity: context.playerIdentity, source_commit: context.source.sourceCommit,
+    updater_version: UPDATER_VERSION, player_identity: context.playerIdentity,
+    player_version: context.playerVersion, config_schema_version: CONFIG_SCHEMA_VERSION,
+    source_commit: context.source.sourceCommit,
     source_tree: context.source.sourceTree, package_lock_sha256: context.files.lockSha256,
     node_version: context.runtime.nodeVersion, npm_version: context.runtime.npmVersion,
-    dependency_status: "not-used", previous_source_commit: "none", source_diff_files: 0,
-    source_diff_sha256: sha256(""), builds_executed: 0,
+    platform: process.platform, architecture: process.arch,
+    dependency_status: "not-used", previous_source_commit: context.sourceUpdate.previousSourceCommit,
+    source_diff_files: context.sourceUpdate.changedFiles,
+    source_diff_sha256: context.sourceUpdate.diffSha256, builds_executed: 0,
     build_verification: evidence.created_build_mode === "integration"
       ? "reused-integration-double" : "reused-node-single",
     manifest_sha256: measured.manifest, launcher_contract_sha256: measured.launcher,
@@ -135,22 +146,47 @@ async function reuseExistingArtifact(context) {
 }
 
 async function buildArtifact(context) {
-  const previousDependency = await readDependencyEvidence(context.dependencyEvidencePath);
-  const dependency = decideDependencyCache(previousDependency, {
-    source_commit: context.source.sourceCommit,
+  const dependencyDescriptor = {
     package_lock_sha256: context.files.lockSha256,
     node_version: context.runtime.nodeVersion, npm_version: context.runtime.npmVersion,
-  }, context.request.refreshDependencies);
-  const sourceUpdate = compareSourceUpdate(
-    context.source.checkoutRoot, previousDependency?.source_commit ?? null,
-    context.source.sourceCommit,
+    platform: process.platform, architecture: process.arch,
+  };
+  const snapshotRelativePath = dependencyCacheRelativePath(
+    dependencyDescriptor.package_lock_sha256, dependencyDescriptor.node_version,
+    dependencyDescriptor.npm_version, dependencyDescriptor.platform,
+    dependencyDescriptor.architecture,
   );
-  const cacheRoot = join(context.buildStateRoot, dependency.cache_relative_path);
-  if (dependency.status === "reused-verified") await pinSecureDirectoryPath(cacheRoot);
-  else {
-    await requireAbsent(cacheRoot, "cache npm sin evidencia exacta; distribución rechazada");
-    await mkdir(cacheRoot, { recursive: true });
+  const snapshotRoot = join(context.buildStateRoot, snapshotRelativePath);
+  const snapshotEvidencePath = `${snapshotRoot}.json`;
+  let dependencyStatus = "integration-npm-ci";
+  let dependencyEvidence = null;
+  if (context.request.buildMode === "node") {
+    const snapshotExists = await pathExists(snapshotRoot);
+    const snapshotEvidenceExists = await pathExists(snapshotEvidencePath);
+    if (snapshotExists !== snapshotEvidenceExists) {
+      throw new Error("snapshot/evidencia de dependencias incompletos");
+    }
+    if (snapshotExists) {
+      const snapshotPin = await pinSecureDirectoryPath(snapshotRoot);
+      const snapshotEvidencePin = await pinSecureRegularFile(snapshotEvidencePath);
+      await revalidateSecureDirectoryPin(snapshotPin);
+      await revalidateSecureRegularFilePin(snapshotEvidencePin);
+      dependencyEvidence = await readDependencyEvidence(snapshotEvidencePath);
+      const decision = decideDependencyCache(dependencyEvidence, dependencyDescriptor,
+        context.request.refreshDependencies);
+      const measured = await measureDependencySnapshot(snapshotRoot);
+      assertDependencySnapshot(measured, dependencyEvidence);
+      await revalidateSecureDirectoryPin(snapshotPin);
+      await revalidateSecureRegularFilePin(snapshotEvidencePin);
+      dependencyStatus = decision.status;
+    } else {
+      dependencyStatus = decideDependencyCache(null, dependencyDescriptor,
+        context.request.refreshDependencies).status;
+    }
   }
+  const cacheRoot = join(context.buildStateRoot, "npm-download-cache",
+    context.files.lockSha256, `${process.platform}-${process.arch}`);
+  await mkdir(cacheRoot, { recursive: true });
   const cachePin = await pinSecureDirectoryPath(cacheRoot);
   const isolationPaths = await prepareNpmIsolation(context.npmIsolationRoot, cacheRoot);
   const isolationPins = await Promise.all([
@@ -171,9 +207,13 @@ async function buildArtifact(context) {
   const activeWorktrees = [];
   const activePins = new Map();
   const packagePins = [];
+  let stagedSnapshot = null;
+  let stagedSnapshotMeasurement = null;
   let promoted = false;
   let temporaryRemoved = false;
   let evidencePromoted = false;
+  let snapshotPromoted = false;
+  let snapshotEvidencePromoted = false;
   let primaryFailure = null;
   const cleanupFailures = [];
   try {
@@ -201,12 +241,26 @@ async function buildArtifact(context) {
       if (context.request.offline) ciArguments.push("--offline");
       await revalidateSecureDirectoryPins(cachePin, temporaryPin, worktreePin, workspacePin,
         context.npmIsolationPin, ...isolationPins);
-      runNpm(context.npmCli, ciArguments, workspace, 900_000, childEnv);
+      if (context.request.buildMode === "node" && dependencyEvidence !== null) {
+        const workspaceModules = join(workspace, "node_modules");
+        await requireAbsent(workspaceModules, "worktree contiene node_modules inesperado");
+        await cp(snapshotRoot, workspaceModules, { recursive: true, errorOnExist: true });
+        assertDependencySnapshot(await measureDependencySnapshot(workspaceModules), dependencyEvidence);
+      } else {
+        runNpm(context.npmCli, ciArguments, workspace, 900_000, childEnv);
+        if (context.request.buildMode === "node") {
+          stagedSnapshot = join(temporaryRoot, "dependency-snapshot");
+          await cp(join(workspace, "node_modules"), stagedSnapshot, {
+            recursive: true, errorOnExist: true,
+          });
+          stagedSnapshotMeasurement = await measureDependencySnapshot(stagedSnapshot);
+        }
+      }
       runNpm(context.npmCli, ["run", context.contract.build_script], workspace, 900_000, childEnv);
       await pinSecureDirectoryPath(packageRoots[index], { allowMissing: true });
       runNpm(context.npmCli, [
         "run", context.contract.package_script, "--", "--output", packageRoots[index],
-        "--source-commit", context.source.sourceCommit,
+        "--player-identity", context.playerIdentity,
       ], workspace, 900_000, childEnv);
       packagePins[index] = await pinSecureDirectoryPath(packageRoots[index]);
     }
@@ -216,6 +270,24 @@ async function buildArtifact(context) {
     const manifestSha256 = await sha256File(join(packageRoots[0], "MANIFEST.sha256.json"));
     const launcherContractSha256 = await sha256File(join(packageRoots[0], "lan-launcher.tsv"));
     const artifactInventorySha256 = inventorySha256(inventory);
+    if (stagedSnapshot !== null && stagedSnapshotMeasurement !== null) {
+      await mkdir(dirname(snapshotRoot), { recursive: true });
+      const snapshotParentPin = await pinSecureDirectoryPath(dirname(snapshotRoot));
+      const stagedSnapshotPin = await pinSecureDirectoryPath(stagedSnapshot);
+      await requireAbsent(snapshotRoot, "snapshot de dependencias ya existe sin evidencia aceptada");
+      await requireAbsent(snapshotEvidencePath, "evidencia de snapshot ya existe sin contenido aceptado");
+      await promoteDirectory(stagedSnapshot, snapshotRoot, stagedSnapshotPin, snapshotParentPin);
+      snapshotPromoted = true;
+      dependencyEvidence = createDependencyEvidence({
+        ...dependencyDescriptor,
+        snapshot_relative_path: snapshotRelativePath,
+        ...stagedSnapshotMeasurement,
+      });
+      await writeFile(snapshotEvidencePath, serializeDependencyEvidence(dependencyEvidence), {
+        encoding: "utf8", flag: "wx",
+      });
+      snapshotEvidencePromoted = true;
+    }
     while (activeWorktrees.length > 0) {
       const checkout = activeWorktrees.at(-1);
       await revalidateSecureDirectoryPins(context.checkoutPin, activePins.get(checkout));
@@ -224,27 +296,22 @@ async function buildArtifact(context) {
       activeWorktrees.pop();
     }
     const artifactEvidence = createArtifactEvidence({
-      player_identity: context.playerIdentity, source_commit: context.source.sourceCommit,
+      player_identity: context.playerIdentity, player_version: context.playerVersion,
+      config_schema_version: CONFIG_SCHEMA_VERSION,
       source_tree: context.source.sourceTree, package_lock_sha256: context.files.lockSha256,
       node_version: context.runtime.nodeVersion, npm_version: context.runtime.npmVersion,
+      platform: process.platform, architecture: process.arch,
       created_build_mode: context.request.buildMode, created_builds: plan.length,
       build_verification: plan.length === 2 ? "double-build-byte-identical" : "single-build",
       manifest_sha256: manifestSha256, launcher_contract_sha256: launcherContractSha256,
       artifact_inventory_sha256: artifactInventorySha256,
       player_relative_path: context.relativePlayerPath,
     });
-    const dependencyEvidence = createDependencyEvidence({
-      source_commit: context.source.sourceCommit, package_lock_sha256: context.files.lockSha256,
-      node_version: context.runtime.nodeVersion, npm_version: context.runtime.npmVersion,
-      cache_relative_path: dependency.cache_relative_path,
-    });
-    await replaceStateFile(context.dependencyEvidencePath,
-      serializeDependencyEvidence(dependencyEvidence), temporaryRoot, "dependency-evidence.json");
     const stagedEvidence = join(temporaryRoot, "artifact-evidence.json");
     await writeFile(stagedEvidence, serializeArtifactEvidence(artifactEvidence), { flag: "wx" });
     await requireAbsent(context.finalPlayerRoot, "ya existe una generación player para la identidad");
     await requireAbsent(context.artifactEvidencePath, "ya existe evidencia para la identidad");
-    await promoteDirectory(packageRoots[0], context.finalPlayerRoot, packagePins[0], context.identityPin);
+    await promoteDirectory(packageRoots[0], context.finalPlayerRoot, packagePins[0], context.identityParentPin);
     promoted = true;
     await rename(stagedEvidence, context.artifactEvidencePath);
     evidencePromoted = true;
@@ -252,11 +319,16 @@ async function buildArtifact(context) {
     temporaryRemoved = true;
     return createDistributionReceipt({
       status: "built", build_mode: context.request.buildMode,
-      player_identity: context.playerIdentity, source_commit: context.source.sourceCommit,
+      updater_version: UPDATER_VERSION, player_identity: context.playerIdentity,
+      player_version: context.playerVersion, config_schema_version: CONFIG_SCHEMA_VERSION,
+      source_commit: context.source.sourceCommit,
       source_tree: context.source.sourceTree, package_lock_sha256: context.files.lockSha256,
       node_version: context.runtime.nodeVersion, npm_version: context.runtime.npmVersion,
-      dependency_status: dependency.status, previous_source_commit: sourceUpdate.previousSourceCommit,
-      source_diff_files: sourceUpdate.changedFiles, source_diff_sha256: sourceUpdate.diffSha256,
+      platform: process.platform, architecture: process.arch,
+      dependency_status: dependencyStatus,
+      previous_source_commit: context.sourceUpdate.previousSourceCommit,
+      source_diff_files: context.sourceUpdate.changedFiles,
+      source_diff_sha256: context.sourceUpdate.diffSha256,
       builds_executed: plan.length,
       build_verification: plan.length === 2 ? "double-build-byte-identical" : "single-build",
       manifest_sha256: manifestSha256, launcher_contract_sha256: launcherContractSha256,
@@ -278,9 +350,16 @@ async function buildArtifact(context) {
     if (promoted && !evidencePromoted) {
       try {
         const playerPin = await pinSecureDirectoryPath(context.finalPlayerRoot);
-        await revalidateSecureDirectoryPins(context.identityPin, playerPin);
+        await revalidateSecureDirectoryPins(context.identityParentPin, playerPin);
         await rm(context.finalPlayerRoot, { recursive: true, force: true });
       } catch { cleanupFailures.push("unsealed-player"); }
+    }
+    if (snapshotPromoted && !snapshotEvidencePromoted) {
+      try {
+        const snapshotPin = await pinSecureDirectoryPath(snapshotRoot);
+        await revalidateSecureDirectoryPin(snapshotPin);
+        await rm(snapshotRoot, { recursive: true, force: true });
+      } catch { cleanupFailures.push("unsealed-dependency-snapshot"); }
     }
   }
   if (cleanupFailures.length > 0) {
@@ -354,8 +433,11 @@ function runNpm(npmCli, args, cwd, timeout, env) {
   const result = spawnSync(process.execPath, [npmCli, ...args], { cwd, stdio: "inherit", timeout, env });
   if (result.error || result.status !== 0) throw new Error("npm/build/package local falló");
 }
-async function replaceStateFile(path, contents, temporaryRoot, name) {
-  const candidate = join(temporaryRoot, name);
+async function writeUpdateState(path, sourceCommit, stateRoot) {
+  const candidate = join(stateRoot, `update-state-${process.pid}.json`);
+  const contents = `${JSON.stringify({
+    schema_version: 1, updater_version: UPDATER_VERSION, source_commit: sourceCommit,
+  })}\n`;
   await writeFile(candidate, contents, { encoding: "utf8", flag: "wx" });
   try { await rename(candidate, path); }
   catch (cause) {
@@ -364,6 +446,28 @@ async function replaceStateFile(path, contents, temporaryRoot, name) {
     await rm(path, { force: true });
     await rename(candidate, path);
   }
+}
+async function readUpdateState(path) {
+  try {
+    const text = (await readBoundedRegular(path, 1_024)).toString("utf8");
+    const value = JSON.parse(text);
+    if (!value || Array.isArray(value) || Object.keys(value).length !== 3 ||
+        value.schema_version !== 1 || value.updater_version !== UPDATER_VERSION ||
+        !/^[0-9a-f]{40}$/.test(value.source_commit) ||
+        text !== `${JSON.stringify(value)}\n`) throw new Error("estado de updater fuera de contrato");
+    return Object.freeze(value);
+  } catch (cause) {
+    if (cause && typeof cause === "object" && "code" in cause && cause.code === "ENOENT") return null;
+    throw cause;
+  }
+}
+async function readPlayerVersion(root) {
+  const value = JSON.parse((await readBoundedRegular(join(root, "package.json"), 65_536)).toString("utf8"));
+  if (!value || Array.isArray(value) || typeof value.version !== "string" ||
+      !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(value.version)) {
+    throw new Error("player_version fuera de contrato");
+  }
+  return value.version;
 }
 async function promoteDirectory(source, destination, sourcePin, destinationParentPin) {
   const attempts = process.platform === "win32" ? 20 : 1;
