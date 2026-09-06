@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, runProcess, scrub, terminateProcessTree, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, runProcess, scrub, terminateProcessTree, updaterCandidateCheckout, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -89,8 +89,25 @@ const retryPreparedState = preparedStateRootForTask({
   commit: "2".repeat(40),
   taskSequence: 2,
 });
-expect(firstPreparedState !== channelStateRoot && retryPreparedState !== firstPreparedState,
-  "client preparation reuses channel state or a failed preparation generation");
+expect(firstPreparedState !== channelStateRoot && retryPreparedState === firstPreparedState &&
+  firstPreparedState.endsWith("lan-client-state-lan-state-canary"),
+"client preparation does not use the persistent A/B state root");
+const originalLocalAppData = process.env.LOCALAPPDATA;
+const updaterRoot = fs.mkdtempSync(path.join(os.tmpdir(), "teremoq-updater-slots-"));
+try {
+  process.env.LOCALAPPDATA = updaterRoot;
+  const root = path.join(updaterRoot, "Teremoq");
+  expect(path.basename(updaterCandidateCheckout({ checkout: path.join(root, "legacy") })) === "checkout-updater-a",
+    "legacy updater did not migrate to slot A");
+  expect(path.basename(updaterCandidateCheckout({ checkout: path.join(root, "checkout-updater-a") })) === "checkout-updater-b",
+    "updater slot A did not select slot B");
+  expect(path.basename(updaterCandidateCheckout({ checkout: path.join(root, "checkout-updater-b") })) === "checkout-updater-a",
+    "updater slot B did not select slot A");
+} finally {
+  if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+  else process.env.LOCALAPPDATA = originalLocalAppData;
+  fs.rmSync(updaterRoot, { recursive: true, force: true });
+}
 let missingPreparedStateRejected = false;
 try { activePreparedStateRoot({}); } catch { missingPreparedStateRejected = true; }
 expect(missingPreparedStateRejected, "workload accepted an absent prepared client state");

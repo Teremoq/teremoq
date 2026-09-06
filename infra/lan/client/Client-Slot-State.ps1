@@ -1,12 +1,29 @@
 # SPDX-FileCopyrightText: 2026 Teremoq contributors
 # SPDX-License-Identifier: Apache-2.0
 
-$script:TeremoqLanUpdaterVersion = '3.0.0'
+$script:TeremoqLanUpdaterVersion = '2.0.0'
 $script:TeremoqLanUpdaterProtocol = 'teremoq-lan-updater-v3'
 $script:TeremoqLanConfigSchemaVersion = 1
 
 function Get-TeremoqLanUpdaterVersion {
     return $script:TeremoqLanUpdaterVersion
+}
+
+function Get-TeremoqLanPlayerIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceTree,
+        [Parameter(Mandatory = $true)][string]$PackageLockSha256
+    )
+    if ($SourceTree -cnotmatch '^[0-9a-f]{40}$' -or $PackageLockSha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'player identity inputs are outside policy'
+    }
+    $canonical = "schema_version=1`nsource_tree=$SourceTree`npackage_lock_sha256=$PackageLockSha256`n"
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::ASCII.GetBytes($canonical)
+        $hex = ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
+        return "sha256:$hex"
+    } finally { $sha.Dispose() }
 }
 
 function Get-TeremoqLanClientLayout {
@@ -145,6 +162,10 @@ function Assert-TeremoqLanSlotRecord {
         $Record.config_schema_version -ne $script:TeremoqLanConfigSchemaVersion -or
         $Record.config_sha256 -cnotmatch '^[0-9a-f]{64}$') {
         throw 'LAN client slot record values are outside policy'
+    }
+    if ($Record.player_identity -cne (Get-TeremoqLanPlayerIdentity -SourceTree $Record.source_tree `
+            -PackageLockSha256 $Record.package_lock_sha256)) {
+        throw 'LAN client player identity does not match source tree and lockfile'
     }
     $identityHex = $Record.player_identity.Substring(7)
     $expectedSlot = "u-$($Record.updater_commit)-p-${identityHex}"
@@ -353,12 +374,8 @@ function Remove-TeremoqObsoleteLanClientSlots {
             Remove-TeremoqBoundedRegularTree -Path $directory.FullName -ExpectedParent $Layout.VersionsRoot
         }
     }
-    $activePlayerName = $ActiveRecord.player_relative_path.Substring('players/'.Length)
-    foreach ($directory in @(Get-ChildItem -LiteralPath $Layout.PlayersRoot -Directory -Force)) {
-        if ($directory.Name -cne $activePlayerName) {
-            Remove-TeremoqBoundedRegularTree -Path $directory.FullName -ExpectedParent $Layout.PlayersRoot
-        }
-    }
+    # Verified player generations are content-addressed caches. Keeping them lets a
+    # later updater reuse the exact artifact without rebuilding or touching config.
 }
 
 function Remove-TeremoqLanClientRecordMaterial {
@@ -372,14 +389,8 @@ function Remove-TeremoqLanClientRecordMaterial {
     if (Test-Path -LiteralPath $versionRoot) {
         Remove-TeremoqBoundedRegularTree -Path $versionRoot -ExpectedParent $Layout.VersionsRoot
     }
-    $otherReferences = @()
-    foreach ($pointer in @($Layout.ActivePointer, $Layout.CandidatePointer, $Layout.RollbackPointer)) {
-        $value = Read-TeremoqLanSlotPointer -Path $pointer -AllowMissing
-        if ($null -ne $value -and $value.player_identity -ceq $Record.player_identity) { $otherReferences += $value }
-    }
-    if ($otherReferences.Count -eq 0 -and (Test-Path -LiteralPath $playerRoot)) {
-        Remove-TeremoqBoundedRegularTree -Path $playerRoot -ExpectedParent $Layout.PlayersRoot
-    }
+    # A failed candidate may be caused by transient LAN health rather than corrupt
+    # bytes. The sealed, content-addressed player remains reusable but inactive.
 }
 
 function Remove-TeremoqBoundedRegularTree {

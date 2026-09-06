@@ -39,7 +39,7 @@ if ($Action -eq 'Start') {
     throw 'deterministic player evidence directory does not exist for this action'
 }
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $state.LauncherPath `
-    -Action $Action -RunId $RunId -Level $Level -VersionPath (Join-Path $state.StateRoot 'VERSION.tsv') `
-    -FingerprintPath (Join-Path $state.StateRoot 'public-identity\relay-cert.sha256') -EvidenceDirectory $evidence
+    -Action $Action -RunId $RunId -Level $Level -VersionPath $state.VersionPath `
+    -FingerprintPath $state.FingerprintPath -EvidenceDirectory $evidence
 if ($LASTEXITCODE -ne 0) { throw "TP-WEB-REALTIME LAN launcher failed: $LASTEXITCODE" }
 if ($Action -eq 'Collect') { Write-Output 'Import the exact browser JSON with Import-BrowserObservation.ps1; launcher output/hash alone is not composite gate evidence.' }

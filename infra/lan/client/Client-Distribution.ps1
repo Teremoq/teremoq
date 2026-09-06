@@ -408,6 +408,10 @@ function Assert-TeremoqNonReparseFilePath {
 
 function Get-TeremoqLanStateContext {
     param([Parameter(Mandatory = $true)][string]$StateRoot)
+    $managedPointer = Join-Path ([IO.Path]::GetFullPath($StateRoot)) 'control\active.json'
+    if (Test-Path -LiteralPath $managedPointer -PathType Leaf) {
+        return Get-TeremoqManagedLanStateContext -StateRoot $StateRoot
+    }
     $root = Get-TeremoqNonReparseDirectoryPath -Path $StateRoot
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'StateRoot must exist' }
     $rootItem = Get-Item -LiteralPath $root -Force
@@ -554,6 +558,10 @@ function Get-TeremoqLanStateContext {
     }
     return [pscustomobject]@{
         StateRoot = $root
+        VersionRoot = $root
+        ConfigRoot = $root
+        VersionPath = Join-Path $root 'VERSION.tsv'
+        FingerprintPath = Join-Path $root 'public-identity\relay-cert.sha256'
         Version = $version
         Compatibility = $compatibility
         LanConfig = $lanConfig
@@ -561,6 +569,193 @@ function Get-TeremoqLanStateContext {
         LauncherPath = $launcherPath
         LauncherRelativePath = $launcherValues.launcher_relative_path
         RepositorySubdirectory = $compatibility.repository_subdirectory
+    }
+}
+
+function Get-TeremoqManagedLanStateContext {
+    param([Parameter(Mandatory = $true)][string]$StateRoot)
+
+    $slotLibrary = Join-Path $PSScriptRoot 'Client-Slot-State.ps1'
+    if (-not (Test-Path -LiteralPath $slotLibrary -PathType Leaf)) { throw 'managed LAN client slot library is absent' }
+    . $slotLibrary
+    $slot = Get-TeremoqActiveLanClientSlot -StateRoot $StateRoot
+    $root = $slot.Layout.StateRoot
+    $record = $slot.Record
+    $versionRoot = $slot.VersionRoot
+    $configRoot = $slot.Layout.ConfigRoot
+    $playerRoot = $slot.PlayerRoot
+
+    foreach ($required in @(
+        (Join-Path $versionRoot 'VERSION.tsv'),
+        (Join-Path $versionRoot 'CLIENT-COMPATIBILITY.tsv'),
+        (Join-Path $versionRoot 'SHA256SUMS'),
+        (Join-Path $configRoot 'LAN-CONFIG.json'),
+        (Join-Path $configRoot 'public-identity\relay-cert.sha256')
+    )) { [void](Assert-TeremoqNonReparseFilePath -Path $required) }
+
+    $versionAllowed = @(
+        'schema_version','updater_version','updater_commit','player_identity','player_version',
+        'config_schema_version','run_id','server_ipv4','moq_url','player_manifest_sha256',
+        'launcher_contract_sha256','lan_config_sha256','player_evidence','load_launcher_status'
+    )
+    $version = Read-TeremoqClosedTsv -Path (Join-Path $versionRoot 'VERSION.tsv') -MaxBytes 4096 `
+        -AllowedKeys $versionAllowed -Label 'managed VERSION.tsv'
+    $compatibilityAllowed = @(
+        'schema_version','repository_url','repository_ref','repository_subdirectory','allowed_client_commit',
+        'updater_version','updater_protocol','player_identity','player_version','source_tree',
+        'package_lock_sha256','player_relative_path','config_schema_version','player_manifest_sha256',
+        'launcher_contract_sha256','lan_config_sha256'
+    )
+    $compatibility = Read-TeremoqClosedTsv -Path (Join-Path $versionRoot 'CLIENT-COMPATIBILITY.tsv') `
+        -MaxBytes 4096 -AllowedKeys $compatibilityAllowed -Label 'managed CLIENT-COMPATIBILITY.tsv'
+    if ($version.schema_version -ne '2' -or $compatibility.schema_version -ne '2' -or
+        $version.updater_version -cne $record.updater_version -or
+        $version.updater_commit -cne $record.updater_commit -or
+        $version.player_identity -cne $record.player_identity -or
+        $version.player_version -cnotmatch '^[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$' -or
+        $version.config_schema_version -cne '1' -or
+        $version.run_id -cnotmatch '^lan-[a-z0-9][a-z0-9-]{0,31}$' -or
+        -not (Test-TeremoqCanonicalPrivateUnicastIPv4 -Value $version.server_ipv4) -or
+        $version.moq_url -cne "https://$($version.server_ipv4):14433/watch" -or
+        $version.player_manifest_sha256 -cne $record.player_manifest_sha256 -or
+        $version.launcher_contract_sha256 -cne $record.launcher_contract_sha256 -or
+        $version.lan_config_sha256 -cne $record.config_sha256 -or
+        $version.player_evidence -cne 'not_measured' -or $version.load_launcher_status -cne 'ready' -or
+        $compatibility.repository_url -cne 'https://github.com/Teremoq/teremoq' -or
+        $compatibility.repository_ref -cnotmatch '^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$' -or
+        -not (Test-TeremoqSafeRelativeRepositorySubdirectory -Value $compatibility.repository_subdirectory) -or
+        $compatibility.allowed_client_commit -cne $record.updater_commit -or
+        $compatibility.updater_version -cne $record.updater_version -or
+        $compatibility.updater_protocol -cne $record.updater_protocol -or
+        $compatibility.player_identity -cne $record.player_identity -or
+        $compatibility.player_version -cne $version.player_version -or
+        $compatibility.source_tree -cne $record.source_tree -or
+        $compatibility.package_lock_sha256 -cne $record.package_lock_sha256 -or
+        $compatibility.player_relative_path -cne $record.player_relative_path -or
+        $compatibility.config_schema_version -cne '1' -or
+        $compatibility.player_manifest_sha256 -cne $record.player_manifest_sha256 -or
+        $compatibility.launcher_contract_sha256 -cne $record.launcher_contract_sha256 -or
+        $compatibility.lan_config_sha256 -cne $record.config_sha256) {
+        throw 'managed updater/player compatibility metadata is inconsistent'
+    }
+
+    $sumLines = @((Read-TeremoqBoundedUtf8File -Path (Join-Path $versionRoot 'SHA256SUMS') -MaxBytes 4096) -split "`r?`n" | Where-Object { $_ })
+    if ($sumLines.Count -ne 2) { throw 'managed version checksum list is not closed' }
+    $seenSums = @{}
+    foreach ($line in $sumLines) {
+        if ($line -cnotmatch '^([0-9a-f]{64})  (CLIENT-COMPATIBILITY[.]tsv|VERSION[.]tsv)$' -or $seenSums.ContainsKey($Matches[2])) {
+            throw 'managed version checksum line is invalid or duplicated'
+        }
+        $seenSums[$Matches[2]] = $true
+        if ((Get-TeremoqBoundedFileSha256 -Path (Join-Path $versionRoot $Matches[2]) -MaxBytes 4096) -cne $Matches[1]) {
+            throw 'managed version metadata checksum mismatch'
+        }
+    }
+
+    $configPath = Join-Path $configRoot 'LAN-CONFIG.json'
+    $configText = Read-TeremoqBoundedUtf8File -Path $configPath -MaxBytes 512
+    if ((Get-TeremoqBoundedFileSha256 -Path $configPath -MaxBytes 512) -cne $record.config_sha256) {
+        throw 'managed local LAN configuration hash mismatch'
+    }
+    try { $lanConfig = $configText | ConvertFrom-Json } catch { throw 'managed local LAN configuration is not JSON' }
+    $lanKeys = @($lanConfig.PSObject.Properties.Name)
+    $expectedLanKeys = @('schema_version','run_id','relay_url','fingerprint_sha256','prefix_length','namespace')
+    $fingerprintPath = Join-Path $configRoot 'public-identity\relay-cert.sha256'
+    $fingerprint = (Read-TeremoqBoundedUtf8File -Path $fingerprintPath -MaxBytes 128).Trim()
+    if ($lanKeys.Count -ne $expectedLanKeys.Count -or @($lanKeys | Where-Object { $expectedLanKeys -cnotcontains $_ }).Count -ne 0 -or
+        $lanConfig.schema_version -ne 1 -or $lanConfig.run_id -cne $version.run_id -or
+        $lanConfig.relay_url -cne $version.moq_url -or $lanConfig.fingerprint_sha256 -cne $fingerprint -or
+        $fingerprint -cnotmatch '^[0-9a-f]{64}$' -or $lanConfig.prefix_length -is [bool] -or
+        $lanConfig.prefix_length -isnot [ValueType] -or [int]$lanConfig.prefix_length -lt 8 -or
+        [int]$lanConfig.prefix_length -gt 30 -or $lanConfig.namespace -isnot [string] -or
+        $lanConfig.namespace.Length -lt 1 -or $lanConfig.namespace.Length -gt 256 -or
+        $lanConfig.namespace -cnotmatch '^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$' -or
+        @($lanConfig.namespace.Split('/') | Where-Object { $_ -in @('.', '..') }).Count -ne 0) {
+        throw 'managed local LAN configuration is outside policy'
+    }
+
+    $manifestPath = Assert-TeremoqNonReparseFilePath -Path (Join-Path $playerRoot 'MANIFEST.sha256.json')
+    $launcherContractPath = Assert-TeremoqNonReparseFilePath -Path (Join-Path $playerRoot 'lan-launcher.tsv')
+    if ((Get-TeremoqBoundedFileSha256 -Path $manifestPath -MaxBytes 1048576) -cne $record.player_manifest_sha256 -or
+        (Get-TeremoqBoundedFileSha256 -Path $launcherContractPath -MaxBytes 4096) -cne $record.launcher_contract_sha256) {
+        throw 'managed player manifest or launcher contract hash mismatch'
+    }
+    $manifest = (Read-TeremoqBoundedUtf8File -Path $manifestPath -MaxBytes 1048576) | ConvertFrom-Json
+    $manifestKeys = @($manifest.PSObject.Properties.Name)
+    $expectedManifestKeys = @('schema_version','artifact','entrypoint','package_version','updater_version','player_identity','player_version','config_schema_version','files','total_bytes')
+    if ($manifestKeys.Count -ne $expectedManifestKeys.Count -or @($manifestKeys | Where-Object { $expectedManifestKeys -cnotcontains $_ }).Count -ne 0 -or
+        $manifest.schema_version -ne 1 -or $manifest.artifact -cne 'teremoq-lan-lab-standalone' -or
+        $manifest.entrypoint -cne 'start.mjs' -or $manifest.package_version -cne $version.player_version -or
+        $manifest.updater_version -cne $record.updater_version -or $manifest.player_identity -cne $record.player_identity -or
+        $manifest.player_version -cne $version.player_version -or $manifest.config_schema_version -ne 1 -or
+        $manifest.files -isnot [Array] -or $manifest.files.Count -lt 1 -or $manifest.files.Count -gt 10000 -or
+        $manifest.total_bytes -is [bool] -or $manifest.total_bytes -isnot [ValueType] -or
+        [Int64]$manifest.total_bytes -lt 1 -or [Int64]$manifest.total_bytes -gt 134217728) {
+        throw 'managed player manifest identity or inventory header is invalid'
+    }
+    $listed = @{}
+    $measuredBytes = [Int64]0
+    foreach ($entry in @($manifest.files)) {
+        $entryKeys = @($entry.PSObject.Properties.Name)
+        if ($entryKeys.Count -ne 3 -or @($entryKeys | Where-Object { @('path','bytes','sha256') -cnotcontains $_ }).Count -ne 0 -or
+            $entry.path -isnot [string] -or $entry.path.Length -lt 1 -or $entry.path.Length -gt 260 -or
+            [IO.Path]::IsPathRooted($entry.path) -or $entry.path -match '(^|/)\.\.(/|$)|\\' -or
+            $entry.bytes -is [bool] -or $entry.bytes -isnot [ValueType] -or [Int64]$entry.bytes -lt 0 -or
+            [Int64]$entry.bytes -gt 104857600 -or $entry.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            $listed.ContainsKey($entry.path)) { throw 'managed player manifest entry is unsafe or duplicated' }
+        $path = [IO.Path]::GetFullPath((Join-Path $playerRoot $entry.path))
+        if (-not $path.StartsWith($playerRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'managed player manifest entry escapes its root'
+        }
+        $path = Assert-TeremoqNonReparseFilePath -Path $path
+        $item = Get-Item -LiteralPath $path -Force
+        if ([Int64]$item.Length -ne [Int64]$entry.bytes -or
+            (Get-TeremoqBoundedFileSha256 -Path $path -MaxBytes 104857600) -cne $entry.sha256) {
+            throw 'managed player file differs from its manifest'
+        }
+        $listed[$entry.path] = $true
+        $measuredBytes += [Int64]$entry.bytes
+    }
+    if ($measuredBytes -ne [Int64]$manifest.total_bytes) { throw 'managed player total byte count is inconsistent' }
+    foreach ($file in @(Get-ChildItem -LiteralPath $playerRoot -Recurse -Force -File)) {
+        $relative = $file.FullName.Substring($playerRoot.Length).TrimStart([char[]]@('\','/')).Replace('\','/')
+        if ($relative -cne 'MANIFEST.sha256.json' -and -not $listed.ContainsKey($relative)) {
+            throw 'managed player contains an unlisted file'
+        }
+    }
+
+    $launcherAllowed = @(
+        'schema_version','launcher_relative_path','launcher_sha256','actions','levels','max_clients',
+        'network_contract','loopback_http_only','updater_version','player_identity','player_version','config_schema_version'
+    )
+    $launcher = Read-TeremoqClosedTsv -Path $launcherContractPath -MaxBytes 4096 -AllowedKeys $launcherAllowed -Label 'managed lan-launcher.tsv'
+    if ($launcher.schema_version -ne '1' -or $launcher.launcher_relative_path -cnotmatch '^[A-Za-z0-9._-]+[.]ps1$' -or
+        $launcher.launcher_sha256 -cnotmatch '^[0-9a-f]{64}$' -or $launcher.actions -cne 'start,status,stop,collect' -or
+        $launcher.levels -cne '1,5,10,25' -or $launcher.max_clients -cne '25' -or
+        $launcher.network_contract -cne 'outbound_udp_14433_only' -or $launcher.loopback_http_only -cne 'true' -or
+        $launcher.updater_version -cne $record.updater_version -or $launcher.player_identity -cne $record.player_identity -or
+        $launcher.player_version -cne $version.player_version -or $launcher.config_schema_version -cne '1') {
+        throw 'managed player launcher contract values are outside policy'
+    }
+    $launcherPath = [IO.Path]::GetFullPath((Join-Path $playerRoot $launcher.launcher_relative_path))
+    if (-not $launcherPath.StartsWith($playerRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
+        (Get-TeremoqBoundedFileSha256 -Path (Assert-TeremoqNonReparseFilePath -Path $launcherPath) -MaxBytes 1048576) -cne $launcher.launcher_sha256) {
+        throw 'managed player launcher artifact differs from its contract'
+    }
+    return [pscustomobject]@{
+        StateRoot = $root
+        VersionRoot = $versionRoot
+        ConfigRoot = $configRoot
+        VersionPath = Join-Path $versionRoot 'VERSION.tsv'
+        FingerprintPath = $fingerprintPath
+        Version = $version
+        Compatibility = $compatibility
+        LanConfig = $lanConfig
+        PlayerRoot = $playerRoot
+        LauncherPath = $launcherPath
+        LauncherRelativePath = $launcher.launcher_relative_path
+        RepositorySubdirectory = $compatibility.repository_subdirectory
+        SlotRecord = $record
     }
 }
 
@@ -602,7 +797,7 @@ function Get-TeremoqGitCheckoutContext {
     if (-not $supportRoot.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $supportRoot -PathType Container)) {
         throw 'approved repository_subdirectory is absent from the checkout'
     }
-    foreach ($required in @('client/Install-LanClient.ps1', 'client/Initialize-LanClientState.ps1', 'client/Update-LanClient.ps1', 'client/Stage-LanClientUpdate.ps1', 'client/Pin-LanUpdateLauncher.ps1', 'client/Invoke-LanLoad.ps1', 'client/Verify-Package.ps1', 'client/Import-BrowserObservation.ps1', 'client/Client-Distribution.ps1', 'windows/Preflight-Client.ps1', 'windows/Collect-Evidence.ps1', 'windows/Preflight-Contract.ps1')) {
+    foreach ($required in @('client/Install-LanClient.ps1', 'client/Initialize-LanClientState.ps1', 'client/Update-LanClient.ps1', 'client/Stage-LanClientUpdate.ps1', 'client/Pin-LanUpdateLauncher.ps1', 'client/Invoke-LanLoad.ps1', 'client/Verify-Package.ps1', 'client/Import-BrowserObservation.ps1', 'client/Client-Distribution.ps1', 'client/Client-Slot-State.ps1', 'client/Manage-LanClientSlots.ps1', 'windows/Preflight-Client.ps1', 'windows/Collect-Evidence.ps1', 'windows/Preflight-Contract.ps1')) {
         if (-not (Test-Path -LiteralPath (Join-Path $supportRoot $required) -PathType Leaf)) {
             throw "required LAN support file is absent from checkout: $required"
         }

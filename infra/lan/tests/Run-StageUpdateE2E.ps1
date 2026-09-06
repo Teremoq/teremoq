@@ -73,7 +73,7 @@ try {
     & (Join-Path $current 'infra\lan\client\Stage-LanClientUpdate.ps1') -CheckoutRoot $current `
         -CurrentCommit $first -TargetCommit $second -RepositoryUrl 'https://github.com/Teremoq/teremoq' `
         -RepositoryRef $repositoryRef
-    $target = Join-Path $clientRoot ("checkout-lan-{0}" -f $second.Substring(0, 8))
+    $target = Join-Path $clientRoot 'checkout-updater-a'
     if ((Invoke-TestGit $current @('rev-parse','HEAD')) -cne $first) { throw 'current checkout changed during staged update' }
     if ((Invoke-TestGit $target @('rev-parse','HEAD')) -cne $second) { throw 'staged checkout differs from target commit' }
     if (-not (Test-Path -LiteralPath (Join-Path $clientRoot 'local-config-preserved.txt') -PathType Leaf)) { throw 'local client configuration was overwritten' }
@@ -85,7 +85,32 @@ try {
             -RepositoryRef $repositoryRef
     } catch { $downgradeRejected = $true }
     if (-not $downgradeRejected) { throw 'non-fast-forward downgrade was accepted for staged update' }
-    Write-Output 'lan-stage-update-e2e: PASS (side-by-side exact commit and preserved local state)'
+
+    [IO.File]::AppendAllText((Join-Path $seed 'update-marker.txt'), "three`n", (New-Object Text.UTF8Encoding($false)))
+    Invoke-TestGit $seed @('commit','-am','third') | Out-Null
+    Invoke-TestGit $seed @('push','origin',$branch) | Out-Null
+    $third = Invoke-TestGit $seed @('rev-parse','HEAD')
+    & (Join-Path $target 'infra\lan\client\Stage-LanClientUpdate.ps1') -CheckoutRoot $target `
+        -CurrentCommit $second -TargetCommit $third -RepositoryUrl 'https://github.com/Teremoq/teremoq' `
+        -RepositoryRef $repositoryRef
+    $targetB = Join-Path $clientRoot 'checkout-updater-b'
+    if ((Invoke-TestGit $targetB @('rev-parse','HEAD')) -cne $third) { throw 'updater B slot differs from third commit' }
+
+    [IO.File]::AppendAllText((Join-Path $seed 'update-marker.txt'), "four`n", (New-Object Text.UTF8Encoding($false)))
+    Invoke-TestGit $seed @('commit','-am','fourth') | Out-Null
+    Invoke-TestGit $seed @('push','origin',$branch) | Out-Null
+    $fourth = Invoke-TestGit $seed @('rev-parse','HEAD')
+    & (Join-Path $targetB 'infra\lan\client\Stage-LanClientUpdate.ps1') -CheckoutRoot $targetB `
+        -CurrentCommit $third -TargetCommit $fourth -RepositoryUrl 'https://github.com/Teremoq/teremoq' `
+        -RepositoryRef $repositoryRef
+    if ((Invoke-TestGit $target @('rev-parse','HEAD')) -cne $fourth) { throw 'existing updater A slot was not reused by fast-forward' }
+    if (@(Get-ChildItem -LiteralPath $clientRoot -Directory -Filter 'checkout-updater-*').Count -ne 2) {
+        throw 'updater created more than the bounded A/B checkouts'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $clientRoot 'local-config-preserved.txt') -PathType Leaf)) {
+        throw 'A/B updater changed local configuration'
+    }
+    Write-Output 'lan-stage-update-e2e: PASS (bounded updater A/B, ff-only reuse, rollback source and preserved local state)'
 } finally {
     $env:LOCALAPPDATA = $oldLocalAppData
     Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue

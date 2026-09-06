@@ -8,20 +8,18 @@ param(
     [Parameter(Mandatory = $true)][string]$RepositoryRef,
     [Parameter(Mandatory = $true)][string]$ExpectedCommit,
     [Parameter(Mandatory = $true)][string]$RepositorySubdirectory,
-    [Parameter(Mandatory = $true)][string]$PlayerRelativePath,
     [Parameter(Mandatory = $true)][string]$RunId,
     [Parameter(Mandatory = $true)][string]$ServerIPv4,
     [Parameter(Mandatory = $true)][int]$PrefixLength,
     [Parameter(Mandatory = $true)][string]$Namespace,
     [Parameter(Mandatory = $true)][string]$FingerprintSha256,
-    # This is written by Prepare-LanClientFromGit after its bounded Web builder
-    # invocation.  Initialization is intentionally not a public artifact-import API.
     [Parameter(Mandatory = $true)][string]$BuilderReceiptPath,
     [Parameter(Mandatory = $true)][string]$BuilderReceiptSha256
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 . (Join-Path $PSScriptRoot 'Client-Distribution.ps1')
+. (Join-Path $PSScriptRoot 'Client-Slot-State.ps1')
 
 if ($RunId -cnotmatch '^lan-[a-z0-9][a-z0-9-]{0,31}$' -or
     -not (Test-TeremoqCanonicalPrivateUnicastIPv4 -Value $ServerIPv4) -or
@@ -29,88 +27,165 @@ if ($RunId -cnotmatch '^lan-[a-z0-9][a-z0-9-]{0,31}$' -or
     $Namespace -isnot [string] -or $Namespace.Length -lt 1 -or $Namespace.Length -gt 256 -or
     $Namespace -cnotmatch '^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$' -or
     @($Namespace.Split('/') | Where-Object { $_ -in @('.', '..') }).Count -ne 0 -or
-    $FingerprintSha256 -cnotmatch '^[0-9a-f]{64}$' -or
-    $PlayerRelativePath -cne ("players/{0}" -f $ExpectedCommit)) {
-    throw 'local client state parameters are outside the closed LAN policy'
+    $FingerprintSha256 -cnotmatch '^[0-9a-f]{64}$') {
+    throw 'local client configuration is outside the closed LAN policy'
 }
+$checkout = Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $CheckoutRoot -RepositoryUrl $RepositoryUrl `
+    -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
+$layout = Initialize-TeremoqLanClientLayout -StateRoot $StateRoot
+Assert-TeremoqRootsSeparated -CheckoutRoot $checkout.CheckoutRoot -StateRoot $layout.StateRoot
+
 $receiptPath = Assert-TeremoqNonReparseFilePath -Path $BuilderReceiptPath
-if ($BuilderReceiptSha256 -cnotmatch '^[0-9a-f]{64}$' -or (Get-TeremoqBoundedFileSha256 -Path $receiptPath -MaxBytes 8192) -cne $BuilderReceiptSha256) {
+if ($BuilderReceiptSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    (Get-TeremoqBoundedFileSha256 -Path $receiptPath -MaxBytes 8192) -cne $BuilderReceiptSha256) {
     throw 'Web builder receipt digest is absent or changed'
 }
 $receiptText = Read-TeremoqBoundedUtf8File -Path $receiptPath -MaxBytes 8192
-try { $receipt = $receiptText | ConvertFrom-Json } catch { throw 'Web builder receipt is not closed JSON' }
-$receiptKeys = @($receipt.PSObject.Properties.Name)
-$allowedReceiptKeys = @('status','source_commit','source_tree','package_lock_sha256','dependency_mode','previous_source_commit','source_diff_files','source_diff_sha256','independent_builds','byte_identical','manifest_sha256','player_relative_path')
-if ($receiptKeys.Count -ne $allowedReceiptKeys.Count -or @($receiptKeys | Where-Object { $allowedReceiptKeys -notcontains $_ }).Count -ne 0 -or
-    $receipt.status -cne 'built-from-clean-git-source' -or $receipt.source_commit -cne $ExpectedCommit -or
-    $receipt.player_relative_path -cne $PlayerRelativePath -or $receipt.manifest_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-    $receipt.source_tree -cnotmatch '^[0-9a-f]{40}$' -or $receipt.package_lock_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-    $receipt.dependency_mode -cnotin @('initial-npm-ci','reused-lock-cache','explicit-lock-refresh') -or
-    $receipt.independent_builds -isnot [ValueType] -or $receipt.independent_builds -is [bool] -or [int]$receipt.independent_builds -ne 2 -or
-    $receipt.byte_identical -isnot [bool] -or -not $receipt.byte_identical) { throw 'Web builder receipt is outside the initialization policy' }
-$checkout = Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $CheckoutRoot -RepositoryUrl $RepositoryUrl -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory $RepositorySubdirectory
-$state = [IO.Path]::GetFullPath($StateRoot)
-if (-not (Test-Path -LiteralPath $state -PathType Container) -or ((Get-Item -LiteralPath $state -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-    throw 'StateRoot must already be the regular external root produced by the Web Git builder'
+try { $receipt = $receiptText | ConvertFrom-Json } catch { throw 'Web builder receipt is not JSON' }
+$receiptKeys = @(
+    'schema_version','status','updater_version','player_identity','player_version','config_schema_version',
+    'build_mode','source_commit','source_tree','package_lock_sha256','node_version','npm_version','platform',
+    'architecture','dependency_status','previous_source_commit','source_diff_files','source_diff_sha256',
+    'builds_executed','build_verification','manifest_sha256','launcher_contract_sha256',
+    'artifact_inventory_sha256','player_relative_path'
+)
+$actualReceiptKeys = @($receipt.PSObject.Properties.Name)
+if ($actualReceiptKeys.Count -ne $receiptKeys.Count -or
+    @($actualReceiptKeys | Where-Object { $receiptKeys -cnotcontains $_ }).Count -ne 0 -or
+    $receipt.schema_version -ne 1 -or $receipt.status -cnotin @('built','reused') -or
+    $receipt.updater_version -cne (Get-TeremoqLanUpdaterVersion) -or
+    $receipt.player_identity -cnotmatch '^sha256:[0-9a-f]{64}$' -or
+    $receipt.player_version -cnotmatch '^[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$' -or
+    $receipt.config_schema_version -ne 1 -or $receipt.build_mode -cne 'node' -or
+    $receipt.source_commit -cne $ExpectedCommit -or $receipt.source_tree -cnotmatch '^[0-9a-f]{40}$' -or
+    $receipt.package_lock_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    $receipt.manifest_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    $receipt.launcher_contract_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    $receipt.player_relative_path -cne ('players/' + $receipt.player_identity.Replace(':','-'))) {
+    throw 'Web builder receipt is outside initialization policy'
 }
-$parent = Split-Path -Parent $state
-Assert-TeremoqRootsSeparated -CheckoutRoot $checkout.CheckoutRoot -StateRoot $state
-$playerRoot = [IO.Path]::GetFullPath((Join-Path $state $PlayerRelativePath))
-if (-not $playerRoot.StartsWith($state, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $playerRoot -PathType Container) -or
-    ((Get-Item -LiteralPath $playerRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-    (Get-ChildItem -LiteralPath $playerRoot -Recurse -Force | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 })) {
-    throw 'PlayerRelativePath must resolve to the regular Web-built player under StateRoot'
+$measuredSourceTree = Invoke-TeremoqGit -CheckoutRoot $checkout.CheckoutRoot -Arguments @('rev-parse', ($ExpectedCommit + ':supervisor-web'))
+$measuredLockSha256 = Get-TeremoqBoundedFileSha256 -Path (Join-Path $checkout.CheckoutRoot 'supervisor-web\package-lock.json') -MaxBytes 1048576
+if ($receipt.source_tree -cne $measuredSourceTree -or $receipt.package_lock_sha256 -cne $measuredLockSha256 -or
+    $receipt.player_identity -cne (Get-TeremoqLanPlayerIdentity -SourceTree $measuredSourceTree `
+        -PackageLockSha256 $measuredLockSha256)) {
+    throw 'Web player identity does not match the exact clean Git source and lockfile'
 }
-foreach ($required in @('.teremoq-web-build/generations/' + $ExpectedCommit + '.tsv', 'players')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $state $required))) { throw 'Web builder provenance is absent from StateRoot' }
+
+$identityRoot = Join-Path $layout.ConfigRoot 'public-identity'
+if (-not (Test-Path -LiteralPath $identityRoot)) { [void][IO.Directory]::CreateDirectory($identityRoot) }
+[void](Get-TeremoqNonReparseDirectoryPath -Path $identityRoot)
+$configPath = Join-Path $layout.ConfigRoot 'LAN-CONFIG.json'
+$fingerprintPath = Join-Path $identityRoot 'relay-cert.sha256'
+$configObject = [pscustomobject][ordered]@{
+    schema_version = 1
+    run_id = $RunId
+    relay_url = "https://${ServerIPv4}:14433/watch"
+    fingerprint_sha256 = $FingerprintSha256
+    prefix_length = $PrefixLength
+    namespace = $Namespace
 }
-foreach ($required in @('MANIFEST.sha256.json', 'lan-launcher.tsv')) {
-    if (-not (Test-Path -LiteralPath (Join-Path $playerRoot $required) -PathType Leaf)) { throw "versioned player artifact is incomplete: $required" }
+$configText = ($configObject | ConvertTo-Json -Compress) + "`n"
+if ((New-Object Text.UTF8Encoding($false)).GetByteCount($configText) -gt 512) {
+    throw 'canonical public LAN configuration exceeds 512 bytes'
 }
-$playerManifestPath = Assert-TeremoqNonReparseFilePath -Path (Join-Path $playerRoot 'MANIFEST.sha256.json')
-$launcherContractPath = Assert-TeremoqNonReparseFilePath -Path (Join-Path $playerRoot 'lan-launcher.tsv')
-$playerManifestSha = Get-TeremoqBoundedFileSha256 -Path $playerManifestPath -MaxBytes 1048576
-$launcherContractSha = Get-TeremoqBoundedFileSha256 -Path $launcherContractPath -MaxBytes 4096
-if ($playerManifestSha -cne $receipt.manifest_sha256) { throw 'Web builder receipt does not bind the exact player manifest bytes' }
-$webGeneration = Get-TeremoqWebGenerationContext -Checkout $checkout -StateRoot $state -PlayerRelativePath $PlayerRelativePath -PlayerManifestSha256 $playerManifestSha -LauncherContractSha256 $launcherContractSha
-$manifest = (Read-TeremoqBoundedUtf8File -Path (Join-Path $playerRoot 'MANIFEST.sha256.json') -MaxBytes 1048576) | ConvertFrom-Json
-if ($manifest.schema_version -ne 1 -or $manifest.artifact -cne 'teremoq-lan-lab-standalone' -or $manifest.source_commit -cne $ExpectedCommit -or
-    $manifest.package_version -isnot [string] -or $manifest.package_version -cnotmatch '^[A-Za-z0-9._-]{1,64}$') {
-    throw 'versioned player manifest is outside the local initialization contract'
-}
-$scratch = Join-Path $parent ('.' + [IO.Path]::GetFileName($state) + '.tmp.' + [Guid]::NewGuid().ToString('N'))
-try {
-    New-Item -ItemType Directory -Path (Join-Path $scratch 'public-identity') -Force | Out-Null
-    # The Web builder already owns StateRoot\players\<commit>; Platform never copies it.
-    [IO.File]::WriteAllText((Join-Path $scratch 'public-identity\relay-cert.sha256'), "$FingerprintSha256`n", (New-Object Text.UTF8Encoding($false)))
-    $lanConfig = [ordered]@{ schema_version = 1; run_id = $RunId; source_commit = $ExpectedCommit; relay_url = "https://${ServerIPv4}:14433/watch"; fingerprint_sha256 = $FingerprintSha256; prefix_length = $PrefixLength; namespace = $Namespace }
-    $lanConfigText = ($lanConfig | ConvertTo-Json -Compress) + "`n"
-    if ((New-Object Text.UTF8Encoding($false)).GetByteCount($lanConfigText) -gt 512) { throw 'canonical public LAN-CONFIG.json exceeds 512 bytes' }
-    [IO.File]::WriteAllText((Join-Path $scratch 'LAN-CONFIG.json'), $lanConfigText, (New-Object Text.UTF8Encoding($false)))
-    $lanConfigSha = (Get-FileHash -LiteralPath (Join-Path $scratch 'LAN-CONFIG.json') -Algorithm SHA256).Hash.ToLowerInvariant()
-    $compatibility = @(
-        "schema_version`t1", "repository_url`t$RepositoryUrl", "repository_ref`t$RepositoryRef", "repository_subdirectory`t$RepositorySubdirectory", "player_relative_path`t$PlayerRelativePath",
-        "allowed_client_commit`t$ExpectedCommit", "source_commit`t$ExpectedCommit", "package_version`t$($manifest.package_version)", "client_protocol_version`tteremoq-lan-git-v2",
-        "player_manifest_sha256`t$playerManifestSha", "launcher_contract_sha256`t$launcherContractSha", "lan_config_sha256`t$lanConfigSha"
-    ) -join "`n"
-    [IO.File]::WriteAllText((Join-Path $scratch 'CLIENT-COMPATIBILITY.tsv'), $compatibility + "`n", (New-Object Text.UTF8Encoding($false)))
-    $version = @(
-        "schema_version`t1", "package_version`t$($manifest.package_version)", "run_id`t$RunId", "source_commit`t$ExpectedCommit", "server_ipv4`t$ServerIPv4", "moq_url`thttps://${ServerIPv4}:14433/watch",
-        "player_manifest_sha256`t$playerManifestSha", "launcher_contract_sha256`t$launcherContractSha", "lan_config_sha256`t$lanConfigSha", "player_evidence`tnot_measured", "load_launcher_status`tready"
-    ) -join "`n"
-    [IO.File]::WriteAllText((Join-Path $scratch 'VERSION.tsv'), $version + "`n", (New-Object Text.UTF8Encoding($false)))
-    $hashItems = @()
-    $hashItems += Get-ChildItem -LiteralPath $scratch -Recurse -Force -File | ForEach-Object { [pscustomobject]@{ Path = $_.FullName; Relative = $_.FullName.Substring($scratch.Length).TrimStart('\', '/').Replace('\', '/') } }
-    $hashItems += Get-ChildItem -LiteralPath $playerRoot -Recurse -Force -File | ForEach-Object { [pscustomobject]@{ Path = $_.FullName; Relative = $_.FullName.Substring($state.Length).TrimStart('\', '/').Replace('\', '/') } }
-    $hashLines = $hashItems | Sort-Object Relative | ForEach-Object { "$(Get-FileHash -LiteralPath $_.Path -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLowerInvariant() })  $($_.Relative)" }
-    [IO.File]::WriteAllText((Join-Path $scratch 'SHA256SUMS'), ($hashLines -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
-    foreach ($name in @('public-identity', 'LAN-CONFIG.json', 'CLIENT-COMPATIBILITY.tsv', 'VERSION.tsv', 'SHA256SUMS')) {
-        if (Test-Path -LiteralPath (Join-Path $state $name)) { throw "StateRoot already contains Platform state: $name" }
-        Move-Item -LiteralPath (Join-Path $scratch $name) -Destination (Join-Path $state $name)
+$configExists = Test-Path -LiteralPath $configPath
+$fingerprintExists = Test-Path -LiteralPath $fingerprintPath
+if ($configExists -xor $fingerprintExists) { throw 'local LAN configuration is incomplete; it will not be overwritten' }
+if (-not $configExists) {
+    Write-TeremoqAtomicUtf8File -Path $fingerprintPath -Content ($FingerprintSha256 + "`n")
+    Write-TeremoqAtomicUtf8File -Path $configPath -Content $configText
+} else {
+    $existingConfig = Read-TeremoqBoundedUtf8File -Path $configPath -MaxBytes 512
+    $existingFingerprint = (Read-TeremoqBoundedUtf8File -Path $fingerprintPath -MaxBytes 128).Trim()
+    if ($existingConfig -cne $configText -or $existingFingerprint -cne $FingerprintSha256) {
+        throw 'local LAN configuration differs from the update request and will not be overwritten'
     }
-    $verified = Get-TeremoqLanStateContext -StateRoot $state
-    if ($verified.Compatibility.allowed_client_commit -cne $checkout.Head) { throw 'initialized state does not bind the exact clean checkout' }
-    Write-Output ("Teremoq LAN external client state initialized at {0} from Web-built player commit {1}; no artifact was transferred." -f $verified.StateRoot, $checkout.Head)
+}
+$configSha256 = Get-TeremoqBoundedFileSha256 -Path $configPath -MaxBytes 512
+
+$playerRoot = [IO.Path]::GetFullPath((Join-Path $layout.StateRoot $receipt.player_relative_path))
+if (-not $playerRoot.StartsWith($layout.PlayersRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Web player path escapes the immutable player root'
+}
+[void](Get-TeremoqNonReparseDirectoryPath -Path $playerRoot)
+$manifestPath = Assert-TeremoqNonReparseFilePath -Path (Join-Path $playerRoot 'MANIFEST.sha256.json')
+$launcherPath = Assert-TeremoqNonReparseFilePath -Path (Join-Path $playerRoot 'lan-launcher.tsv')
+if ((Get-TeremoqBoundedFileSha256 -Path $manifestPath -MaxBytes 1048576) -cne $receipt.manifest_sha256 -or
+    (Get-TeremoqBoundedFileSha256 -Path $launcherPath -MaxBytes 4096) -cne $receipt.launcher_contract_sha256) {
+    throw 'Web player hashes differ from the sealed builder receipt'
+}
+$manifest = (Read-TeremoqBoundedUtf8File -Path $manifestPath -MaxBytes 1048576) | ConvertFrom-Json
+$manifestKeys = @($manifest.PSObject.Properties.Name)
+$expectedManifestKeys = @('schema_version','artifact','entrypoint','package_version','updater_version','player_identity','player_version','config_schema_version','files','total_bytes')
+if ($manifestKeys.Count -ne $expectedManifestKeys.Count -or
+    @($manifestKeys | Where-Object { $expectedManifestKeys -cnotcontains $_ }).Count -ne 0 -or
+    $manifest.schema_version -ne 1 -or $manifest.artifact -cne 'teremoq-lan-lab-standalone' -or
+    $manifest.entrypoint -cne 'start.mjs' -or $manifest.updater_version -cne $receipt.updater_version -or
+    $manifest.player_identity -cne $receipt.player_identity -or $manifest.player_version -cne $receipt.player_version -or
+    $manifest.package_version -cne $receipt.player_version -or $manifest.config_schema_version -ne 1) {
+    throw 'Web player manifest differs from its immutable identity'
+}
+
+$record = New-TeremoqLanSlotRecord -UpdaterCommit $ExpectedCommit -PlayerIdentity $receipt.player_identity `
+    -SourceTree $receipt.source_tree -PackageLockSha256 $receipt.package_lock_sha256 `
+    -PlayerManifestSha256 $receipt.manifest_sha256 -LauncherContractSha256 $receipt.launcher_contract_sha256 `
+    -ConfigSha256 $configSha256
+$versionRoot = [IO.Path]::GetFullPath((Join-Path $layout.StateRoot $record.version_relative_path))
+$version = @(
+    "schema_version`t2",
+    "updater_version`t$($record.updater_version)",
+    "updater_commit`t$ExpectedCommit",
+    "player_identity`t$($receipt.player_identity)",
+    "player_version`t$($receipt.player_version)",
+    "config_schema_version`t1",
+    "run_id`t$RunId",
+    "server_ipv4`t$ServerIPv4",
+    "moq_url`thttps://${ServerIPv4}:14433/watch",
+    "player_manifest_sha256`t$($receipt.manifest_sha256)",
+    "launcher_contract_sha256`t$($receipt.launcher_contract_sha256)",
+    "lan_config_sha256`t$configSha256",
+    "player_evidence`tnot_measured",
+    "load_launcher_status`tready"
+) -join "`n"
+$compatibility = @(
+    "schema_version`t2",
+    "repository_url`t$RepositoryUrl",
+    "repository_ref`t$RepositoryRef",
+    "repository_subdirectory`t$RepositorySubdirectory",
+    "allowed_client_commit`t$ExpectedCommit",
+    "updater_version`t$($record.updater_version)",
+    "updater_protocol`t$($record.updater_protocol)",
+    "player_identity`t$($receipt.player_identity)",
+    "player_version`t$($receipt.player_version)",
+    "source_tree`t$($receipt.source_tree)",
+    "package_lock_sha256`t$($receipt.package_lock_sha256)",
+    "player_relative_path`t$($receipt.player_relative_path)",
+    "config_schema_version`t1",
+    "player_manifest_sha256`t$($receipt.manifest_sha256)",
+    "launcher_contract_sha256`t$($receipt.launcher_contract_sha256)",
+    "lan_config_sha256`t$configSha256"
+) -join "`n"
+$scratch = Join-Path $layout.VersionsRoot ('.stage-' + [Guid]::NewGuid().ToString('N'))
+try {
+    if (-not (Test-Path -LiteralPath $versionRoot)) {
+        [void][IO.Directory]::CreateDirectory($scratch)
+        [IO.File]::WriteAllText((Join-Path $scratch 'VERSION.tsv'), $version + "`n", (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText((Join-Path $scratch 'CLIENT-COMPATIBILITY.tsv'), $compatibility + "`n", (New-Object Text.UTF8Encoding($false)))
+        $hashLines = @('CLIENT-COMPATIBILITY.tsv','VERSION.tsv') | ForEach-Object {
+            "$(Get-TeremoqBoundedFileSha256 -Path (Join-Path $scratch $_) -MaxBytes 4096)  $_"
+        }
+        [IO.File]::WriteAllText((Join-Path $scratch 'SHA256SUMS'), ($hashLines -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
+        [IO.Directory]::Move($scratch, $versionRoot)
+    } else {
+        [void](Get-TeremoqNonReparseDirectoryPath -Path $versionRoot)
+        if ((Read-TeremoqBoundedUtf8File -Path (Join-Path $versionRoot 'VERSION.tsv') -MaxBytes 4096) -cne ($version + "`n") -or
+            (Read-TeremoqBoundedUtf8File -Path (Join-Path $versionRoot 'CLIENT-COMPATIBILITY.tsv') -MaxBytes 4096) -cne ($compatibility + "`n")) {
+            throw 'existing updater/player slot differs and will not be overwritten'
+        }
+    }
+    $staged = Stage-TeremoqLanClientSlot -StateRoot $layout.StateRoot -Record $record
+    Write-Output ("LAN client slot {0}: updater={1}, player={2}." -f $staged.Status, $ExpectedCommit.Substring(0,8), $receipt.player_identity)
 } finally {
     if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
 }

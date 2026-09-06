@@ -14,9 +14,11 @@ closed actions `update-client`, `prepare-client`, `preflight`, `player-1`, `load
 `load-25`, `wifi-observe`, `collect` and `stop`.
 
 `update-client` carries only the fixed official repository/ref and an exact
-reviewed target commit. It creates a side-by-side checkout, requires the target
-to be a fast-forward descendant, and preserves the active checkout plus all
-external state and evidence. After the server confirms the commit transition,
+reviewed target commit. It alternates the bounded `checkout-updater-a` and
+`checkout-updater-b` locations, requires a fast-forward update, and preserves
+the active checkout plus all external state and evidence. Existing Git object
+stores are reused, so later updates fetch only missing objects. After the server
+confirms the commit transition,
 the session credential moves to the new launcher through a bounded stdin pipe;
 it is never placed in command arguments, environment variables, files or
 diagnostics. The server channel identity stays fixed while the client identity
@@ -25,9 +27,10 @@ server run.
 
 The remote `diagnose-build` action is removed. It previously ran the checkout's
 ignored `node_modules`, which is not part of the reviewed commit. The matching
-server gate begins with `prepare-client`; that action creates isolated
-detached Git worktrees, runs `npm ci` there and promotes only the reproducible,
-sealed player artifact. An older server that requests `diagnose-build` is
+server gate begins with `prepare-client`; that action creates one isolated
+detached Git worktree on a node and promotes only the sealed player artifact.
+The integration gate alone performs two independent builds and requires them
+to be byte-identical. An older server that requests `diagnose-build` is
 rejected before checkout verification or process creation.
 
 Progress and bounded diagnostics are written automatically to the server's
@@ -63,9 +66,10 @@ outside the checkout, after the exact Git commit has been validated.
 Current boundary:
 
 - Git checkout: reviewed scripts and support files under the repository root.
-- External state root: locally generated `VERSION.tsv`, `LAN-CONFIG.json`,
-  `CLIENT-COMPATIBILITY.tsv`, `SHA256SUMS`, the public SHA-256 pin and a copy
-  of the player built from the exact Git checkout.
+- External state root: immutable local configuration under `config`,
+  content-addressed players under `players`, updater/player combinations under
+  `versions`, atomic A/B pointers under `control`, and verified dependency and
+  artifact evidence under `.teremoq-web-build`.
 - Evidence root: deterministic per-run output only.
 
 Today the Git boundary points at the monorepo and `infra/lan`; a future move to
@@ -81,7 +85,7 @@ Choose explicit locations outside the checkout first:
 
 ```powershell
 $StateRoot = 'C:\ABSOLUTE\PRIVATE\teremoq-lan-state'
-$CheckoutRoot = 'C:\ABSOLUTE\PRIVATE\teremoq-lan-checkout'
+$CheckoutRoot = 'C:\ABSOLUTE\PRIVATE\checkout-updater-a'
 $EvidenceRoot = 'C:\ABSOLUTE\PRIVATE\teremoq-lan-evidence'
 ```
 
@@ -117,10 +121,11 @@ if (git status --porcelain=v1 --untracked-files=all) { throw 'checkout is not cl
 ```
 
 Only after the native checks pass, run the combined preparation command from
-that exact checkout. It invokes the reviewed Web builder, requires two
-byte-identical builds and initializes the compatibility state under the
-external `StateRoot`; no player, certificate, configuration or compatibility
-file is copied from the server.
+that exact checkout. It invokes the reviewed Web builder once on the client and
+initializes a candidate under the external `StateRoot`; no player, certificate,
+configuration or compatibility file is copied from the server. Integration
+uses the same builder with `-BuildMode integration` and is the only environment
+that requires two independent byte-identical builds.
 
 ```powershell
 $RunId = 'lan-EXPLICIT-RUN-ID'
@@ -137,12 +142,15 @@ $FingerprintSha256 = 'EXACT_64_LOWERCASE_HEX_RELAY_PIN'
   -FingerprintSha256 $FingerprintSha256
 ```
 
-The builder emits a closed JSON result with `players/<source_commit>` only after
-byte-identical builds; Platform resolves that path solely below `StateRoot` and
-requires its Web provenance and manifest/launcher hashes. The initializer then
-writes the closed v2 compatibility contract and local hashes without executing
-the player. The client uses `serverCertificateHashes`, so it needs the exact
-SHA-256 pin, not a PEM certificate; no PEM is stored in or required by state.
+The player identity is derived from the Git tree of `supervisor-web` and the
+SHA-256 of `supervisor-web/package-lock.json`, not from the repository commit.
+The builder writes `players/sha256-<identity>` and reuses it after verifying its
+sealed evidence. If the lockfile is unchanged, a node may also reuse its
+remeasured dependency snapshot. The initializer records updater version,
+updater commit, player version, player identity and configuration schema as
+separate values without executing the player. The client uses
+`serverCertificateHashes`, so it needs the exact SHA-256 pin, not a PEM
+certificate; no PEM is stored in or required by state.
 
 Subsequent verification refuses the checkout unless:
 
@@ -154,23 +162,26 @@ Subsequent verification refuses the checkout unless:
   subdirectory.
 
 Safe updates require the next approved full commit. Git downloads only missing
-objects with `fetch`, verifies that exact commit and advances with
-`merge --ff-only`. A new external state directory is built for the new commit;
-the previous local state is never overwritten and remains available for
-rollback.
+objects with `fetch`, verifies that exact commit and advances the inactive A/B
+checkout with `merge --ff-only`. The active updater remains untouched until the
+new launcher completes its authenticated handoff. The persistent state root is
+reused: configuration is immutable, an unchanged player is reused without a
+build, and a changed player becomes the candidate. The active pointer changes
+atomically; the previous version remains available until health confirmation.
 
 ```powershell
 & "$CheckoutRoot\infra\lan\client\Update-LanClient.ps1" `
   -StateRoot $StateRoot -CheckoutRoot $CheckoutRoot `
-  -ExpectedCommit 'NEXT_FULL_40_CHARACTER_APPROVED_COMMIT' `
-  -NewStateRoot 'C:\ABSOLUTE\PRIVATE\teremoq-lan-state-next'
+  -ExpectedCommit 'NEXT_FULL_40_CHARACTER_APPROVED_COMMIT'
 ```
 
 Updates fail closed on a dirty worktree, untracked files, remote URL drift,
 branch drift, divergence, a fetched commit different from the approved commit,
-or any unexpected checkout layout. A no-op update to the current commit does
-not require `NewStateRoot`. The updated player is prepared only after the Git
-commit and fast-forward relationship have been validated.
+or any unexpected checkout layout. A no-op update reuses the active updater,
+player and configuration. After `player-1` succeeds the candidate is confirmed,
+transient pointers and obsolete updater versions are removed, while verified
+player/dependency caches remain reusable. A failed health check atomically
+restores the previous active version.
 
 After initialization or update, verify the checkout and the external state
 together:
@@ -185,17 +196,17 @@ between the client checkout and the approved server run. Its closed keys bind:
 
 - repository URL/ref/subdirectory;
 - the exact allowed client commit;
-- the exact source commit;
-- the player `package_version`;
-- the fixed protocol label `teremoq-lan-git-v2`; and
-- the versioned player relative path; and
+- the exact updater commit and updater protocol/version;
+- the independent player version and content identity;
+- the `supervisor-web` source tree and lockfile SHA-256;
+- the configuration schema version and identity-only player path; and
 - the SHA-256 of `MANIFEST.sha256.json`, `player/lan-launcher.tsv` and
   `LAN-CONFIG.json`.
 
-In the current monorepo contract, `allowed_client_commit` and `source_commit`
-are exactly the same 40-character commit. That keeps the player artifact, LAN
-config and reviewed scripts on one clean integration commit. A future
-`teremoq-client` split revises only this contract version.
+The current monorepo keeps updater and player sources on one reviewed branch,
+but their runtime identities are deliberately independent. A future
+`teremoq-client` split changes the repository boundary without changing the
+A/B, player-identity or local-configuration model.
 
 Run the exact client preflight from the Git checkout:
 

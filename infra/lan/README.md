@@ -418,19 +418,19 @@ documented in `client/README.md`.
 
 The sole positive flow is documented in `client/README.md`: native clone of
 the explicit Git ref and commit, `Build-LanPlayerFromGit.ps1` from that clean
-checkout, then `Initialize-LanClientState.ps1` against the external builder
-state. The Web builder alone creates `players/<source_commit>` after two
-byte-identical builds; Platform consumes its closed provenance and initializes
-only public pin/config/evidence metadata. No PEM, player directory or state is
-packaged, copied or transferred from the server.
+checkout, then `Initialize-LanClientState.ps1` against persistent external
+state. The Web builder identifies a player by the `supervisor-web` Git tree plus
+the lockfile SHA-256. Nodes build once and reuse sealed players and verified
+dependency snapshots; integration alone performs the double byte-identical
+build. Platform keeps updater versions, player generations and local
+configuration separate, activates candidates atomically and retains rollback
+until health confirmation. No PEM, player directory or state is packaged,
+copied or transferred from the server.
 
 This versioned boundary is intentionally ready for a later move to
 `teremoq-client`: the operator workflow stays the same and only the
-repository/ref/subdirectory contract changes. This Platform-only branch
-deliberately remains `pending_owner_integration`; preparation fails until the
-reviewed nine-key Web launcher and versioned manifest are rebuilt from the
-exact clean integrated commit. No 1/5/10/25 start is claimed before that gate
-passes.
+repository/ref/subdirectory contract changes. No 1/5/10/25 start is claimed
+before the reviewed updater/player compatibility and health gates pass.
 
 During each later real level, run the bounded collector on both Windows hosts:
 

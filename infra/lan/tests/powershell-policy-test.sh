@@ -55,7 +55,9 @@ launcher_pin_script="$(wslpath -w "${ROOT}/client/Pin-LanUpdateLauncher.ps1")"
 launcher_under_test="$(wslpath -w "${ROOT}/client/Start-LanInteractiveClient.ps1")"
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${launcher_pin_fixture}" \
     -PinScript "${launcher_pin_script}" -LauncherPath "${launcher_under_test}" >/dev/null
-grep -Fq 'StateRoot must be absent; prebuilt or partially built state is not accepted' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
+grep -Fq "'-BuildMode','node'" "${ROOT}/client/Prepare-LanClientFromGit.ps1"
+grep -Fq 'Initialize-TeremoqLanClientLayout -StateRoot $state' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
+grep -Fq 'Activate-TeremoqLanClientSlot -StateRoot $state' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq 'Invoke-TeremoqBoundedNativeProcess' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq '[Console]::OutputEncoding = $utf8NoBom' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
 [[ "$(grep -Fc 'Invoke-TeremoqBoundedNativeProcess' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1")" -eq 3 ]]
