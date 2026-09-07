@@ -248,4 +248,29 @@ m.main()
     except ProcessLookupError:
         pass
 
+    failed_root = root / "failed-daemon-state"
+    failed_arguments = SimpleNamespace(
+        state_root=failed_root, run_id="lan-failed-daemon", source_commit=commit,
+        certificate=certificate, private_key=private_key, fingerprint=fingerprint_path,
+        authorization=authorization_path, server_preflight=preflight_path,
+        firewall_attestation=firewall_path,
+    )
+    original_validate = channel.validate_server_arguments
+    original_command = channel.daemon_server_command
+    channel.validate_server_arguments = lambda *_values: None
+    channel.daemon_server_command = lambda *_values: [sys.executable, "-c", "raise SystemExit(7)"]
+    try:
+        try:
+            channel.daemon_start(failed_arguments, "127.0.0.1", "127.0.0.1")
+            raise AssertionError("failed daemon startup was accepted")
+        except (FileNotFoundError, ProcessLookupError, ValueError):
+            pass
+        assert not failed_root.exists()
+    finally:
+        channel.validate_server_arguments = original_validate
+        channel.daemon_server_command = original_command
+
+    channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
+    assert not authorization_path.exists()
+
 print("lan-interactive-channel-e2e-test: PASS")

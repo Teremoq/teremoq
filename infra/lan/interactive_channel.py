@@ -252,6 +252,28 @@ def open_state_root(root: Path) -> int:
     return descriptor
 
 
+def remove_new_state_root(root: Path, descriptor: int) -> None:
+    for name in (
+        "channel-process.json", "pairing-code", "management-token", "channel-state.json",
+        "channel.stdout", "channel.stderr",
+    ):
+        try:
+            os.unlink(name, dir_fd=descriptor)
+        except FileNotFoundError:
+            pass
+    parent_descriptor = os.open(root.parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        path_metadata = os.stat(root.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        descriptor_metadata = os.fstat(descriptor)
+        if (not stat.S_ISDIR(path_metadata.st_mode)
+                or (path_metadata.st_dev, path_metadata.st_ino) !=
+                (descriptor_metadata.st_dev, descriptor_metadata.st_ino)):
+            fail("failed channel state root identity changed before cleanup")
+        os.rmdir(root.name, dir_fd=parent_descriptor)
+    finally:
+        os.close(parent_descriptor)
+
+
 def read_proc_file(path: Path, maximum: int) -> bytes:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
@@ -404,6 +426,25 @@ def create_start_authorization(arguments: argparse.Namespace, server_ip: str, cl
     if output.parent.stat().st_mode & 0o777 != 0o700:
         fail("authorization output directory permissions must be 0700")
     atomic_json(output, expected_start_authorization(arguments, server_ip, client_ip))
+
+
+def revoke_start_authorization(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
+    authorization = arguments.authorization
+    if (not authorization.is_absolute() or authorization.name in ("", ".", "..")
+            or authorization.parent.is_symlink() or not authorization.parent.is_dir()):
+        fail("authorization cleanup path differs from policy")
+    descriptor = open_state_root(authorization.parent)
+    try:
+        document = decode_json_object(
+            read_regular_at(descriptor, authorization.name, 8192, 0o600),
+            "coordination authorization",
+        )
+        expected = expected_start_authorization(arguments, server_ip, client_ip)
+        if document != expected:
+            fail("authorization cleanup identity differs from exact activation evidence")
+        os.unlink(authorization.name, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def verify_start_evidence(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
@@ -827,7 +868,10 @@ def initialize(root: Path, run_id: str, source_commit: str, client_ip: str, keep
             "tasks": [],
         })
     except Exception:
-        os.close(descriptor)
+        try:
+            remove_new_state_root(root, descriptor)
+        finally:
+            os.close(descriptor)
         raise
     if keep_descriptor:
         return pairing, descriptor
@@ -939,10 +983,7 @@ def daemon_start(arguments: argparse.Namespace, server_ip: str, client_ip: str) 
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2)
-        try:
-            os.unlink("channel-process.json", dir_fd=root_descriptor)
-        except FileNotFoundError:
-            pass
+        remove_new_state_root(arguments.state_root, root_descriptor)
         raise
     finally:
         if stdout_descriptor >= 0:
@@ -1060,22 +1101,26 @@ def main() -> None:
     enqueue_parser = subparsers.add_parser("enqueue")
     rollback_parser = subparsers.add_parser("verify-rollback")
     authorize_parser = subparsers.add_parser("authorize")
+    revoke_parser = subparsers.add_parser("revoke-authorization")
     for item in (initialize_parser, serve_parser, serve_fd_parser, daemon_start_parser, status_parser,
                  daemon_stop_parser, enqueue_parser, rollback_parser):
         item.add_argument("--state-root", required=True, type=Path)
         item.add_argument("--run-id", required=True)
         item.add_argument("--source-commit", required=True)
         item.add_argument("--client-ip", required=True)
-    authorize_parser.add_argument("--run-id", required=True)
-    authorize_parser.add_argument("--source-commit", required=True)
-    authorize_parser.add_argument("--server-ip", required=True)
-    authorize_parser.add_argument("--client-ip", required=True)
-    authorize_parser.add_argument("--certificate", required=True, type=Path)
-    authorize_parser.add_argument("--fingerprint", required=True, type=Path)
-    authorize_parser.add_argument("--server-preflight", required=True, type=Path)
-    authorize_parser.add_argument("--firewall-attestation", required=True, type=Path)
+    for item in (authorize_parser, revoke_parser):
+        item.add_argument("--run-id", required=True)
+        item.add_argument("--source-commit", required=True)
+        item.add_argument("--server-ip", required=True)
+        item.add_argument("--client-ip", required=True)
+        item.add_argument("--certificate", required=True, type=Path)
+        item.add_argument("--fingerprint", required=True, type=Path)
+        item.add_argument("--server-preflight", required=True, type=Path)
+        item.add_argument("--firewall-attestation", required=True, type=Path)
     authorize_parser.add_argument("--output", required=True, type=Path)
     authorize_parser.add_argument("--confirm-authorize", required=True, action="store_true")
+    revoke_parser.add_argument("--authorization", required=True, type=Path)
+    revoke_parser.add_argument("--confirm-revoke", required=True, action="store_true")
     for item in (serve_parser, serve_fd_parser, daemon_start_parser):
         item.add_argument("--server-ip", required=True)
         item.add_argument("--port", required=True, type=int)
@@ -1105,6 +1150,11 @@ def main() -> None:
         server_ip = exact_private_ipv4(arguments.server_ip, "server IP")
         create_start_authorization(arguments, server_ip, client_ip)
         print('{"status":"authorized"}')
+        return
+    if arguments.command == "revoke-authorization":
+        server_ip = exact_private_ipv4(arguments.server_ip, "server IP")
+        revoke_start_authorization(arguments, server_ip, client_ip)
+        print('{"status":"revoked"}')
         return
     if arguments.command == "init":
         print(initialize(arguments.state_root, arguments.run_id, arguments.source_commit, client_ip))
