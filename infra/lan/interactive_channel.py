@@ -170,7 +170,9 @@ def read_regular(path: Path, maximum: int, mode: int | None = None) -> bytes:
         os.close(descriptor)
 
 
-def read_regular_at(directory: int, name: str, maximum: int, mode: int | None = None) -> bytes:
+def read_regular_at_with_identity(
+    directory: int, name: str, maximum: int, mode: int | None = None,
+) -> tuple[bytes, os.stat_result]:
     descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory)
     try:
         metadata = os.fstat(descriptor)
@@ -186,11 +188,18 @@ def read_regular_at(directory: int, name: str, maximum: int, mode: int | None = 
             if not chunk:
                 break
             data.extend(chunk)
-        if len(data) != metadata.st_size:
+        after = os.fstat(descriptor)
+        if (len(data) != metadata.st_size
+                or (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) !=
+                (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)):
             fail(f"file changed while reading: {name}")
-        return bytes(data)
+        return bytes(data), after
     finally:
         os.close(descriptor)
+
+
+def read_regular_at(directory: int, name: str, maximum: int, mode: int | None = None) -> bytes:
+    return read_regular_at_with_identity(directory, name, maximum, mode)[0]
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -436,16 +445,38 @@ def revoke_start_authorization(arguments: argparse.Namespace, server_ip: str, cl
     descriptor = open_state_root(authorization.parent)
     try:
         try:
-            payload = read_regular_at(descriptor, authorization.name, 8192, 0o600)
+            payload, verified_metadata = read_regular_at_with_identity(
+                descriptor, authorization.name, 8192, 0o600,
+            )
         except FileNotFoundError:
             return
         document = decode_json_object(payload, "coordination authorization")
         expected = expected_start_authorization(arguments, server_ip, client_ip)
         if document != expected:
             fail("authorization cleanup identity differs from exact activation evidence")
+        current_metadata = os.stat(authorization.name, dir_fd=descriptor, follow_symlinks=False)
+        if ((current_metadata.st_dev, current_metadata.st_ino) !=
+                (verified_metadata.st_dev, verified_metadata.st_ino)):
+            fail("authorization changed before cleanup")
         os.unlink(authorization.name, dir_fd=descriptor)
+        os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def verify_channel_root_absent(root: Path) -> None:
+    if (not root.is_absolute() or root.name in ("", ".", "..")
+            or root.parent.is_symlink() or not root.parent.is_dir()):
+        fail("channel cleanup proof path differs from policy")
+    parent_descriptor = open_state_root(root.parent)
+    try:
+        try:
+            os.stat(root.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        fail("channel startup cleanup is not proven")
+    finally:
+        os.close(parent_descriptor)
 
 
 def verify_start_evidence(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
@@ -1103,8 +1134,9 @@ def main() -> None:
     rollback_parser = subparsers.add_parser("verify-rollback")
     authorize_parser = subparsers.add_parser("authorize")
     revoke_parser = subparsers.add_parser("revoke-authorization")
+    cleanup_proof_parser = subparsers.add_parser("verify-startup-clean")
     for item in (initialize_parser, serve_parser, serve_fd_parser, daemon_start_parser, status_parser,
-                 daemon_stop_parser, enqueue_parser, rollback_parser):
+                 daemon_stop_parser, enqueue_parser, rollback_parser, cleanup_proof_parser):
         item.add_argument("--state-root", required=True, type=Path)
         item.add_argument("--run-id", required=True)
         item.add_argument("--source-commit", required=True)
@@ -1141,6 +1173,7 @@ def main() -> None:
     enqueue_parser.add_argument("--target-commit")
     rollback_parser.add_argument("--server-ip", required=True)
     rollback_parser.add_argument("--attestation", required=True, type=Path)
+    cleanup_proof_parser.add_argument("--server-ip", required=True)
     arguments = parser.parse_args()
     if not arguments.run_id.startswith("lan-") or len(arguments.run_id) > 36:
         fail("invalid run id")
@@ -1156,6 +1189,11 @@ def main() -> None:
         server_ip = exact_private_ipv4(arguments.server_ip, "server IP")
         revoke_start_authorization(arguments, server_ip, client_ip)
         print('{"status":"revoked"}')
+        return
+    if arguments.command == "verify-startup-clean":
+        exact_private_ipv4(arguments.server_ip, "server IP")
+        verify_channel_root_absent(arguments.state_root)
+        print('{"status":"startup-clean"}')
         return
     if arguments.command == "init":
         print(initialize(arguments.state_root, arguments.run_id, arguments.source_commit, client_ip))

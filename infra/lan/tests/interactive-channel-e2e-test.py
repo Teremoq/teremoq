@@ -270,6 +270,60 @@ m.main()
         channel.validate_server_arguments = original_validate
         channel.daemon_server_command = original_command
 
+    failed_cleanup_root = root / "failed-cleanup-state"
+    failed_cleanup_arguments = SimpleNamespace(**{
+        **vars(failed_arguments), "state_root": failed_cleanup_root, "run_id": "lan-failed-cleanup",
+    })
+    original_remove_root = channel.remove_new_state_root
+    channel.validate_server_arguments = lambda *_values: None
+    channel.daemon_server_command = lambda *_values: [sys.executable, "-c", "raise SystemExit(8)"]
+    channel.remove_new_state_root = lambda *_values: (_ for _ in ()).throw(ValueError("forced cleanup failure"))
+    try:
+        try:
+            channel.daemon_start(failed_cleanup_arguments, "127.0.0.1", "127.0.0.1")
+            raise AssertionError("failed internal cleanup was accepted")
+        except (FileNotFoundError, ProcessLookupError, ValueError):
+            pass
+        assert failed_cleanup_root.exists()
+        try:
+            channel.verify_channel_root_absent(failed_cleanup_root)
+            raise AssertionError("residual failed-start root was reported absent")
+        except ValueError:
+            pass
+    finally:
+        channel.validate_server_arguments = original_validate
+        channel.daemon_server_command = original_command
+        channel.remove_new_state_root = original_remove_root
+        if failed_cleanup_root.exists():
+            cleanup_descriptor = channel.open_state_root(failed_cleanup_root)
+            try:
+                original_remove_root(failed_cleanup_root, cleanup_descriptor)
+            finally:
+                os.close(cleanup_descriptor)
+
+    saved_authorization = authorization_path.with_name("authorization.verified")
+    original_identity_read = channel.read_regular_at_with_identity
+    replacement_written = False
+
+    def replace_after_verified_read(directory, name, maximum, mode=None):
+        nonlocal_result = original_identity_read(directory, name, maximum, mode)
+        authorization_path.rename(saved_authorization)
+        authorization_path.write_text("{}\n", encoding="utf-8")
+        authorization_path.chmod(0o600)
+        return nonlocal_result
+
+    channel.read_regular_at_with_identity = replace_after_verified_read
+    try:
+        try:
+            channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
+            raise AssertionError("replaced authorization was deleted")
+        except ValueError:
+            replacement_written = authorization_path.exists()
+    finally:
+        channel.read_regular_at_with_identity = original_identity_read
+    assert replacement_written and saved_authorization.exists()
+    authorization_path.unlink()
+    saved_authorization.rename(authorization_path)
     channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
     assert not authorization_path.exists()
     channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
