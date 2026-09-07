@@ -49,6 +49,40 @@ $OutputEncoding = $utf8NoBom
     if ($utf8.ExitCode -ne 0 -or $utf8.Stdout -cne 'compilación válida' -or $utf8.Stderr -cne 'página con espacio no separable') {
         throw 'PowerShell 5 child output was not emitted and decoded as strict UTF-8'
     }
+    $lockedFile = Join-Path $scratch 'transient-lock.txt'
+    $lockReady = Join-Path $scratch 'transient-lock.ready'
+    $lockScript = Join-Path $scratch 'hold-lock.ps1'
+    [IO.File]::WriteAllText($lockedFile, 'verified after transient lock', (New-Object Text.UTF8Encoding($false)))
+    Set-Content -LiteralPath $lockScript -Encoding UTF8 -Value @'
+param([string]$LockedFile, [string]$ReadyFile)
+$stream = [IO.File]::Open($LockedFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+try {
+    [IO.File]::WriteAllText($ReadyFile, 'ready')
+    Start-Sleep -Milliseconds 1250
+} finally {
+    $stream.Dispose()
+}
+'@
+    $lockProcess = Start-Process -FilePath $nativeShell -ArgumentList @(
+        '-NoProfile', '-NonInteractive', '-File', $lockScript, $lockedFile, $lockReady
+    ) -PassThru -WindowStyle Hidden
+    try {
+        $readyWatch = [Diagnostics.Stopwatch]::StartNew()
+        while (-not (Test-Path -LiteralPath $lockReady -PathType Leaf)) {
+            if ($lockProcess.HasExited -or $readyWatch.ElapsedMilliseconds -gt 5000) { throw 'transient lock fixture did not become ready' }
+            Start-Sleep -Milliseconds 50
+        }
+        $lockWatch = [Diagnostics.Stopwatch]::StartNew()
+        $lockedText = Read-TeremoqBoundedUtf8File -Path $lockedFile -MaxBytes 1024
+        if ($lockedText -cne 'verified after transient lock') { throw 'transiently locked file content was not preserved' }
+        if ($lockWatch.ElapsedMilliseconds -lt 500 -or $lockWatch.ElapsedMilliseconds -gt 6000) {
+            throw 'transient file lock was not retried within the bounded policy'
+        }
+    } finally {
+        if (-not $lockProcess.HasExited) { $lockProcess.Kill() }
+        [void]$lockProcess.WaitForExit(5000)
+        $lockProcess.Dispose()
+    }
     $floodScript = Join-Path $scratch 'flood.ps1'
     Set-Content -LiteralPath $floodScript -Encoding UTF8 -Value "[Console]::Out.Write(('x' * 140000)); [Console]::Error.Write(('y' * 140000))"
     $watch = [Diagnostics.Stopwatch]::StartNew()

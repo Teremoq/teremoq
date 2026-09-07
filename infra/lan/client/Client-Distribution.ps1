@@ -18,9 +18,25 @@ public static class TeremoqLanNativeFile {
 
 function Open-TeremoqVerifiedRegularFile {
     param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][int]$MaxBytes)
-    [void](Assert-TeremoqNonReparseFilePath -Path $Path)
+    $stream = $null
     $expected = [IO.Path]::GetFullPath($Path)
-    $stream = [IO.File]::Open($expected, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    $lastLockException = $null
+    for ($attempt = 1; $attempt -le 20; $attempt += 1) {
+        # Revalidate the pathname on every attempt so a transient lock cannot
+        # be used to replace the file while this process is waiting.
+        [void](Assert-TeremoqNonReparseFilePath -Path $Path)
+        try {
+            $stream = [IO.File]::Open($expected, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            break
+        } catch [IO.IOException] {
+            $nativeError = ($_.Exception.HResult -band 0xFFFF)
+            if ($nativeError -notin @(32, 33)) { throw }
+            $lastLockException = $_.Exception
+            if ($attempt -eq 20) { throw $lastLockException }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+    if ($null -eq $stream) { throw $lastLockException }
     try {
         $buffer = New-Object Text.StringBuilder 32768
         $n = [TeremoqLanNativeFile]::GetFinalPathNameByHandle($stream.SafeFileHandle, $buffer, [uint32]$buffer.Capacity, 0)
