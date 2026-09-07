@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import ipaddress
@@ -37,6 +38,8 @@ MAX_MESSAGE = 16 * 1024
 MAX_TASKS = 32
 MAX_EVENTS_PER_TASK = 256
 MAX_EVENT_LOG = 8 * 1024 * 1024
+MAX_PINNED_LOADER_BYTES = 16 * 1024
+PINNED_LOADER_BOOTSTRAP = 'import base64,sys;exec(compile(base64.b64decode(sys.argv[1]),"<teremoq-pinned-loader>","exec"))'
 READ_TIMEOUT_SECONDS = 10
 MIN_REQUEST_INTERVAL_SECONDS = 0.1
 ACTIONS = (
@@ -814,6 +817,33 @@ def wait_for_process_exit(pid: int, start_ticks: int, root: Path, timeout_second
     return not matching_process(pid, start_ticks, root)
 
 
+def daemon_child_prefix(original_argv: list[str] | None = None) -> list[str]:
+    invocation = list(getattr(sys, "orig_argv", ())) if original_argv is None else list(original_argv)
+    if len(invocation) >= 5 and invocation[1:4] == ["-I", "-c", PINNED_LOADER_BOOTSTRAP]:
+        encoded_loader = invocation[4]
+        try:
+            loader = base64.b64decode(encoded_loader, validate=True)
+        except (ValueError, TypeError) as error:
+            raise ValueError("pinned loader encoding is invalid") from error
+        if not 1 <= len(loader) <= MAX_PINNED_LOADER_BYTES or base64.b64encode(loader).decode("ascii") != encoded_loader:
+            fail("pinned loader is outside the closed byte policy")
+        return [sys.executable, "-I", "-c", PINNED_LOADER_BOOTSTRAP, encoded_loader]
+    return [sys.executable, str(Path(__file__).resolve())]
+
+
+def daemon_server_command(arguments: argparse.Namespace, root_descriptor: int, server_ip: str,
+                          client_ip: str, original_argv: list[str] | None = None) -> list[str]:
+    return daemon_child_prefix(original_argv) + [
+        "serve-fd", "--state-root", str(arguments.state_root), "--state-fd", str(root_descriptor),
+        "--run-id", arguments.run_id, "--source-commit", arguments.source_commit,
+        "--server-ip", server_ip, "--client-ip", client_ip, "--port", str(PORT),
+        "--certificate", str(arguments.certificate), "--private-key", str(arguments.private_key),
+        "--fingerprint", str(arguments.fingerprint), "--authorization", str(arguments.authorization),
+        "--server-preflight", str(arguments.server_preflight),
+        "--firewall-attestation", str(arguments.firewall_attestation),
+    ]
+
+
 def daemon_start(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
     validate_server_arguments(arguments, server_ip, client_ip)
     initialized = initialize(arguments.state_root, arguments.run_id, arguments.source_commit, client_ip, keep_descriptor=True)
@@ -826,16 +856,7 @@ def daemon_start(arguments: argparse.Namespace, server_ip: str, client_ip: str) 
                                     0o600, dir_fd=root_descriptor)
         stderr_descriptor = os.open("channel.stderr", os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
                                     0o600, dir_fd=root_descriptor)
-        command = [
-            sys.executable, str(Path(__file__).resolve()), "serve-fd",
-            "--state-root", str(arguments.state_root), "--state-fd", str(root_descriptor),
-            "--run-id", arguments.run_id, "--source-commit", arguments.source_commit,
-            "--server-ip", server_ip, "--client-ip", client_ip, "--port", str(PORT),
-            "--certificate", str(arguments.certificate), "--private-key", str(arguments.private_key),
-            "--fingerprint", str(arguments.fingerprint), "--authorization", str(arguments.authorization),
-            "--server-preflight", str(arguments.server_preflight),
-            "--firewall-attestation", str(arguments.firewall_attestation),
-        ]
+        command = daemon_server_command(arguments, root_descriptor, server_ip, client_ip)
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout_descriptor, stderr=stderr_descriptor,
                                    pass_fds=(root_descriptor,), close_fds=True, start_new_session=True)
         start_ticks = process_start_ticks(process.pid)

@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import base64
 import json
 import os
+import sys
 import tempfile
 import time
+from types import SimpleNamespace
 from pathlib import Path
 
 source = Path(__file__).parents[1] / "interactive_channel.py"
@@ -17,6 +20,47 @@ spec.loader.exec_module(channel)
 
 commit = "a" * 40
 assert channel.process_start_ticks(os.getpid()) > 0
+
+pinned_loader = b"print('pinned loader canary')"
+encoded_loader = base64.b64encode(pinned_loader).decode("ascii")
+pinned_prefix = channel.daemon_child_prefix([
+    sys.executable, "-I", "-c", channel.PINNED_LOADER_BOOTSTRAP, encoded_loader,
+    "daemon-start", "--state-root", "/private/state",
+])
+assert pinned_prefix == [
+    sys.executable, "-I", "-c", channel.PINNED_LOADER_BOOTSTRAP, encoded_loader,
+]
+assert pinned_prefix + ["serve-fd"] == [
+    sys.executable, "-I", "-c", channel.PINNED_LOADER_BOOTSTRAP, encoded_loader, "serve-fd",
+]
+server_arguments = SimpleNamespace(
+    state_root=Path("/private/state"), run_id="lan-pinned-command",
+    source_commit="a" * 40, certificate=Path("/private/cert.pem"),
+    private_key=Path("/private/key.pem"), fingerprint=Path("/private/fingerprint.sha256"),
+    authorization=Path("/private/authorization.json"),
+    server_preflight=Path("/private/server-preflight.json"),
+    firewall_attestation=Path("/private/firewall.json"),
+)
+server_command = channel.daemon_server_command(server_arguments, 7, "192.168.77.10", "192.168.77.20", [
+    sys.executable, "-I", "-c", channel.PINNED_LOADER_BOOTSTRAP, encoded_loader, "daemon-start",
+])
+assert server_command[:5] == pinned_prefix and server_command[5] == "serve-fd"
+assert server_command.count(encoded_loader) == 1 and server_command.count("serve-fd") == 1
+assert server_command[server_command.index("--state-fd") + 1] == "7"
+assert server_command[server_command.index("--source-commit") + 1] == "a" * 40
+assert server_command[server_command.index("--server-ip") + 1] == "192.168.77.10"
+assert server_command[server_command.index("--client-ip") + 1] == "192.168.77.20"
+for invalid_loader in ("not-base64!", base64.b64encode(b"x" * (channel.MAX_PINNED_LOADER_BYTES + 1)).decode("ascii")):
+    try:
+        channel.daemon_child_prefix([
+            sys.executable, "-I", "-c", channel.PINNED_LOADER_BOOTSTRAP, invalid_loader,
+        ])
+        raise AssertionError("invalid pinned loader was accepted")
+    except ValueError:
+        pass
+assert channel.daemon_child_prefix([sys.executable, str(Path(channel.__file__))]) == [
+    sys.executable, str(Path(channel.__file__).resolve()),
+]
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary) / "state"
     channel.initialize(root, "lan-channel-test", commit, "192.168.77.20")
