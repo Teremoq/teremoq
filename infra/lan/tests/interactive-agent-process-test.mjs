@@ -153,9 +153,30 @@ const retryPreparedState = preparedStateRootForTask({
   commit: "2".repeat(40),
   taskSequence: 2,
 });
+const expectedStateKey = crypto.createHash("sha256").update("lan-state-canary", "utf8").digest("hex").slice(0, 8);
+const longestManagedPlayerPath = path.join(
+  firstPreparedState,
+  "players",
+  `sha256-${"f".repeat(64)}`,
+  ".next",
+  "static",
+  `sha256-${"f".repeat(64)}`,
+  "_clientMiddlewareManifest.js",
+);
 expect(firstPreparedState !== channelStateRoot && retryPreparedState === firstPreparedState &&
-  firstPreparedState.endsWith("lan-client-state-lan-state-canary"),
+  firstPreparedState.endsWith(`s-${expectedStateKey}`) && longestManagedPlayerPath.length <= 259,
 "client preparation does not use the persistent A/B state root");
+let longPreparedStateRejected = false;
+try {
+  preparedStateRootForTask({
+    stateRoot: path.join("C:\\", "x".repeat(180), "interactive-state"),
+    runId: "lan-state-canary",
+    commit: "2".repeat(40),
+  });
+} catch (error) {
+  longPreparedStateRejected = error.message === "prepared client state path exceeds the Windows PowerShell 5 safe limit";
+}
+expect(longPreparedStateRejected, "unsafe Windows PowerShell 5 prepared-state path was accepted");
 const originalLocalAppData = process.env.LOCALAPPDATA;
 const updaterRoot = fs.mkdtempSync(path.join(os.tmpdir(), "teremoq-updater-slots-"));
 try {

@@ -20,6 +20,15 @@ const TERMINATION_TIMEOUT_MS = 15 * 1000;
 const CHANNEL_RETRY_BASE_MS = 250;
 const CHANNEL_RETRY_MAX_MS = 5_000;
 const CHANNEL_RETRY_MAX_ATTEMPTS = 120;
+const POWERSHELL5_SAFE_PATH_LIMIT = 259;
+const LONGEST_MANAGED_PLAYER_SUFFIX = path.join(
+  "players",
+  `sha256-${"f".repeat(64)}`,
+  ".next",
+  "static",
+  `sha256-${"f".repeat(64)}`,
+  "_clientMiddlewareManifest.js",
+);
 const WINDOWS_ROOT = "C:\\Windows";
 const PROGRAM_FILES = "C:\\Program Files";
 const LOCAL_ACTION_LABELS = Object.freeze({
@@ -145,9 +154,13 @@ function preparedStateRootForTask(context) {
     fail("prepared client state identity is invalid");
   }
   const parent = path.dirname(context.stateRoot);
-  const candidate = path.join(parent, `lan-client-state-${context.runId}`);
+  const runKey = crypto.createHash("sha256").update(context.runId, "utf8").digest("hex").slice(0, 8);
+  const candidate = path.join(parent, `s-${runKey}`);
   if (path.dirname(candidate) !== parent || candidate === context.stateRoot) {
     fail("prepared client state overlaps the channel state");
+  }
+  if (path.join(candidate, LONGEST_MANAGED_PLAYER_SUFFIX).length > POWERSHELL5_SAFE_PATH_LIMIT) {
+    fail("prepared client state path exceeds the Windows PowerShell 5 safe limit");
   }
   return candidate;
 }
