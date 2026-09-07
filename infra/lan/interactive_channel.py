@@ -438,6 +438,21 @@ def create_start_authorization(arguments: argparse.Namespace, server_ip: str, cl
     atomic_json(output, expected_start_authorization(arguments, server_ip, client_ip))
 
 
+def authorization_cleanup_entries(directory: int, authorization_name: str) -> tuple[bool, list[str]]:
+    quarantine_pattern = re.compile(rf"\.{re.escape(authorization_name)}\.revoke-[0-9a-f]{{32}}")
+    original_present = False
+    quarantines: list[str] = []
+    with os.scandir(directory) as entries:
+        for count, entry in enumerate(entries, start=1):
+            if count > MAX_AUTHORIZATION_DIRECTORY_ENTRIES:
+                fail("authorization cleanup directory exceeds the entry bound")
+            if entry.name == authorization_name:
+                original_present = True
+            elif quarantine_pattern.fullmatch(entry.name):
+                quarantines.append(entry.name)
+    return original_present, sorted(quarantines)
+
+
 def revoke_start_authorization(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
     authorization = arguments.authorization
     if (not authorization.is_absolute() or authorization.name in ("", ".", "..")
@@ -445,16 +460,14 @@ def revoke_start_authorization(arguments: argparse.Namespace, server_ip: str, cl
         fail("authorization cleanup path differs from policy")
     descriptor = open_state_root(authorization.parent)
     try:
-        entries = os.listdir(descriptor)
-        if len(entries) > MAX_AUTHORIZATION_DIRECTORY_ENTRIES:
-            fail("authorization cleanup directory exceeds the entry bound")
-        quarantine_pattern = re.compile(rf"\.{re.escape(authorization.name)}\.revoke-[0-9a-f]{{32}}")
-        quarantines = sorted(name for name in entries if quarantine_pattern.fullmatch(name))
+        original_present, quarantines = authorization_cleanup_entries(descriptor, authorization.name)
         try:
             payload, verified_metadata = read_regular_at_with_identity(
                 descriptor, authorization.name, 8192, 0o600,
             )
         except FileNotFoundError:
+            if original_present:
+                fail("authorization disappeared during cleanup inspection")
             if not quarantines:
                 return
             if len(quarantines) != 1:
@@ -473,9 +486,12 @@ def revoke_start_authorization(arguments: argparse.Namespace, server_ip: str, cl
                     (quarantined_metadata.st_dev, quarantined_metadata.st_ino)):
                 fail("quarantined authorization changed before recovery")
             os.unlink(quarantine, dir_fd=descriptor)
+            final_original, final_quarantines = authorization_cleanup_entries(descriptor, authorization.name)
+            if final_original or final_quarantines:
+                fail("authorization namespace was recreated during quarantine recovery")
             os.fsync(descriptor)
             return
-        if quarantines:
+        if not original_present or quarantines:
             fail("authorization and quarantine coexist; refusing ambiguous cleanup")
         document = decode_json_object(payload, "coordination authorization")
         expected = expected_start_authorization(arguments, server_ip, client_ip)
@@ -494,12 +510,9 @@ def revoke_start_authorization(arguments: argparse.Namespace, server_ip: str, cl
                 or not hmac.compare_digest(quarantined_payload, payload)):
             fail(f"authorization changed during cleanup; preserved as {quarantine}")
         os.unlink(quarantine, dir_fd=descriptor)
-        try:
-            os.stat(authorization.name, dir_fd=descriptor, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            fail("authorization path was recreated during cleanup")
+        final_original, final_quarantines = authorization_cleanup_entries(descriptor, authorization.name)
+        if final_original or final_quarantines:
+            fail("authorization namespace was recreated during cleanup")
         os.fsync(descriptor)
     finally:
         os.close(descriptor)

@@ -354,6 +354,38 @@ m.main()
     channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
     assert not authorization_path.exists() and not owned_quarantine.exists()
 
+    channel.create_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
+    authorization_bytes = authorization_path.read_bytes()
+    recovery_quarantine = root / (".authorization.json.revoke-" + "5" * 32)
+    authorization_path.rename(recovery_quarantine)
+    original_unlink = channel.os.unlink
+
+    def recreate_during_recovery(name, **keywords):
+        result = original_unlink(name, **keywords)
+        if name == recovery_quarantine.name:
+            directory = keywords["dir_fd"]
+            recreated = os.open(
+                authorization_path.name, os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600, dir_fd=directory,
+            )
+            try:
+                os.write(recreated, authorization_bytes)
+            finally:
+                os.close(recreated)
+        return result
+
+    channel.os.unlink = recreate_during_recovery
+    try:
+        try:
+            channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
+            raise AssertionError("authorization recreated during recovery was accepted")
+        except ValueError:
+            pass
+    finally:
+        channel.os.unlink = original_unlink
+    assert authorization_path.exists() and not recovery_quarantine.exists()
+    channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
+
     multiple_quarantines = [
         root / (".authorization.json.revoke-" + character * 32) for character in ("3", "4")
     ]
@@ -368,6 +400,17 @@ m.main()
     assert all(quarantine.exists() for quarantine in multiple_quarantines)
     for quarantine in multiple_quarantines:
         quarantine.unlink()
+
+    bounded_entries = [root / f"bounded-entry-{index:03d}" for index in range(257)]
+    for entry in bounded_entries:
+        entry.write_text("x", encoding="ascii")
+    try:
+        channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
+        raise AssertionError("authorization directory entry bound was not enforced")
+    except ValueError:
+        pass
+    for entry in bounded_entries:
+        entry.unlink()
     channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
 
 print("lan-interactive-channel-e2e-test: PASS")
