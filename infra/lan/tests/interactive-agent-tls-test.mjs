@@ -5,7 +5,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import https from "node:https";
-import { pinnedAgent, requestJson, scrub } from "../client/Lan-Interactive-Agent.mjs";
+import { ChannelRequestError, pinnedAgent, requestJson, scrub } from "../client/Lan-Interactive-Agent.mjs";
 
 if (process.argv.length !== 4) throw new Error("certificate and private key paths are required");
 const certificate = fs.readFileSync(process.argv[2]);
@@ -26,8 +26,11 @@ const server = https.createServer({ cert: certificate, key: privateKey }, (reque
   request.on("data", (chunk) => chunks.push(chunk));
   request.on("end", () => {
     JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    const body = Buffer.from('{"accepted":true}', "utf8");
-    response.writeHead(200, { "Content-Type": "application/json", "Content-Length": body.length });
+    const body = request.url === "/oversized" ? Buffer.alloc(40_000, 0x61)
+      : request.url === "/invalid-json" ? Buffer.from("not-json", "utf8")
+      : Buffer.from('{"accepted":true}', "utf8");
+    const status = request.url === "/rejected" ? 403 : 200;
+    response.writeHead(status, { "Content-Type": "application/json", "Content-Length": body.length });
     response.end(body);
   });
 });
@@ -36,6 +39,20 @@ const address = server.address();
 try {
   const good = await requestJson(pinnedAgent(`https://127.0.0.1:${address.port}`, fingerprint), `https://127.0.0.1:${address.port}`, "/test", { test: true });
   if (good.accepted !== true) throw new Error("pinned request was not accepted");
+  for (const [route, expectedFailure, expectedStatus] of [
+    ["/oversized", "protocol", 0],
+    ["/invalid-json", "protocol", 0],
+    ["/rejected", "http", 403],
+  ]) {
+    let failure = null;
+    try {
+      await requestJson(pinnedAgent(`https://127.0.0.1:${address.port}`, fingerprint), `https://127.0.0.1:${address.port}`, route, { test: true });
+    } catch (error) { failure = error; }
+    if (!(failure instanceof ChannelRequestError) || failure.channelFailure !== expectedFailure ||
+        failure.statusCode !== expectedStatus) {
+      throw new Error(`channel response classification failed for ${route}`);
+    }
+  }
   let rejected = false;
   try {
     await requestJson(pinnedAgent(`https://127.0.0.1:${address.port}`, "0".repeat(64)), `https://127.0.0.1:${address.port}`, "/test", { test: true });

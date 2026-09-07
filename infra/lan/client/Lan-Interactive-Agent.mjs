@@ -200,6 +200,8 @@ function requestJson(agent, server, route, body, session = "") {
       headers: { "Content-Type": "application/json", "Content-Length": encoded.length, ...(session ? { "X-Teremoq-Session": session } : {}) },
     }, (response) => {
       const chunks = []; let size = 0;
+      response.once("error", (error) => reject(error instanceof ChannelRequestError
+        ? error : new ChannelRequestError("transport", "channel response transport failed")));
       response.on("data", (chunk) => {
         size += chunk.length;
         if (size > MAX_RESPONSE) response.destroy(new ChannelRequestError("protocol", "response exceeds limit"));
