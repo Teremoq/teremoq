@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertExternalStateRoot, compareDirectories, compareSourceUpdate, inventoryDirectory,
-  parseClosedSourceContract, runDistributionGit, validateToolVersions,
+  parseClosedSourceContract, retryDistributionGitExit, runDistributionGit, validateToolVersions,
   verifyContractFiles, verifyDistributionSource,
 } from "./distribution-contract.mjs";
 import {
@@ -291,7 +291,7 @@ async function buildArtifact(context) {
     while (activeWorktrees.length > 0) {
       const checkout = activeWorktrees.at(-1);
       await revalidateSecureDirectoryPins(context.checkoutPin, activePins.get(checkout));
-      runDistributionGit(context.source.checkoutRoot, ["worktree", "remove", "--force", checkout]);
+      await removeDistributionWorktree(context, checkout, activePins.get(checkout));
       activePins.delete(checkout);
       activeWorktrees.pop();
     }
@@ -340,7 +340,7 @@ async function buildArtifact(context) {
     for (const checkout of activeWorktrees.reverse()) {
       try {
         await revalidateSecureDirectoryPins(context.checkoutPin, activePins.get(checkout));
-        runDistributionGit(context.source.checkoutRoot, ["worktree", "remove", "--force", checkout]);
+        await removeDistributionWorktree(context, checkout, activePins.get(checkout));
       } catch { cleanupFailures.push("worktree"); }
     }
     if (!temporaryRemoved) {
@@ -366,6 +366,19 @@ async function buildArtifact(context) {
     throw new Error("limpieza acotada incompleta; distribución rechazada", { cause: primaryFailure ?? undefined });
   }
   throw primaryFailure;
+}
+
+async function removeDistributionWorktree(context, checkout, worktreePin) {
+  await revalidateSecureDirectoryPins(context.checkoutPin, worktreePin);
+  const workspace = join(checkout, context.contract.source_subdirectory);
+  for (const generated of ["node_modules", ".next"]) {
+    await rm(join(workspace, generated), {
+      recursive: true, force: true, maxRetries: 20, retryDelay: 250,
+    });
+  }
+  await retryDistributionGitExit(() => runDistributionGit(
+    context.source.checkoutRoot, ["worktree", "remove", "--force", checkout],
+  ));
 }
 
 function parseArguments(args) {

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import {
   DISTRIBUTION_GIT_PREFIX,
   parseClosedSourceContract,
+  retryDistributionGitExit,
   runDistributionGit,
   verifyDistributionSource,
 } from "./distribution-contract.mjs";
@@ -124,6 +125,20 @@ try {
   process.env.PATH = join(root, "missing-executables");
   assert.equal(failureMessage(() => runDistributionGit(checkout, statusArguments)),
     "validación Git local falló (spawn)");
+  let transientAttempts = 0;
+  const delays = [];
+  const recovered = await retryDistributionGitExit(() => {
+    transientAttempts += 1;
+    if (transientAttempts < 3) throw new Error("validación Git local falló (exit)");
+    return "removed";
+  }, async (milliseconds) => { delays.push(milliseconds); });
+  assert.equal(recovered, "removed");
+  assert.equal(transientAttempts, 3);
+  assert.deepEqual(delays, [250, 250]);
+  await assert.rejects(
+    retryDistributionGitExit(() => { throw new Error("validación Git local falló (spawn)"); }),
+    /validación Git local falló \(spawn\)/,
+  );
   process.stdout.write("distribution-git-view-test: PASS\n");
 } finally {
   if (originalPath === undefined) delete process.env.PATH;

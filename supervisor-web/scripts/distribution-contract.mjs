@@ -330,3 +330,24 @@ export function runDistributionGit(cwd, args, allowMissing = false) {
     throw new Error(`validación Git local falló (${category})`);
   }
 }
+
+export async function retryDistributionGitExit(operation, sleep = (milliseconds) => (
+  new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds))
+)) {
+  if (typeof operation !== "function" || typeof sleep !== "function") {
+    throw new Error("reintento Git recibió una operación inválida");
+  }
+  let lastError = null;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      return operation();
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "validación Git local falló (exit)") {
+        throw error;
+      }
+      lastError = error;
+      if (attempt < 19) await sleep(250);
+    }
+  }
+  throw lastError;
+}
