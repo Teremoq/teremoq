@@ -19,7 +19,7 @@ function Get-TeremoqExactWifiAdapter {
 
 function Get-TeremoqWlanObservation {
     param(
-        [Parameter(Mandatory = $true)][string]$Text,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
         [Parameter(Mandatory = $true)][string]$AdapterName
     )
     function Normalize-TeremoqWifiBandCandidate {
@@ -90,7 +90,7 @@ function Get-TeremoqWlanObservation {
 }
 
 function Convert-TeremoqPhaseOffsetMilliseconds {
-    param([Parameter(Mandatory = $true)][string]$Text)
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text) -or $Text.Length -gt 32768) { return $null }
     $matches = [regex]::Matches($Text, '(?im)^\s*(Phase Offset|Desplazamiento de fase|Desfase de fase)\s*:\s*([+-]?[0-9]+(?:[.,][0-9]+)?)\s*s\s*$')
     if ($matches.Count -ne 1) { return $null }

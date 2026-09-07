@@ -103,6 +103,8 @@ $obs = Get-TeremoqWlanObservation -Text $unknownBandSpanish -AdapterName 'Wi-Fi'
 if ($obs.IsCanonical5GHz -or $obs.FallbackRadioQualified -or $obs.Band -ne 'desconocida') { throw 'unknown Spanish band value was accepted' }
 $obs = Get-TeremoqWlanObservation -Text $duplicateBlock -AdapterName 'Wi-Fi'
 if ($obs.IsCanonical5GHz -or $obs.FallbackRadioQualified -or $obs.Band -ne 'unavailable' -or $obs.Radio -ne 'unavailable') { throw 'duplicate adapter block was not rejected' }
+$obs = Get-TeremoqWlanObservation -Text '' -AdapterName 'Wi-Fi'
+if ($obs.IsCanonical5GHz -or $obs.FallbackRadioQualified -or $obs.Band -ne 'unavailable' -or $obs.Radio -ne 'unavailable') { throw 'empty WLAN output did not remain unavailable' }
 
 $englishOffset = Convert-TeremoqPhaseOffsetMilliseconds -Text "Phase Offset: -0.0000790s"
 if ($null -eq $englishOffset -or (Format-TeremoqInvariantDecimal -Value $englishOffset) -ne '-0.079') { throw 'English clock parsing failed' }
@@ -110,6 +112,7 @@ $spanishOffset = Convert-TeremoqPhaseOffsetMilliseconds -Text "Desplazamiento de
 if ($null -eq $spanishOffset -or (Format-TeremoqInvariantDecimal -Value $spanishOffset) -ne '0.079') { throw 'Spanish clock parsing failed' }
 $spanishAltOffset = Convert-TeremoqPhaseOffsetMilliseconds -Text "Desfase de fase: -0,001000s"
 if ($null -eq $spanishAltOffset -or (Format-TeremoqInvariantDecimal -Value $spanishAltOffset) -ne '-1') { throw 'Alternate Spanish clock parsing failed' }
+if ($null -ne (Convert-TeremoqPhaseOffsetMilliseconds -Text '')) { throw 'empty clock output did not remain unavailable' }
 
 $internalOnly = @(Get-TeremoqDockerPublicationConflicts -Rows @("tramiteplus-redis-1`t6379/tcp"))
 if ($internalOnly.Count -ne 0) { throw 'internal-only EXPOSE was treated as a host publication' }
