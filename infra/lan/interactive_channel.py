@@ -435,10 +435,11 @@ def revoke_start_authorization(arguments: argparse.Namespace, server_ip: str, cl
         fail("authorization cleanup path differs from policy")
     descriptor = open_state_root(authorization.parent)
     try:
-        document = decode_json_object(
-            read_regular_at(descriptor, authorization.name, 8192, 0o600),
-            "coordination authorization",
-        )
+        try:
+            payload = read_regular_at(descriptor, authorization.name, 8192, 0o600)
+        except FileNotFoundError:
+            return
+        document = decode_json_object(payload, "coordination authorization")
         expected = expected_start_authorization(arguments, server_ip, client_ip)
         if document != expected:
             fail("authorization cleanup identity differs from exact activation evidence")

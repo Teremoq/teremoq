@@ -272,5 +272,6 @@ m.main()
 
     channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
     assert not authorization_path.exists()
+    channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
 
 print("lan-interactive-channel-e2e-test: PASS")
