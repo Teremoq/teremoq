@@ -310,6 +310,12 @@ The client version deployed before this feature cannot understand
 published client. Once that version is paired, subsequent reviewed updates and
 their bounded progress use this channel without repeating the bootstrap.
 
+A workload or build failure is reported as a failed task and does not close the
+interactive agent. Temporary transport failures are retried with bounded
+backoff while the authenticated session remains in memory. Authentication,
+certificate-fingerprint, identity and malformed-response failures remain fatal
+and are never retried as connectivity errors.
+
 ## 6. Executable activation and stop
 
 Prepare run-owned state and private copies of the command/authorization

@@ -17,6 +17,8 @@ const ACTION_TIMEOUT_MS = 5 * 60 * 1000;
 const PREPARE_ACTION_TIMEOUT_MS = 15 * 60 * 1000;
 const TASKKILL_TIMEOUT_MS = 5 * 1000;
 const TERMINATION_TIMEOUT_MS = 15 * 1000;
+const CHANNEL_RETRY_BASE_MS = 250;
+const CHANNEL_RETRY_MAX_MS = 5_000;
 const WINDOWS_ROOT = "C:\\Windows";
 const PROGRAM_FILES = "C:\\Program Files";
 const LOCAL_ACTION_LABELS = Object.freeze({
@@ -40,6 +42,39 @@ const LOCAL_STAGE_LABELS = Object.freeze({
 });
 
 function fail(message) { throw new Error(message); }
+function sleep(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
+
+function retryableChannelError(error) {
+  const message = String(error?.message || "");
+  return !message.includes("fingerprint mismatch") &&
+    !message.includes("channel rejected request (4") &&
+    !message.includes("channel returned invalid JSON") &&
+    !message.includes("response exceeds limit");
+}
+
+async function retryChannelOperation(operation, options = {}) {
+  const maxAttempts = options.maxAttempts ?? Number.POSITIVE_INFINITY;
+  const sleepFn = options.sleepFn ?? sleep;
+  let attempt = 0;
+  for (;;) {
+    attempt += 1;
+    try {
+      return await operation();
+    } catch (error) {
+      if (!retryableChannelError(error) || attempt >= maxAttempts) throw error;
+      const delay = Math.min(CHANNEL_RETRY_MAX_MS, CHANNEL_RETRY_BASE_MS * (2 ** Math.min(attempt - 1, 5)));
+      await sleepFn(delay);
+    }
+  }
+}
+
+async function executeTaskSafely(action, context, progress, executor = execute) {
+  try {
+    return await executor(action, context, progress);
+  } catch (error) {
+    return { code: -1, signal: "task-error", output: scrub(error?.message || "task failed"), residualPid: null };
+  }
+}
 function formatLocalStatus(action, stage, sequence) {
   if (!ACTIONS.has(action) || !Object.hasOwn(LOCAL_STAGE_LABELS, stage) ||
       !Number.isSafeInteger(sequence) || sequence < 1) {
@@ -834,7 +869,7 @@ async function main() {
   process.stdout.write("[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...\n");
   for (;;) {
     const task = validatePolledTask(await receiveNextTask(prefetchedTask,
-      () => channelRequest("/v1/poll", identity, session)), identity);
+      () => retryChannelOperation(() => channelRequest("/v1/poll", identity, session))), identity);
     if (task.action === "wait") {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       continue;
@@ -846,14 +881,16 @@ async function main() {
     let sendQueue = Promise.resolve();
     const send = (status, message) => {
       const currentEvent = event++;
-      sendQueue = sendQueue.then(() => channelRequest("/v1/event", { ...identity, sequence: task.sequence, event: currentEvent, action: task.action, status, message: scrub(message) }, session));
+      sendQueue = sendQueue.then(() => retryChannelOperation(() => channelRequest("/v1/event", {
+        ...identity, sequence: task.sequence, event: currentEvent, action: task.action, status, message: scrub(message),
+      }, session)));
       return sendQueue;
     };
     const started = await send("started", `${task.action} started`);
     process.stdout.write(`${formatLocalStatus(task.action, "running", task.sequence)}\n`);
     const result = started.cancel_requested === true
       ? { code: -1, signal: "cancel-requested", output: "The server cancelled the action before execution." }
-      : await execute(task.action, context, (message) => {
+      : await executeTaskSafely(task.action, context, (message) => {
           process.stdout.write(`${formatLocalStatus(task.action, "progress", task.sequence)}\n`);
           return send("progress", message);
         });
@@ -876,7 +913,7 @@ async function main() {
   }
 }
 
-export { actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, runProcess, scrub, terminateProcessTree, updaterCandidateCheckout, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
+export { actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, terminateProcessTree, updaterCandidateCheckout, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });

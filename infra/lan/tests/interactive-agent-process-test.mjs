@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, runProcess, scrub, terminateProcessTree, updaterCandidateCheckout, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, terminateProcessTree, updaterCandidateCheckout, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -46,6 +46,24 @@ expect(actionTimeoutMs("prepare-client") === 15 * 60 * 1000,
 for (const action of ["update-client", "preflight", "player-1", "load-5", "load-10", "load-25", "wifi-observe", "collect", "stop"]) {
   expect(actionTimeoutMs(action) === 5 * 60 * 1000, `${action} timeout was broadened`);
 }
+const isolatedFailure = await executeTaskSafely("prepare-client", {}, async () => ({}), async () => {
+  throw new Error("simulated task failure");
+});
+expect(isolatedFailure.code === -1 && isolatedFailure.signal === "task-error" &&
+  isolatedFailure.output === "simulated task failure",
+"task exception escaped and would close the interactive channel");
+let transientAttempts = 0;
+const recoveredTransport = await retryChannelOperation(async () => {
+  transientAttempts += 1;
+  if (transientAttempts < 3) throw new Error("socket reset");
+  return "connected";
+}, { maxAttempts: 3, sleepFn: async () => {} });
+expect(recoveredTransport === "connected" && transientAttempts === 3,
+  "temporary channel failure did not reconnect with the existing session");
+expect(retryableChannelError(new Error("socket reset")) &&
+  !retryableChannelError(new Error("channel rejected request (403)")) &&
+  !retryableChannelError(new Error("server certificate fingerprint mismatch")),
+"channel retry policy broadened authentication or identity failures");
 const nodeSha256 = crypto.createHash("sha256").update(fs.readFileSync(process.execPath)).digest("hex");
 const agentArgv = [
   "--server", "https://192.168.1.130:18443", "--fingerprint", "1".repeat(64),

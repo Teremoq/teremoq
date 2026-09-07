@@ -13,6 +13,12 @@ shell command, URL or path from the server. The server can enqueue only the
 closed actions `update-client`, `prepare-client`, `preflight`, `player-1`, `load-5`, `load-10`,
 `load-25`, `wifi-observe`, `collect` and `stop`.
 
+Task failures are isolated from the control loop: the client reports a failed
+terminal event and returns to waiting for the next approved action. Temporary
+network errors retry with bounded backoff and the existing in-memory session;
+authentication, identity, fingerprint and malformed-response errors fail
+closed instead of being retried.
+
 `update-client` carries only the fixed official repository/ref and an exact
 reviewed target commit. It alternates the bounded `checkout-updater-a` and
 `checkout-updater-b` locations, requires a fast-forward update, and preserves
