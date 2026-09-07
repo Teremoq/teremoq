@@ -39,6 +39,7 @@ MAX_TASKS = 32
 MAX_EVENTS_PER_TASK = 256
 MAX_EVENT_LOG = 8 * 1024 * 1024
 MAX_PINNED_LOADER_BYTES = 16 * 1024
+MAX_AUTHORIZATION_DIRECTORY_ENTRIES = 256
 PINNED_LOADER_BOOTSTRAP = 'import base64,sys;exec(compile(base64.b64decode(sys.argv[1]),"<teremoq-pinned-loader>","exec"))'
 READ_TIMEOUT_SECONDS = 10
 MIN_REQUEST_INTERVAL_SECONDS = 0.1
@@ -444,12 +445,38 @@ def revoke_start_authorization(arguments: argparse.Namespace, server_ip: str, cl
         fail("authorization cleanup path differs from policy")
     descriptor = open_state_root(authorization.parent)
     try:
+        entries = os.listdir(descriptor)
+        if len(entries) > MAX_AUTHORIZATION_DIRECTORY_ENTRIES:
+            fail("authorization cleanup directory exceeds the entry bound")
+        quarantine_pattern = re.compile(rf"\.{re.escape(authorization.name)}\.revoke-[0-9a-f]{{32}}")
+        quarantines = sorted(name for name in entries if quarantine_pattern.fullmatch(name))
         try:
             payload, verified_metadata = read_regular_at_with_identity(
                 descriptor, authorization.name, 8192, 0o600,
             )
         except FileNotFoundError:
+            if not quarantines:
+                return
+            if len(quarantines) != 1:
+                fail("authorization cleanup has multiple quarantined entries")
+            quarantine = quarantines[0]
+            quarantined_payload, quarantined_metadata = read_regular_at_with_identity(
+                descriptor, quarantine, 8192, 0o600,
+            )
+            quarantined_document = decode_json_object(
+                quarantined_payload, "quarantined coordination authorization",
+            )
+            if quarantined_document != expected_start_authorization(arguments, server_ip, client_ip):
+                fail("quarantined authorization is not owned by this activation")
+            current_metadata = os.stat(quarantine, dir_fd=descriptor, follow_symlinks=False)
+            if ((current_metadata.st_dev, current_metadata.st_ino) !=
+                    (quarantined_metadata.st_dev, quarantined_metadata.st_ino)):
+                fail("quarantined authorization changed before recovery")
+            os.unlink(quarantine, dir_fd=descriptor)
+            os.fsync(descriptor)
             return
+        if quarantines:
+            fail("authorization and quarantine coexist; refusing ambiguous cleanup")
         document = decode_json_object(payload, "coordination authorization")
         expected = expected_start_authorization(arguments, server_ip, client_ip)
         if document != expected:

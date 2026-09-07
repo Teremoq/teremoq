@@ -329,10 +329,45 @@ m.main()
     quarantined = list(root.glob(".authorization.json.revoke-*"))
     assert replacement_moved[0] and saved_authorization.exists() and len(quarantined) == 1
     assert quarantined[0].read_text(encoding="utf-8") == "{}\n"
+    try:
+        channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
+        raise AssertionError("foreign orphan quarantine was ignored")
+    except ValueError:
+        pass
+    assert quarantined[0].exists()
     quarantined[0].unlink()
     saved_authorization.rename(authorization_path)
+
+    coexist_quarantine = root / (".authorization.json.revoke-" + "1" * 32)
+    coexist_quarantine.write_bytes(authorization_path.read_bytes())
+    coexist_quarantine.chmod(0o600)
+    try:
+        channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
+        raise AssertionError("authorization plus quarantine was accepted")
+    except ValueError:
+        pass
+    assert authorization_path.exists() and coexist_quarantine.exists()
+    coexist_quarantine.unlink()
+
+    owned_quarantine = root / (".authorization.json.revoke-" + "2" * 32)
+    authorization_path.rename(owned_quarantine)
     channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
-    assert not authorization_path.exists()
+    assert not authorization_path.exists() and not owned_quarantine.exists()
+
+    multiple_quarantines = [
+        root / (".authorization.json.revoke-" + character * 32) for character in ("3", "4")
+    ]
+    for quarantine in multiple_quarantines:
+        quarantine.write_text("{}\n", encoding="utf-8")
+        quarantine.chmod(0o600)
+    try:
+        channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
+        raise AssertionError("multiple authorization quarantines were accepted")
+    except ValueError:
+        pass
+    assert all(quarantine.exists() for quarantine in multiple_quarantines)
+    for quarantine in multiple_quarantines:
+        quarantine.unlink()
     channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
 
 print("lan-interactive-channel-e2e-test: PASS")
