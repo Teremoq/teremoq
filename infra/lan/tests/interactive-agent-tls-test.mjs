@@ -21,6 +21,11 @@ for (const sensitive of [
   const sanitized = scrub(`prefix ${sensitive}`);
   if (/not-a-(?:key|password|token)/.test(sanitized)) throw new Error("sensitive diagnostic was not scrubbed");
 }
+const controlSanitized = scrub("before\u001b[31merror\u0000after\r\nkept\tfield");
+if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(controlSanitized) ||
+    controlSanitized !== "before[31merrorafter\r\nkept\tfield") {
+  throw new Error("unsafe diagnostic control characters were not scrubbed");
+}
 const server = https.createServer({ cert: certificate, key: privateKey }, (request, response) => {
   const chunks = [];
   request.on("data", (chunk) => chunks.push(chunk));

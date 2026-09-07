@@ -286,6 +286,7 @@ function truncateUtf8Tail(value, maximumBytes = MAX_MESSAGE) {
 
 function scrub(value) {
   const sanitized = value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*/gi, "[private key blocked]")
     .replace(/(authorization:\s*bearer\s+)\S+/gi, "$1[blocked]")
     .replace(/(ghp_|github_pat_)[A-Za-z0-9_]+/g, "[token blocked]")
