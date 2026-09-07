@@ -279,18 +279,57 @@ def process_start_ticks(pid: int) -> int:
     return int(fields[19])
 
 
-def read_process_record(directory: int, run_id: str, source_commit: str) -> tuple[int, int]:
+def read_process_record(directory: int, run_id: str, source_commit: str) -> dict[str, Any]:
     record = decode_json_object(read_regular_at(directory, "channel-process.json", 4096, 0o600), "channel process")
-    exact_object(record, {"schema_version", "run_id", "source_commit", "pid", "start_ticks"}, "channel process")
+    legacy_keys = {"schema_version", "run_id", "source_commit", "pid", "start_ticks"}
+    pinned_keys = legacy_keys | {"launcher_kind", "command_sha256", "pinned_loader_sha256"}
+    if set(record) not in (legacy_keys, pinned_keys):
+        fail("channel process schema differs from the closed contract")
     if (type(record["schema_version"]) is not int or record["schema_version"] != SCHEMA_VERSION
             or record["run_id"] != run_id or record["source_commit"] != source_commit
             or type(record["pid"]) is not int or record["pid"] < 2
             or type(record["start_ticks"]) is not int or record["start_ticks"] < 1):
         fail("channel process identity differs from invocation")
-    return record["pid"], record["start_ticks"]
+    if set(record) == pinned_keys and (record["launcher_kind"] != "pinned-loader"
+            or not isinstance(record["command_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", record["command_sha256"])
+            or not isinstance(record["pinned_loader_sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", record["pinned_loader_sha256"])):
+        fail("channel process launcher identity differs from policy")
+    return record
 
 
-def matching_process(pid: int, start_ticks: int, root: Path) -> bool:
+def process_command_bytes(command: list[str]) -> bytes:
+    return b"".join(os.fsencode(argument) + b"\0" for argument in command)
+
+
+def pinned_process_identity(command: list[str], root: Path) -> dict[str, str] | None:
+    if len(command) < 7 or command[1:4] != ["-I", "-c", PINNED_LOADER_BOOTSTRAP]:
+        return None
+    encoded_loader = command[4]
+    try:
+        loader = base64.b64decode(encoded_loader, validate=True)
+    except (ValueError, TypeError) as error:
+        raise ValueError("pinned loader encoding is invalid") from error
+    if (not 1 <= len(loader) <= MAX_PINNED_LOADER_BYTES
+            or base64.b64encode(loader).decode("ascii") != encoded_loader
+            or command[5] != "serve-fd"
+            or command.count("serve-fd") != 1
+            or command.count("--state-root") != 1):
+        fail("pinned process command differs from the closed policy")
+    root_index = command.index("--state-root")
+    if root_index + 1 >= len(command) or command[root_index + 1] != str(root):
+        fail("pinned process state root differs from invocation")
+    return {
+        "launcher_kind": "pinned-loader",
+        "command_sha256": hashlib.sha256(process_command_bytes(command)).hexdigest(),
+        "pinned_loader_sha256": hashlib.sha256(loader).hexdigest(),
+    }
+
+
+def matching_process(record: dict[str, Any], root: Path) -> bool:
+    pid = record["pid"]
+    start_ticks = record["start_ticks"]
     try:
         if process_start_ticks(pid) != start_ticks:
             return False
@@ -299,6 +338,19 @@ def matching_process(pid: int, start_ticks: int, root: Path) -> bool:
             return False
     except (FileNotFoundError, ProcessLookupError, ValueError):
         return False
+    if set(record) != {"schema_version", "run_id", "source_commit", "pid", "start_ticks"}:
+        if not command.endswith(b"\0") or hashlib.sha256(command).hexdigest() != record["command_sha256"]:
+            return False
+        try:
+            arguments = [os.fsdecode(argument) for argument in command[:-1].split(b"\0")]
+            identity = pinned_process_identity(arguments, root)
+        except (UnicodeError, ValueError):
+            return False
+        return identity is not None and identity == {
+            "launcher_kind": record["launcher_kind"],
+            "command_sha256": record["command_sha256"],
+            "pinned_loader_sha256": record["pinned_loader_sha256"],
+        }
     arguments = command.rstrip(b"\0").split(b"\0")
     return (b"serve-fd" in arguments and os.fsencode(str(root)) in arguments
             and os.fsencode(str(Path(__file__).resolve())) in arguments)
@@ -808,13 +860,13 @@ def run_server(arguments: argparse.Namespace, server_ip: str, client_ip: str, ro
         os.close(state.root_descriptor)
 
 
-def wait_for_process_exit(pid: int, start_ticks: int, root: Path, timeout_seconds: float) -> bool:
+def wait_for_process_exit(record: dict[str, Any], root: Path, timeout_seconds: float) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        if not matching_process(pid, start_ticks, root):
+        if not matching_process(record, root):
             return True
         time.sleep(0.05)
-    return not matching_process(pid, start_ticks, root)
+    return not matching_process(record, root)
 
 
 def daemon_child_prefix(original_argv: list[str] | None = None) -> list[str]:
@@ -860,10 +912,14 @@ def daemon_start(arguments: argparse.Namespace, server_ip: str, client_ip: str) 
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=stdout_descriptor, stderr=stderr_descriptor,
                                    pass_fds=(root_descriptor,), close_fds=True, start_new_session=True)
         start_ticks = process_start_ticks(process.pid)
-        atomic_json_at(root_descriptor, "channel-process.json", {
+        process_record: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION, "run_id": arguments.run_id, "source_commit": arguments.source_commit,
             "pid": process.pid, "start_ticks": start_ticks,
-        })
+        }
+        pinned_identity = pinned_process_identity(command, arguments.state_root)
+        if pinned_identity is not None:
+            process_record.update(pinned_identity)
+        atomic_json_at(root_descriptor, "channel-process.json", process_record)
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             if process.poll() is not None:
@@ -899,8 +955,8 @@ def daemon_start(arguments: argparse.Namespace, server_ip: str, client_ip: str) 
 def channel_status(arguments: argparse.Namespace, server_ip: str) -> None:
     descriptor = open_state_root(arguments.state_root)
     try:
-        pid, start_ticks = read_process_record(descriptor, arguments.run_id, arguments.source_commit)
-        if not matching_process(pid, start_ticks, arguments.state_root):
+        process_record = read_process_record(descriptor, arguments.run_id, arguments.source_commit)
+        if not matching_process(process_record, arguments.state_root):
             fail("coordination process is not running with the recorded identity")
         try:
             with socket.create_connection((server_ip, PORT), timeout=1):
@@ -923,13 +979,14 @@ def daemon_stop(arguments: argparse.Namespace, server_ip: str, client_ip: str) -
     verify_rollback_evidence(arguments.attestation, arguments.run_id, arguments.source_commit, server_ip, client_ip)
     descriptor = open_state_root(arguments.state_root)
     try:
-        pid, start_ticks = read_process_record(descriptor, arguments.run_id, arguments.source_commit)
-        if not matching_process(pid, start_ticks, arguments.state_root):
+        process_record = read_process_record(descriptor, arguments.run_id, arguments.source_commit)
+        if not matching_process(process_record, arguments.state_root):
             fail("coordination process ownership differs from the recorded identity")
+        pid = process_record["pid"]
         os.kill(pid, signal.SIGTERM)
-        if not wait_for_process_exit(pid, start_ticks, arguments.state_root, 5.0):
+        if not wait_for_process_exit(process_record, arguments.state_root, 5.0):
             os.kill(pid, signal.SIGKILL)
-            if not wait_for_process_exit(pid, start_ticks, arguments.state_root, 2.0):
+            if not wait_for_process_exit(process_record, arguments.state_root, 2.0):
                 fail("coordination server did not stop within the bounded deadline")
         for name in ("channel-process.json", "pairing-code", "management-token"):
             try:

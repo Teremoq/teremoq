@@ -5,6 +5,8 @@
 import importlib.util
 import hashlib
 import json
+import os
+import socket
 import ssl
 import subprocess
 import tempfile
@@ -183,5 +185,67 @@ with tempfile.TemporaryDirectory() as temporary:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+    # Exercise the real pinned daemon boundary. Evidence parsing is covered
+    # above; this loader narrows the test to process ownership and cleanup.
+    with socket.socket() as port_probe:
+        port_probe.bind(("127.0.0.1", 0))
+        daemon_port = port_probe.getsockname()[1]
+    daemon_root = root / "daemon-state"
+    daemon_run_id = "lan-pinned-daemon"
+    loader = f'''import importlib.util,sys
+p={str(source)!r}
+s=importlib.util.spec_from_file_location("interactive_channel_pinned",p)
+m=importlib.util.module_from_spec(s)
+s.loader.exec_module(m)
+m.PORT={daemon_port}
+m.exact_private_ipv4=lambda value,label:value
+m.validate_server_arguments=lambda *values:None
+m.verify_rollback_evidence=lambda *values:None
+sys.argv=[p]+sys.argv[2:]
+m.main()
+'''.encode("utf-8")
+    encoded_loader = channel.base64.b64encode(loader).decode("ascii")
+    pinned_prefix = [sys.executable, "-I", "-c", channel.PINNED_LOADER_BOOTSTRAP, encoded_loader]
+    common = [
+        "--state-root", str(daemon_root), "--run-id", daemon_run_id, "--source-commit", commit,
+        "--server-ip", "127.0.0.1", "--client-ip", "127.0.0.1",
+    ]
+    started = subprocess.run(pinned_prefix + [
+        "daemon-start", *common, "--port", str(daemon_port), "--certificate", str(certificate),
+        "--private-key", str(private_key), "--fingerprint", str(fingerprint_path),
+        "--authorization", str(authorization_path), "--server-preflight", str(preflight_path),
+        "--firewall-attestation", str(firewall_path),
+    ], check=True, text=True, capture_output=True, timeout=10)
+    assert "PAIRING_CODE=" in started.stdout
+    process_record_path = daemon_root / "channel-process.json"
+    original_record = json.loads(process_record_path.read_text(encoding="utf-8"))
+    assert original_record["launcher_kind"] == "pinned-loader"
+    assert original_record["pinned_loader_sha256"] == hashlib.sha256(loader).hexdigest()
+    assert channel.matching_process(original_record, daemon_root)
+    status_command = pinned_prefix + ["status", *common]
+    subprocess.run(status_command, check=True, text=True, capture_output=True, timeout=10)
+    for field in ("command_sha256", "pinned_loader_sha256"):
+        tampered_record = dict(original_record)
+        tampered_record[field] = "0" * 64
+        process_record_path.write_text(json.dumps(tampered_record), encoding="utf-8")
+        process_record_path.chmod(0o600)
+        rejected = subprocess.run(status_command, text=True, capture_output=True, timeout=10)
+        assert rejected.returncode != 0
+        process_record_path.write_text(json.dumps(original_record), encoding="utf-8")
+        process_record_path.chmod(0o600)
+    stopped = subprocess.run(
+        pinned_prefix + ["daemon-stop", *common, "--attestation", str(rollback_path)],
+        check=True, text=True, capture_output=True, timeout=10,
+    )
+    assert "credentials removed" in stopped.stdout
+    assert not channel.matching_process(original_record, daemon_root)
+    for removed in ("channel-process.json", "pairing-code", "management-token"):
+        assert not (daemon_root / removed).exists()
+    try:
+        os.kill(original_record["pid"], 0)
+        raise AssertionError("pinned coordination process survived daemon-stop")
+    except ProcessLookupError:
+        pass
 
 print("lan-interactive-channel-e2e-test: PASS")

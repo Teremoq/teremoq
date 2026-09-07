@@ -50,6 +50,26 @@ assert server_command[server_command.index("--state-fd") + 1] == "7"
 assert server_command[server_command.index("--source-commit") + 1] == "a" * 40
 assert server_command[server_command.index("--server-ip") + 1] == "192.168.77.10"
 assert server_command[server_command.index("--client-ip") + 1] == "192.168.77.20"
+process_identity = channel.pinned_process_identity(server_command, Path("/private/state"))
+assert process_identity is not None
+assert process_identity["launcher_kind"] == "pinned-loader"
+assert process_identity["command_sha256"] == channel.hashlib.sha256(
+    channel.process_command_bytes(server_command)
+).hexdigest()
+assert process_identity["pinned_loader_sha256"] == channel.hashlib.sha256(pinned_loader).hexdigest()
+for index, replacement in (
+    (2, "import sys"),
+    (4, base64.b64encode(b"print('different loader')").decode("ascii")),
+    (server_command.index("--state-root") + 1, "/private/other-state"),
+):
+    tampered_command = list(server_command)
+    tampered_command[index] = replacement
+    try:
+        identity = channel.pinned_process_identity(tampered_command, Path("/private/state"))
+        if identity == process_identity:
+            raise AssertionError("tampered pinned process identity was accepted")
+    except ValueError:
+        pass
 for invalid_loader in ("not-base64!", base64.b64encode(b"x" * (channel.MAX_PINNED_LOADER_BYTES + 1)).decode("ascii")):
     try:
         channel.daemon_child_prefix([
