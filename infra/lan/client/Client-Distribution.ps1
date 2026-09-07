@@ -26,7 +26,10 @@ function Open-TeremoqVerifiedRegularFile {
         # be used to replace the file while this process is waiting.
         [void](Assert-TeremoqNonReparseFilePath -Path $Path)
         try {
-            $stream = [IO.File]::Open($expected, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            # Concurrent verified readers are safe and required while the
+            # interactive launcher pins the reviewed source tree read-only.
+            # FileShare.Read still denies every writer and delete request.
+            $stream = [IO.File]::Open($expected, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
             break
         } catch [IO.IOException] {
             $nativeError = ($_.Exception.HResult -band 0xFFFF)

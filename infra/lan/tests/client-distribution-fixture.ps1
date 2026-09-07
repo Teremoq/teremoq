@@ -49,6 +49,24 @@ $OutputEncoding = $utf8NoBom
     if ($utf8.ExitCode -ne 0 -or $utf8.Stdout -cne 'compilación válida' -or $utf8.Stderr -cne 'página con espacio no separable') {
         throw 'PowerShell 5 child output was not emitted and decoded as strict UTF-8'
     }
+    $pinnedFile = Join-Path $scratch 'read-pinned.txt'
+    [IO.File]::WriteAllText($pinnedFile, 'verified while read-pinned', (New-Object Text.UTF8Encoding($false)))
+    $readPin = [IO.File]::Open($pinnedFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ((Read-TeremoqBoundedUtf8File -Path $pinnedFile -MaxBytes 1024) -cne 'verified while read-pinned') {
+            throw 'read-pinned verified source content was not preserved'
+        }
+        $writerRejected = $false
+        try {
+            $writer = [IO.File]::Open($pinnedFile, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+            $writer.Dispose()
+        } catch [IO.IOException] {
+            $writerRejected = $true
+        }
+        if (-not $writerRejected) { throw 'verified read sharing permitted a concurrent writer' }
+    } finally {
+        $readPin.Dispose()
+    }
     $lockedFile = Join-Path $scratch 'transient-lock.txt'
     $lockReady = Join-Path $scratch 'transient-lock.ready'
     $lockScript = Join-Path $scratch 'hold-lock.ps1'
