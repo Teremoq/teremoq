@@ -154,7 +154,7 @@ function preparedStateRootForTask(context) {
     fail("prepared client state identity is invalid");
   }
   const parent = path.dirname(context.stateRoot);
-  const runKey = crypto.createHash("sha256").update(context.runId, "utf8").digest("hex").slice(0, 8);
+  const runKey = crypto.createHash("sha256").update(context.runId, "utf8").digest("hex").slice(0, 16);
   const candidate = path.join(parent, `s-${runKey}`);
   if (path.dirname(candidate) !== parent || candidate === context.stateRoot) {
     fail("prepared client state overlaps the channel state");

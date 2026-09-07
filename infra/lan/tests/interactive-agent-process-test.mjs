@@ -153,7 +153,7 @@ const retryPreparedState = preparedStateRootForTask({
   commit: "2".repeat(40),
   taskSequence: 2,
 });
-const expectedStateKey = crypto.createHash("sha256").update("lan-state-canary", "utf8").digest("hex").slice(0, 8);
+const expectedStateKey = crypto.createHash("sha256").update("lan-state-canary", "utf8").digest("hex").slice(0, 16);
 const longestManagedPlayerPath = path.join(
   firstPreparedState,
   "players",
@@ -177,6 +177,19 @@ try {
   longPreparedStateRejected = error.message === "prepared client state path exceeds the Windows PowerShell 5 safe limit";
 }
 expect(longPreparedStateRejected, "unsafe Windows PowerShell 5 prepared-state path was accepted");
+const priorCollisionA = preparedStateRootForTask({
+  stateRoot: channelStateRoot,
+  runId: "lan-collision-34643",
+  commit: "2".repeat(40),
+});
+const priorCollisionB = preparedStateRootForTask({
+  stateRoot: channelStateRoot,
+  runId: "lan-collision-110243",
+  commit: "2".repeat(40),
+});
+expect(path.basename(priorCollisionA).slice(2, 10) === path.basename(priorCollisionB).slice(2, 10) &&
+  priorCollisionA !== priorCollisionB,
+"managed client states that shared the former 32-bit prefix were not isolated");
 const originalLocalAppData = process.env.LOCALAPPDATA;
 const updaterRoot = fs.mkdtempSync(path.join(os.tmpdir(), "teremoq-updater-slots-"));
 try {
