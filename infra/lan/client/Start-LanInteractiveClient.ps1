@@ -499,11 +499,23 @@ try {
     $agentArguments = New-TeremoqAgentArguments -AgentPath (Join-Path $PSScriptRoot 'Lan-Interactive-Agent.mjs') `
         -RunId $runId -ChannelCommit $ChannelCommit -ClientCommit $head -Checkout $checkout -StateRoot $stateRoot `
         -EvidenceRoot $evidenceRoot -SessionHashes $sessionHashes -CredentialMode $credentialMode
-    $agentExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -WorkingDirectory $checkout `
-        -ExpectedSha256 $sessionHashes.Node -InputLine $credential -Arguments $agentArguments `
-        -HandoffAckPath $(if ($ResumeSessionStdin) { $ackPath } else { '' }) `
-        -HandoffAckValue $(if ($ResumeSessionStdin) { $ackValue } else { '' })
-    if ($agentExit -ne 0) { throw "Teremoq LAN interactive client stopped with exit code $agentExit" }
+    $sessionRestart = 0
+    while ($true) {
+        $agentExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -WorkingDirectory $checkout `
+            -ExpectedSha256 $sessionHashes.Node -InputLine $credential -Arguments $agentArguments `
+            -HandoffAckPath $(if ($ResumeSessionStdin -and $sessionRestart -eq 0) { $ackPath } else { '' }) `
+            -HandoffAckValue $(if ($ResumeSessionStdin -and $sessionRestart -eq 0) { $ackValue } else { '' })
+        if ($agentExit -eq 0) { break }
+        if (-not $ResumeSessionStdin) {
+            throw "Teremoq LAN interactive client stopped with exit code $agentExit"
+        }
+        $sessionRestart += 1
+        if ($sessionRestart -gt 120) {
+            throw 'Teremoq LAN interactive client exhausted its bounded session restarts'
+        }
+        Write-Warning '[Teremoq] El agente se reiniciara conservando la sesion segura solo en memoria.'
+        Start-Sleep -Seconds 2
+    }
 } finally {
     for ($index = $locks.Count - 1; $index -ge 0; $index--) { $locks[$index].Dispose() }
 }
