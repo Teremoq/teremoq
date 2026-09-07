@@ -159,6 +159,24 @@ function updaterCandidateCheckout(context) {
   return path.resolve(context.checkout).toLowerCase() === path.resolve(slotA).toLowerCase() ? slotB : slotA;
 }
 
+function parseStagedUpdateResult(output, context, targetCommit) {
+  const lines = String(output).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length !== 1) fail("staged update output differs from contract");
+  let staged;
+  try { staged = JSON.parse(lines[0]); } catch { fail("staged update output is not valid JSON"); }
+  if (!staged || Array.isArray(staged) ||
+      Object.keys(staged).sort().join(",") !== "commit,schema_version,slot,status" ||
+      staged.schema_version !== 1 || staged.status !== "staged" || staged.commit !== targetCommit ||
+      !["checkout-updater-a", "checkout-updater-b"].includes(staged.slot)) {
+    fail("staged update result differs from contract");
+  }
+  const candidate = path.join(process.env.LOCALAPPDATA, "Teremoq", staged.slot);
+  if (path.resolve(candidate).toLowerCase() === path.resolve(context.checkout).toLowerCase()) {
+    fail("staged update selected the active checkout");
+  }
+  return { commit: targetCommit, checkout: exactDirectory(candidate, "updated checkout") };
+}
+
 function activePreparedStateRoot(context) {
   if (typeof context.preparedStateRoot !== "string") {
     fail("client preparation must complete before starting a workload");
@@ -706,12 +724,7 @@ async function execute(action, context, progress) {
       "-CheckoutRoot", context.checkout, "-CurrentCommit", context.commit, "-TargetCommit", update.target_commit,
       "-RepositoryUrl", update.repository_url, "-RepositoryRef", update.repository_ref],
     context.checkout, progress, powershellOptions);
-    if (result.code === 0) {
-      result.handoff = {
-        commit: update.target_commit,
-        checkout: updaterCandidateCheckout(context),
-      };
-    }
+    if (result.code === 0) result.handoff = parseStagedUpdateResult(result.output, context, update.target_commit);
     return result;
   }
   if (action === "prepare-client") {
@@ -963,7 +976,7 @@ async function main() {
   }
 }
 
-export { ChannelRequestError, actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validateEventAck, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
+export { ChannelRequestError, actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, parseStagedUpdateResult, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validateEventAck, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });

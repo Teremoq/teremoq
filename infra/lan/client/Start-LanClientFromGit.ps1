@@ -103,7 +103,7 @@ $root = [IO.Path]::GetFullPath($root)
 Write-Host '1/4 Buscando un checkout oficial reutilizable...' -ForegroundColor Cyan
 $checkout = $null
 $candidates = @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -in @('checkout-updater-a','checkout-updater-b') -or $_.Name -match '^checkout-lan-[0-9a-f]{8}(?:-[0-9a-f]{8})?$' } |
+    Where-Object { $_.Name -in @('checkout-updater-a','checkout-updater-b') -or $_.Name -match '^checkout-lan-[0-9a-f]{8}(?:-[a-z0-9-]{1,24})?$' } |
     Sort-Object LastWriteTimeUtc -Descending)
 foreach ($candidate in $candidates) {
     if (Test-TeremoqReusableCheckout -CheckoutRoot $candidate.FullName) {
@@ -118,7 +118,9 @@ if ($null -eq $checkout) {
     Write-Host '2/4 No hay checkout limpio; creando automaticamente uno nuevo...' -ForegroundColor Cyan
     $availableSlots = @((Join-Path $root 'checkout-updater-a'), (Join-Path $root 'checkout-updater-b'))
     $checkout = $availableSlots | Where-Object { -not (Test-Path -LiteralPath $_) } | Select-Object -First 1
-    if ($null -eq $checkout) { throw 'Both updater A/B slots exist but neither is safely reusable' }
+    if ($null -eq $checkout) {
+        $checkout = Join-Path $root ("checkout-lan-{0}-{1}" -f $ExpectedCommit.Substring(0, 8), [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    }
     [void](Invoke-TeremoqClientGit -WorkingDirectory $root -Arguments @(
         'clone', '--branch', $Branch, '--single-branch', '--no-tags', $RepositoryUrl, $checkout
     ))

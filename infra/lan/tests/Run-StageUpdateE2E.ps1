@@ -70,10 +70,22 @@ try {
     } catch { $dirtyRejected = $true }
     Remove-Item -LiteralPath $dirtyMarker -Force
     if (-not $dirtyRejected) { throw 'dirty source checkout was accepted for staged update' }
-    & (Join-Path $current 'infra\lan\client\Stage-LanClientUpdate.ps1') -CheckoutRoot $current `
+    $blockedSlot = Join-Path $clientRoot 'checkout-updater-a'
+    Invoke-TestGit $clientRoot @('clone','--local','--no-hardlinks',$current,$blockedSlot) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $blockedSlot 'local-untracked.txt'), 'preserve', (New-Object Text.UTF8Encoding($false)))
+    $stageJson = & (Join-Path $current 'infra\lan\client\Stage-LanClientUpdate.ps1') -CheckoutRoot $current `
         -CurrentCommit $first -TargetCommit $second -RepositoryUrl 'https://github.com/Teremoq/teremoq' `
         -RepositoryRef $repositoryRef
-    $target = Join-Path $clientRoot 'checkout-updater-a'
+    $stageResult = $stageJson | ConvertFrom-Json
+    if ($stageResult.schema_version -ne 1 -or $stageResult.status -cne 'staged' -or
+        $stageResult.commit -cne $second -or $stageResult.slot -cne 'checkout-updater-b') {
+        throw 'staged update did not report the clean fallback slot'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $blockedSlot 'local-untracked.txt') -PathType Leaf)) {
+        throw 'dirty inactive updater slot was modified'
+    }
+    Remove-Item -LiteralPath $blockedSlot -Recurse -Force
+    $target = Join-Path $clientRoot 'checkout-updater-b'
     if ((Invoke-TestGit $current @('rev-parse','HEAD')) -cne $first) { throw 'current checkout changed during staged update' }
     if ((Invoke-TestGit $target @('rev-parse','HEAD')) -cne $second) { throw 'staged checkout differs from target commit' }
     if (-not (Test-Path -LiteralPath (Join-Path $clientRoot 'local-config-preserved.txt') -PathType Leaf)) { throw 'local client configuration was overwritten' }
@@ -93,17 +105,17 @@ try {
     & (Join-Path $target 'infra\lan\client\Stage-LanClientUpdate.ps1') -CheckoutRoot $target `
         -CurrentCommit $second -TargetCommit $third -RepositoryUrl 'https://github.com/Teremoq/teremoq' `
         -RepositoryRef $repositoryRef
-    $targetB = Join-Path $clientRoot 'checkout-updater-b'
-    if ((Invoke-TestGit $targetB @('rev-parse','HEAD')) -cne $third) { throw 'updater B slot differs from third commit' }
+    $targetA = Join-Path $clientRoot 'checkout-updater-a'
+    if ((Invoke-TestGit $targetA @('rev-parse','HEAD')) -cne $third) { throw 'updater A slot differs from third commit' }
 
     [IO.File]::AppendAllText((Join-Path $seed 'update-marker.txt'), "four`n", (New-Object Text.UTF8Encoding($false)))
     Invoke-TestGit $seed @('commit','-am','fourth') | Out-Null
     Invoke-TestGit $seed @('push','origin',$branch) | Out-Null
     $fourth = Invoke-TestGit $seed @('rev-parse','HEAD')
-    & (Join-Path $targetB 'infra\lan\client\Stage-LanClientUpdate.ps1') -CheckoutRoot $targetB `
+    & (Join-Path $targetA 'infra\lan\client\Stage-LanClientUpdate.ps1') -CheckoutRoot $targetA `
         -CurrentCommit $third -TargetCommit $fourth -RepositoryUrl 'https://github.com/Teremoq/teremoq' `
         -RepositoryRef $repositoryRef
-    if ((Invoke-TestGit $target @('rev-parse','HEAD')) -cne $fourth) { throw 'existing updater A slot was not reused by fast-forward' }
+    if ((Invoke-TestGit $target @('rev-parse','HEAD')) -cne $fourth) { throw 'existing updater B slot was not reused by fast-forward' }
     if (@(Get-ChildItem -LiteralPath $clientRoot -Directory -Filter 'checkout-updater-*').Count -ne 2) {
         throw 'updater created more than the bounded A/B checkouts'
     }

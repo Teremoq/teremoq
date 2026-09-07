@@ -44,34 +44,58 @@ if (-not $current.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringC
 
 $slotA = Join-Path $root 'checkout-updater-a'
 $slotB = Join-Path $root 'checkout-updater-b'
-$target = if ($current.Equals($slotA, [StringComparison]::OrdinalIgnoreCase)) { $slotB } else { $slotA }
-if ($target.Equals($current, [StringComparison]::OrdinalIgnoreCase)) { throw 'inactive updater slot selection failed' }
-
-if (-not (Test-Path -LiteralPath $target)) {
-    $branch = Get-TeremoqRepositoryBranchName -RepositoryRef $RepositoryRef
-    $temporary = Join-Path $root ('.checkout-updater-stage-' + [Guid]::NewGuid().ToString('N'))
-    try {
-        Invoke-TeremoqGit -CheckoutRoot $root -Arguments @(
-            'clone','--local','--no-hardlinks','--origin','origin','--branch',$branch,
-            '--single-branch','--no-tags',$current,$temporary
-        ) | Out-Null
-        Invoke-TeremoqGit -CheckoutRoot $temporary -Arguments @('remote','set-url','origin',$RepositoryUrl) | Out-Null
-        foreach ($setting in @(@('core.autocrlf','false'), @('core.eol','lf'), @('core.safecrlf','true'))) {
-            Invoke-TeremoqGit -CheckoutRoot $temporary -Arguments @('config','--local',$setting[0],$setting[1]) | Out-Null
-        }
-        [void](Get-TeremoqGitCheckoutContext -CheckoutRoot $temporary -StateContext (New-ValidationState $CurrentCommit) -RequireExactHead)
-        [IO.Directory]::Move($temporary, $target)
-    } finally {
-        if (Test-Path -LiteralPath $temporary) {
-            Remove-TeremoqBoundedRegularTree -Path $temporary -ExpectedParent $root
-        }
-    }
+if ($current.Equals($slotA, [StringComparison]::OrdinalIgnoreCase)) {
+    $targets = @($slotB)
+} elseif ($current.Equals($slotB, [StringComparison]::OrdinalIgnoreCase)) {
+    $targets = @($slotA)
+} else {
+    $targets = @($slotA, $slotB)
 }
 
-$targetHead = Invoke-TeremoqGit -CheckoutRoot $target -Arguments @('rev-parse','HEAD')
-if ($targetHead -cnotmatch '^[0-9a-f]{40}$') { throw 'inactive updater slot has no exact Git commit' }
-[void](Get-TeremoqGitCheckoutContext -CheckoutRoot $target -StateContext (New-ValidationState $targetHead) -RequireExactHead)
-$updated = Invoke-TeremoqGitFastForwardUpdate -CheckoutRoot $target -RepositoryUrl $RepositoryUrl `
-    -RepositoryRef $RepositoryRef -RepositorySubdirectory 'infra/lan' -CurrentCommit $targetHead -ExpectedCommit $TargetCommit
-[void](Get-TeremoqGitCheckoutContext -CheckoutRoot $updated.CheckoutRoot -StateContext (New-ValidationState $TargetCommit) -RequireExactHead)
-Write-Output ("update staged in inactive A/B slot at commit={0}; slot={1}" -f $updated.Head, [IO.Path]::GetFileName($target))
+$lastFailure = $null
+foreach ($target in $targets) {
+    if ($target.Equals($current, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'inactive updater slot selection failed'
+    }
+    try {
+        if (-not (Test-Path -LiteralPath $target)) {
+            $branch = Get-TeremoqRepositoryBranchName -RepositoryRef $RepositoryRef
+            $temporary = Join-Path $root ('.checkout-updater-stage-' + [Guid]::NewGuid().ToString('N'))
+            try {
+                Invoke-TeremoqGit -CheckoutRoot $root -Arguments @(
+                    'clone','--local','--no-hardlinks','--origin','origin','--branch',$branch,
+                    '--single-branch','--no-tags',$current,$temporary
+                ) | Out-Null
+                Invoke-TeremoqGit -CheckoutRoot $temporary -Arguments @('remote','set-url','origin',$RepositoryUrl) | Out-Null
+                foreach ($setting in @(@('core.autocrlf','false'), @('core.eol','lf'), @('core.safecrlf','true'))) {
+                    Invoke-TeremoqGit -CheckoutRoot $temporary -Arguments @('config','--local',$setting[0],$setting[1]) | Out-Null
+                }
+                [void](Get-TeremoqGitCheckoutContext -CheckoutRoot $temporary -StateContext (New-ValidationState $CurrentCommit) -RequireExactHead)
+                [IO.Directory]::Move($temporary, $target)
+            } finally {
+                if (Test-Path -LiteralPath $temporary) {
+                    Remove-TeremoqBoundedRegularTree -Path $temporary -ExpectedParent $root
+                }
+            }
+        }
+
+        $targetHead = Invoke-TeremoqGit -CheckoutRoot $target -Arguments @('rev-parse','HEAD')
+        if ($targetHead -cnotmatch '^[0-9a-f]{40}$') { throw 'inactive updater slot has no exact Git commit' }
+        [void](Get-TeremoqGitCheckoutContext -CheckoutRoot $target -StateContext (New-ValidationState $targetHead) -RequireExactHead)
+        $updated = Invoke-TeremoqGitFastForwardUpdate -CheckoutRoot $target -RepositoryUrl $RepositoryUrl `
+            -RepositoryRef $RepositoryRef -RepositorySubdirectory 'infra/lan' -CurrentCommit $targetHead -ExpectedCommit $TargetCommit
+        [void](Get-TeremoqGitCheckoutContext -CheckoutRoot $updated.CheckoutRoot -StateContext (New-ValidationState $TargetCommit) -RequireExactHead)
+        [ordered]@{
+            schema_version = 1
+            status = 'staged'
+            commit = $updated.Head
+            slot = [IO.Path]::GetFileName($target)
+        } | ConvertTo-Json -Compress
+        return
+    } catch {
+        $lastFailure = $_
+        if ($targets.Count -eq 1) { throw }
+    }
+}
+if ($null -ne $lastFailure) { throw $lastFailure }
+throw 'no inactive updater slot was available'

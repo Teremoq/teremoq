@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ChannelRequestError, actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validateEventAck, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { ChannelRequestError, actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, parseStagedUpdateResult, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validateEventAck, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -167,6 +167,30 @@ try {
     "updater slot A did not select slot B");
   expect(path.basename(updaterCandidateCheckout({ checkout: path.join(root, "checkout-updater-b") })) === "checkout-updater-a",
     "updater slot B did not select slot A");
+  fs.mkdirSync(path.join(root, "checkout-updater-a"), { recursive: true });
+  const targetCommit = "4".repeat(40);
+  const staged = parseStagedUpdateResult(JSON.stringify({
+    schema_version: 1, status: "staged", commit: targetCommit, slot: "checkout-updater-a",
+  }), { checkout: path.join(root, "legacy") }, targetCommit);
+  expect(staged.commit === targetCommit && path.basename(staged.checkout) === "checkout-updater-a",
+    "strict staged updater result was not accepted");
+  for (const invalid of [
+    "not-json",
+    JSON.stringify({ schema_version: 1, status: "staged", commit: targetCommit, slot: "checkout-updater-c" }),
+    JSON.stringify({ schema_version: 1, status: "staged", commit: "5".repeat(40), slot: "checkout-updater-a" }),
+  ]) {
+    let rejected = false;
+    try { parseStagedUpdateResult(invalid, { checkout: path.join(root, "legacy") }, targetCommit); }
+    catch { rejected = true; }
+    expect(rejected, "invalid staged updater result was accepted");
+  }
+  let activeSlotRejected = false;
+  try {
+    parseStagedUpdateResult(JSON.stringify({
+      schema_version: 1, status: "staged", commit: targetCommit, slot: "checkout-updater-a",
+    }), { checkout: path.join(root, "checkout-updater-a") }, targetCommit);
+  } catch { activeSlotRejected = true; }
+  expect(activeSlotRejected, "staged updater selected the active checkout");
 } finally {
   if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
   else process.env.LOCALAPPDATA = originalLocalAppData;
