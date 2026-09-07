@@ -62,6 +62,10 @@ SENSITIVE_PATTERNS = (
 )
 
 
+class EventMessageError(ValueError):
+    """A valid client event whose diagnostic text violates content policy."""
+
+
 def fail(message: str) -> None:
     raise ValueError(message)
 
@@ -514,7 +518,10 @@ class ChannelState:
             fail("event counters are invalid")
         if request["action"] not in ACTIONS or request["status"] not in STATUSES:
             fail("event action or status is invalid")
-        bounded_text(request["message"], "event message", MAX_MESSAGE)
+        try:
+            bounded_text(request["message"], "event message", MAX_MESSAGE)
+        except ValueError as error:
+            raise EventMessageError("event message rejected") from error
         with self.lock:
             self._verify_root()
             self._rate_limit("client")
@@ -523,6 +530,25 @@ class ChannelState:
             if request["sequence"] > len(tasks):
                 fail("event references an unknown task")
             task = tasks[request["sequence"] - 1]
+            if request["event"] == task["last_event"] and task["last_event"] > 0:
+                try:
+                    lines = read_regular_at(
+                        self.root_descriptor, "channel-events.jsonl", MAX_EVENT_LOG, 0o600
+                    ).decode("utf-8", errors="strict").splitlines()
+                    recorded = decode_json_object(lines[-1].encode("utf-8"), "recorded event")
+                except (FileNotFoundError, IndexError, UnicodeDecodeError):
+                    fail("recorded event replay evidence is unavailable")
+                if recorded != request:
+                    fail("event replay differs from the recorded event")
+                return {
+                    "schema_version": SCHEMA_VERSION,
+                    "sequence": request["sequence"],
+                    "event": request["event"],
+                    "accepted": True,
+                    "cancel_requested": task["cancel_requested"],
+                    "source_commit": self.source_commit,
+                    "client_commit": self.document["client_commit"],
+                }
             if task["action"] != request["action"] or task["completed"] or request["event"] != task["last_event"] + 1:
                 fail("event does not match the active task")
             if request["status"] in ("complete", "blocked", "failed"):
@@ -710,6 +736,8 @@ def make_handler(state: ChannelState):
                 else:
                     fail("path rejected")
                 self._response(200, response)
+            except EventMessageError:
+                self._response(400)
             except Exception:
                 self._response(403)
 

@@ -161,14 +161,24 @@ with tempfile.TemporaryDirectory() as temporary:
         assert task["action"] == "prepare-client"
         for event, status in ((1, "started"), (2, "complete")):
             time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
-            result = post(url + "/v1/event", {**identity, "sequence": 1, "event": event, "action": "prepare-client", "status": status, "message": status}, client_context, {"X-Teremoq-Session": session})
+            event_request = {**identity, "sequence": 1, "event": event, "action": "prepare-client", "status": status, "message": status}
+            result = post(url + "/v1/event", event_request, client_context, {"X-Teremoq-Session": session})
             assert result["accepted"] is True
+        time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+        replay = post(url + "/v1/event", event_request, client_context, {"X-Teremoq-Session": session})
+        assert replay["accepted"] is True
         time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
         try:
             post(url + "/v1/event", {**identity, "sequence": 1, "event": 3, "action": "prepare-client", "status": "complete", "message": "replay"}, client_context, {"X-Teremoq-Session": session})
             raise AssertionError("completed task replay was accepted")
         except urllib.error.HTTPError as error:
             assert error.code == 403
+        time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+        try:
+            post(url + "/v1/event", {**identity, "sequence": 1, "event": 3, "action": "prepare-client", "status": "complete", "message": "password=blocked"}, client_context, {"X-Teremoq-Session": session})
+            raise AssertionError("sensitive event message was accepted")
+        except urllib.error.HTTPError as error:
+            assert error.code == 400
     finally:
         server.shutdown()
         server.server_close()

@@ -19,6 +19,7 @@ const TASKKILL_TIMEOUT_MS = 5 * 1000;
 const TERMINATION_TIMEOUT_MS = 15 * 1000;
 const CHANNEL_RETRY_BASE_MS = 250;
 const CHANNEL_RETRY_MAX_MS = 5_000;
+const CHANNEL_RETRY_MAX_ATTEMPTS = 120;
 const WINDOWS_ROOT = "C:\\Windows";
 const PROGRAM_FILES = "C:\\Program Files";
 const LOCAL_ACTION_LABELS = Object.freeze({
@@ -44,16 +45,21 @@ const LOCAL_STAGE_LABELS = Object.freeze({
 function fail(message) { throw new Error(message); }
 function sleep(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
 
+class ChannelRequestError extends Error {
+  constructor(kind, message, statusCode = 0) {
+    super(message);
+    this.name = "ChannelRequestError";
+    this.channelFailure = kind;
+    this.statusCode = statusCode;
+  }
+}
+
 function retryableChannelError(error) {
-  const message = String(error?.message || "");
-  return !message.includes("fingerprint mismatch") &&
-    !message.includes("channel rejected request (4") &&
-    !message.includes("channel returned invalid JSON") &&
-    !message.includes("response exceeds limit");
+  return error instanceof ChannelRequestError && error.channelFailure === "transport";
 }
 
 async function retryChannelOperation(operation, options = {}) {
-  const maxAttempts = options.maxAttempts ?? Number.POSITIVE_INFINITY;
+  const maxAttempts = options.maxAttempts ?? CHANNEL_RETRY_MAX_ATTEMPTS;
   const sleepFn = options.sleepFn ?? sleep;
   let attempt = 0;
   for (;;) {
@@ -72,7 +78,7 @@ async function sendTerminalEventWithFallback(primary, fallback) {
   try {
     return await retryChannelOperation(primary);
   } catch (error) {
-    if (String(error?.message || "") !== "channel rejected request (400)") throw error;
+    if (!(error instanceof ChannelRequestError) || error.channelFailure !== "http" || error.statusCode !== 400) throw error;
     return retryChannelOperation(fallback);
   }
 }
@@ -81,6 +87,7 @@ async function executeTaskSafely(action, context, progress, executor = execute) 
   try {
     return await executor(action, context, progress);
   } catch (error) {
+    if (error?.taskFailure !== true) throw error;
     return { code: -1, signal: "task-error", output: scrub(error?.message || "task failed"), residualPid: null };
   }
 }
@@ -174,12 +181,12 @@ function pinnedAgent(url, expectedFingerprint) {
         const actual = certificate?.raw ? crypto.createHash("sha256").update(certificate.raw).digest("hex") : "";
         if (actual !== expectedFingerprint) {
           socket.destroy();
-          finish(new Error("server certificate fingerprint mismatch"));
+          finish(new ChannelRequestError("identity", "server certificate fingerprint mismatch"));
           return;
         }
         finish(null, socket);
       });
-      socket.once("error", (error) => finish(error));
+      socket.once("error", () => finish(new ChannelRequestError("transport", "channel TLS transport failed")));
       return socket;
   };
   return agent;
@@ -193,16 +200,35 @@ function requestJson(agent, server, route, body, session = "") {
       headers: { "Content-Type": "application/json", "Content-Length": encoded.length, ...(session ? { "X-Teremoq-Session": session } : {}) },
     }, (response) => {
       const chunks = []; let size = 0;
-      response.on("data", (chunk) => { size += chunk.length; if (size > MAX_RESPONSE) response.destroy(new Error("response exceeds limit")); else chunks.push(chunk); });
+      response.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > MAX_RESPONSE) response.destroy(new ChannelRequestError("protocol", "response exceeds limit"));
+        else chunks.push(chunk);
+      });
       response.on("end", () => {
-        if (response.statusCode !== 200) { reject(new Error(`channel rejected request (${response.statusCode})`)); return; }
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { reject(new Error("channel returned invalid JSON")); }
+        if (response.statusCode !== 200) {
+          reject(new ChannelRequestError("http", `channel rejected request (${response.statusCode})`, response.statusCode));
+          return;
+        }
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+        catch { reject(new ChannelRequestError("protocol", "channel returned invalid JSON")); }
       });
     });
-    request.once("timeout", () => request.destroy(new Error("channel request timed out")));
-    request.once("error", reject);
+    request.once("timeout", () => request.destroy(new ChannelRequestError("transport", "channel request timed out")));
+    request.once("error", (error) => reject(error instanceof ChannelRequestError
+      ? error : new ChannelRequestError("transport", "channel transport failed")));
     request.end(encoded);
   });
+}
+
+function validateEventAck(reply, identity, sequence, event) {
+  if (!reply || Object.keys(reply).sort().join(",") !== "accepted,cancel_requested,client_commit,event,schema_version,sequence,source_commit" ||
+      reply.schema_version !== 1 || reply.sequence !== sequence || reply.event !== event || reply.accepted !== true ||
+      typeof reply.cancel_requested !== "boolean" || reply.source_commit !== identity.source_commit ||
+      reply.client_commit !== identity.client_commit) {
+    fail("invalid event acknowledgement");
+  }
+  return reply;
 }
 
 function validatePolledTask(task, identity) {
@@ -898,9 +924,9 @@ async function main() {
     let sendQueue = Promise.resolve();
     const send = (status, message, terminal = false) => {
       const currentEvent = event++;
-      const eventRequest = (eventMessage) => () => channelRequest("/v1/event", {
+      const eventRequest = (eventMessage) => async () => validateEventAck(await channelRequest("/v1/event", {
         ...identity, sequence: task.sequence, event: currentEvent, action: task.action, status, message: eventMessage,
-      }, session);
+      }, session), identity, task.sequence, currentEvent);
       const primary = eventRequest(scrub(message));
       sendQueue = sendQueue.then(() => terminal
         ? sendTerminalEventWithFallback(primary, eventRequest("task terminal status recorded; detailed diagnostic omitted by channel policy"))
@@ -934,7 +960,7 @@ async function main() {
   }
 }
 
-export { actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
+export { ChannelRequestError, actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validateEventAck, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });

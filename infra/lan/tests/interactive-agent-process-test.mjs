@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { ChannelRequestError, actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validateEventAck, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -46,23 +46,31 @@ expect(actionTimeoutMs("prepare-client") === 15 * 60 * 1000,
 for (const action of ["update-client", "preflight", "player-1", "load-5", "load-10", "load-25", "wifi-observe", "collect", "stop"]) {
   expect(actionTimeoutMs(action) === 5 * 60 * 1000, `${action} timeout was broadened`);
 }
-const isolatedFailure = await executeTaskSafely("prepare-client", {}, async () => ({}), async () => {
-  throw new Error("simulated task failure");
-});
+const expectedTaskFailure = new Error("simulated task failure");
+expectedTaskFailure.taskFailure = true;
+const isolatedFailure = await executeTaskSafely("prepare-client", {}, async () => ({}), async () => { throw expectedTaskFailure; });
 expect(isolatedFailure.code === -1 && isolatedFailure.signal === "task-error" &&
   isolatedFailure.output === "simulated task failure",
 "task exception escaped and would close the interactive channel");
+let integrityFailureRejected = false;
+try {
+  await executeTaskSafely("prepare-client", {}, async () => ({}), async () => {
+    throw new Error("checkout integrity failure");
+  });
+} catch { integrityFailureRejected = true; }
+expect(integrityFailureRejected, "integrity failure was downgraded to a recoverable task error");
 let transientAttempts = 0;
 const recoveredTransport = await retryChannelOperation(async () => {
   transientAttempts += 1;
-  if (transientAttempts < 3) throw new Error("socket reset");
+  if (transientAttempts < 3) throw new ChannelRequestError("transport", "socket reset");
   return "connected";
 }, { maxAttempts: 3, sleepFn: async () => {} });
 expect(recoveredTransport === "connected" && transientAttempts === 3,
   "temporary channel failure did not reconnect with the existing session");
-expect(retryableChannelError(new Error("socket reset")) &&
-  !retryableChannelError(new Error("channel rejected request (403)")) &&
-  !retryableChannelError(new Error("server certificate fingerprint mismatch")),
+expect(retryableChannelError(new ChannelRequestError("transport", "socket reset")) &&
+  !retryableChannelError(new ChannelRequestError("http", "channel rejected request (503)", 503)) &&
+  !retryableChannelError(new ChannelRequestError("identity", "server certificate fingerprint mismatch")) &&
+  !retryableChannelError(new Error("socket reset")),
 "channel retry policy broadened authentication or identity failures");
 const multibyteDiagnostic = truncateUtf8Tail(`prefix-${"á".repeat(20_000)}`);
 expect(Buffer.byteLength(multibyteDiagnostic, "utf8") <= 16 * 1024 &&
@@ -70,7 +78,7 @@ expect(Buffer.byteLength(multibyteDiagnostic, "utf8") <= 16 * 1024 &&
 "multibyte terminal diagnostic was not truncated on a UTF-8 boundary");
 let terminalFallbackCalls = 0;
 const terminalFallback = await sendTerminalEventWithFallback(
-  async () => { terminalFallbackCalls += 1; throw new Error("channel rejected request (400)"); },
+  async () => { terminalFallbackCalls += 1; throw new ChannelRequestError("http", "channel rejected request (400)", 400); },
   async () => { terminalFallbackCalls += 1; return "accepted"; },
 );
 expect(terminalFallback === "accepted" && terminalFallbackCalls === 2,
@@ -79,12 +87,29 @@ let forbiddenFallbackCalls = 0;
 let forbiddenFallbackRejected = false;
 try {
   await sendTerminalEventWithFallback(
-    async () => { throw new Error("channel rejected request (403)"); },
+    async () => { throw new ChannelRequestError("http", "channel rejected request (403)", 403); },
     async () => { forbiddenFallbackCalls += 1; return "accepted"; },
   );
 } catch { forbiddenFallbackRejected = true; }
 expect(forbiddenFallbackRejected && forbiddenFallbackCalls === 0,
   "authentication rejection incorrectly used the terminal diagnostic fallback");
+const eventIdentity = { source_commit: "1".repeat(40), client_commit: "2".repeat(40) };
+const validEventAck = {
+  schema_version: 1, sequence: 7, event: 3, accepted: true, cancel_requested: false,
+  source_commit: eventIdentity.source_commit, client_commit: eventIdentity.client_commit,
+};
+expect(validateEventAck(validEventAck, eventIdentity, 7, 3) === validEventAck,
+  "valid event acknowledgement was rejected");
+for (const invalidAck of [
+  { ...validEventAck, accepted: 1 },
+  { ...validEventAck, cancel_requested: "false" },
+  { ...validEventAck, event: 4 },
+  { ...validEventAck, extra: true },
+]) {
+  let rejected = false;
+  try { validateEventAck(invalidAck, eventIdentity, 7, 3); } catch { rejected = true; }
+  expect(rejected, "invalid event acknowledgement was accepted");
+}
 const nodeSha256 = crypto.createHash("sha256").update(fs.readFileSync(process.execPath)).digest("hex");
 const agentArgv = [
   "--server", "https://192.168.1.130:18443", "--fingerprint", "1".repeat(64),

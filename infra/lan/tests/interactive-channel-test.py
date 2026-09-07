@@ -55,6 +55,16 @@ with tempfile.TemporaryDirectory() as temporary:
     first = {**identity, "sequence": 1, "event": 1, "action": "prepare-client", "status": "started", "message": "preparation started"}
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
     assert state.event(first, session)["accepted"] is True
+    event_log_size = (root / "channel-events.jsonl").stat().st_size
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    assert state.event(first, session)["accepted"] is True
+    assert (root / "channel-events.jsonl").stat().st_size == event_log_size
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    try:
+        state.event({**first, "message": "modified replay"}, session)
+        raise AssertionError("modified event replay accepted")
+    except ValueError:
+        pass
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
     stop_request = {**identity, "management_sequence": 2, "request_id": "2" * 32, "action": "stop", "parameters": {}}
     cancellation = state.enqueue(stop_request, management)
@@ -62,6 +72,10 @@ with tempfile.TemporaryDirectory() as temporary:
     complete = {**first, "event": 2, "status": "failed", "message": "bounded diagnostic"}
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
     assert state.event(complete, session)["cancel_requested"] is True
+    completed_log_size = (root / "channel-events.jsonl").stat().st_size
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    assert state.event(complete, session)["cancel_requested"] is True
+    assert (root / "channel-events.jsonl").stat().st_size == completed_log_size
     time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
     try:
         state.enqueue(management_request, management)

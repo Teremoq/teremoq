@@ -15,9 +15,11 @@ closed actions `update-client`, `prepare-client`, `preflight`, `player-1`, `load
 
 Task failures are isolated from the control loop: the client reports a failed
 terminal event and returns to waiting for the next approved action. Temporary
-network errors retry with bounded backoff and the existing in-memory session;
-authentication, identity, fingerprint and malformed-response errors fail
-closed instead of being retried.
+transport errors retry with bounded attempts and backoff using the existing
+in-memory session. The server accepts only a byte-equivalent replay of the
+latest event and does not append it twice, so a lost acknowledgement cannot
+break the loop. Authentication, identity, fingerprint, HTTP and
+malformed-response errors fail closed instead of being retried.
 
 Terminal diagnostics are scrubbed and bounded by UTF-8 bytes, not JavaScript
 characters. If the server rejects a detailed terminal diagnostic under its

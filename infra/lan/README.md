@@ -312,9 +312,11 @@ their bounded progress use this channel without repeating the bootstrap.
 
 A workload or build failure is reported as a failed task and does not close the
 interactive agent. Temporary transport failures are retried with bounded
-backoff while the authenticated session remains in memory. Authentication,
-certificate-fingerprint, identity and malformed-response failures remain fatal
-and are never retried as connectivity errors.
+attempts and backoff while the authenticated session remains in memory. An
+exact replay of the latest event is accepted without appending it again, which
+recovers a lost acknowledgement without broadening the sequence contract.
+Authentication, certificate-fingerprint, identity, HTTP and malformed-response
+failures remain fatal and are never retried as connectivity errors.
 
 Detailed terminal output is scrubbed and truncated on a UTF-8 byte boundary.
 When that detail alone is rejected by the server content policy, the same
