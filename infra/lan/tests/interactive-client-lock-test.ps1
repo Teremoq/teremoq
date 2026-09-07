@@ -74,6 +74,12 @@ try {
         $null -ne (Get-TeremoqSafeAgentOutput -Line '[Teremoq] Paso 1 - Preparar y verificar el cliente: token=secret')) {
         throw 'Arbitrary agent output was relayed to the client console'
     }
+    $safeError = 'Teremoq LAN agent: channel rejected request (400)'
+    if ((Get-TeremoqSafeAgentError -Line $safeError) -cne $safeError -or
+        $null -ne (Get-TeremoqSafeAgentError -Line 'token=secret') -or
+        $null -ne (Get-TeremoqSafeAgentError -Line ('x' * 513))) {
+        throw 'Agent fatal error console policy is not closed and bounded'
+    }
 
     $argvCanary = Join-Path $root 'argv-canary.mjs'
     $argvCanarySource = @'
@@ -147,5 +153,9 @@ if (required.size !== 0) process.exit(22);
     }
     Write-Output 'lan-interactive-client-lock-test: PASS'
 } finally {
-    if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+    for ($attempt = 0; $attempt -lt 20 -and (Test-Path -LiteralPath $root); $attempt++) {
+        try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop }
+        catch { Start-Sleep -Milliseconds 100 }
+    }
+    if (Test-Path -LiteralPath $root) { throw 'Interactive client lock fixture cleanup did not complete' }
 }

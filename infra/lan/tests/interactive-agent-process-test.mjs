@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, terminateProcessTree, updaterCandidateCheckout, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -64,6 +64,27 @@ expect(retryableChannelError(new Error("socket reset")) &&
   !retryableChannelError(new Error("channel rejected request (403)")) &&
   !retryableChannelError(new Error("server certificate fingerprint mismatch")),
 "channel retry policy broadened authentication or identity failures");
+const multibyteDiagnostic = truncateUtf8Tail(`prefix-${"á".repeat(20_000)}`);
+expect(Buffer.byteLength(multibyteDiagnostic, "utf8") <= 16 * 1024 &&
+  !multibyteDiagnostic.includes("\ufffd"),
+"multibyte terminal diagnostic was not truncated on a UTF-8 boundary");
+let terminalFallbackCalls = 0;
+const terminalFallback = await sendTerminalEventWithFallback(
+  async () => { terminalFallbackCalls += 1; throw new Error("channel rejected request (400)"); },
+  async () => { terminalFallbackCalls += 1; return "accepted"; },
+);
+expect(terminalFallback === "accepted" && terminalFallbackCalls === 2,
+  "rejected terminal diagnostic did not fall back to a bounded fixed message");
+let forbiddenFallbackCalls = 0;
+let forbiddenFallbackRejected = false;
+try {
+  await sendTerminalEventWithFallback(
+    async () => { throw new Error("channel rejected request (403)"); },
+    async () => { forbiddenFallbackCalls += 1; return "accepted"; },
+  );
+} catch { forbiddenFallbackRejected = true; }
+expect(forbiddenFallbackRejected && forbiddenFallbackCalls === 0,
+  "authentication rejection incorrectly used the terminal diagnostic fallback");
 const nodeSha256 = crypto.createHash("sha256").update(fs.readFileSync(process.execPath)).digest("hex");
 const agentArgv = [
   "--server", "https://192.168.1.130:18443", "--fingerprint", "1".repeat(64),

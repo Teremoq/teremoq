@@ -68,6 +68,15 @@ async function retryChannelOperation(operation, options = {}) {
   }
 }
 
+async function sendTerminalEventWithFallback(primary, fallback) {
+  try {
+    return await retryChannelOperation(primary);
+  } catch (error) {
+    if (String(error?.message || "") !== "channel rejected request (400)") throw error;
+    return retryChannelOperation(fallback);
+  }
+}
+
 async function executeTaskSafely(action, context, progress, executor = execute) {
   try {
     return await executor(action, context, progress);
@@ -239,14 +248,22 @@ async function receiveNextTask(prefetched, poll) {
   return poll();
 }
 
+function truncateUtf8Tail(value, maximumBytes = MAX_MESSAGE) {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.length <= maximumBytes) return value;
+  let start = encoded.length - maximumBytes;
+  while (start < encoded.length && (encoded[start] & 0xc0) === 0x80) start += 1;
+  return encoded.subarray(start).toString("utf8");
+}
+
 function scrub(value) {
-  return value
+  const sanitized = value
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*/gi, "[private key blocked]")
     .replace(/(authorization:\s*bearer\s+)\S+/gi, "$1[blocked]")
     .replace(/(ghp_|github_pat_)[A-Za-z0-9_]+/g, "[token blocked]")
     .replace(/((?:password|passwd|token|secret|api[_-]?key)\s*[=:]\s*)\S+/gi, "$1[blocked]")
-    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\r\n]*/g, "[local path blocked]")
-    .slice(-MAX_MESSAGE);
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\r\n]*/g, "[local path blocked]");
+  return truncateUtf8Tail(sanitized);
 }
 
 function restrictedEnvironment() {
@@ -879,11 +896,15 @@ async function main() {
     process.stdout.write(`${formatLocalStatus(task.action, "received", task.sequence)}\n`);
     let event = 1;
     let sendQueue = Promise.resolve();
-    const send = (status, message) => {
+    const send = (status, message, terminal = false) => {
       const currentEvent = event++;
-      sendQueue = sendQueue.then(() => retryChannelOperation(() => channelRequest("/v1/event", {
-        ...identity, sequence: task.sequence, event: currentEvent, action: task.action, status, message: scrub(message),
-      }, session)));
+      const eventRequest = (eventMessage) => () => channelRequest("/v1/event", {
+        ...identity, sequence: task.sequence, event: currentEvent, action: task.action, status, message: eventMessage,
+      }, session);
+      const primary = eventRequest(scrub(message));
+      sendQueue = sendQueue.then(() => terminal
+        ? sendTerminalEventWithFallback(primary, eventRequest("task terminal status recorded; detailed diagnostic omitted by channel policy"))
+        : retryChannelOperation(primary));
       return sendQueue;
     };
     const started = await send("started", `${task.action} started`);
@@ -907,13 +928,13 @@ async function main() {
       process.stdout.write("[Teremoq] Cliente actualizado; la sesion segura continua en la nueva version.\n");
       break;
     }
-    await send(result.code === 0 ? "complete" : "failed", `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`);
+    await send(result.code === 0 ? "complete" : "failed", `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`, true);
     process.stdout.write(`${formatLocalStatus(task.action, result.code === 0 ? "complete" : "failed", task.sequence)}\n`);
     if (task.action === "stop") break;
   }
 }
 
-export { actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, terminateProcessTree, updaterCandidateCheckout, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
+export { actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });

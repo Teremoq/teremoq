@@ -35,6 +35,12 @@ function Get-TeremoqSafeAgentOutput([AllowEmptyString()][string]$Line) {
     return $null
 }
 
+function Get-TeremoqSafeAgentError([AllowEmptyString()][string]$Line) {
+    if ($null -eq $Line -or $Line.Length -gt 512) { return $null }
+    if ($Line -cmatch '^Teremoq LAN agent: [\x20-\x7e]{1,480}$') { return $Line }
+    return $null
+}
+
 function Assert-TeremoqNonReparseAncestors([string]$Path) {
     $current = [IO.Path]::GetFullPath($Path)
     while ($current) {
@@ -289,6 +295,7 @@ function Invoke-TeremoqPinnedNodeProcess {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardInput = $true
     $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
     $startInfo.EnvironmentVariables.Clear()
     $childEnvironment = @{
         'SystemRoot' = 'C:\Windows'; 'WINDIR' = 'C:\Windows';
@@ -319,6 +326,7 @@ function Invoke-TeremoqPinnedNodeProcess {
             throw 'Node executable changed after session approval'
         }
         if (-not $process.Start()) { throw 'Pinned Node process did not start' }
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         $process.StandardInput.WriteLine($InputLine)
         $process.StandardInput.Dispose()
         while (($line = $process.StandardOutput.ReadLine()) -ne $null) {
@@ -333,6 +341,13 @@ function Invoke-TeremoqPinnedNodeProcess {
             }
         }
         $process.WaitForExit()
+        $stderrText = $stderrTask.Result
+        if ($process.ExitCode -ne 0) {
+            foreach ($stderrLine in @($stderrText -split "`r?`n")) {
+                $safeError = Get-TeremoqSafeAgentError -Line $stderrLine
+                if ($null -ne $safeError) { Write-Warning $safeError }
+            }
+        }
         return [int]$process.ExitCode
     } finally { $process.Dispose() }
 }

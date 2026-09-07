@@ -316,6 +316,11 @@ backoff while the authenticated session remains in memory. Authentication,
 certificate-fingerprint, identity and malformed-response failures remain fatal
 and are never retried as connectivity errors.
 
+Detailed terminal output is scrubbed and truncated on a UTF-8 byte boundary.
+When that detail alone is rejected by the server content policy, the same
+terminal event is retried once with a fixed minimal diagnostic so the task can
+close without losing the control loop.
+
 ## 6. Executable activation and stop
 
 Prepare run-owned state and private copies of the command/authorization

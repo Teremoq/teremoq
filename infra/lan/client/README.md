@@ -19,6 +19,12 @@ network errors retry with bounded backoff and the existing in-memory session;
 authentication, identity, fingerprint and malformed-response errors fail
 closed instead of being retried.
 
+Terminal diagnostics are scrubbed and bounded by UTF-8 bytes, not JavaScript
+characters. If the server rejects a detailed terminal diagnostic under its
+content policy, the client retries the same event once with a fixed minimal
+message and keeps polling when that event is accepted. A fatal agent error is
+shown locally only through the launcher's bounded ASCII diagnostic filter.
+
 `update-client` carries only the fixed official repository/ref and an exact
 reviewed target commit. It alternates the bounded `checkout-updater-a` and
 `checkout-updater-b` locations, requires a fast-forward update, and preserves
