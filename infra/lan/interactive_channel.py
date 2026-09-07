@@ -454,11 +454,25 @@ def revoke_start_authorization(arguments: argparse.Namespace, server_ip: str, cl
         expected = expected_start_authorization(arguments, server_ip, client_ip)
         if document != expected:
             fail("authorization cleanup identity differs from exact activation evidence")
-        current_metadata = os.stat(authorization.name, dir_fd=descriptor, follow_symlinks=False)
-        if ((current_metadata.st_dev, current_metadata.st_ino) !=
-                (verified_metadata.st_dev, verified_metadata.st_ino)):
-            fail("authorization changed before cleanup")
-        os.unlink(authorization.name, dir_fd=descriptor)
+        quarantine = f".{authorization.name}.revoke-{secrets.token_hex(16)}"
+        os.rename(
+            authorization.name, quarantine,
+            src_dir_fd=descriptor, dst_dir_fd=descriptor,
+        )
+        quarantined_payload, quarantined_metadata = read_regular_at_with_identity(
+            descriptor, quarantine, 8192, 0o600,
+        )
+        if ((quarantined_metadata.st_dev, quarantined_metadata.st_ino) !=
+                (verified_metadata.st_dev, verified_metadata.st_ino)
+                or not hmac.compare_digest(quarantined_payload, payload)):
+            fail(f"authorization changed during cleanup; preserved as {quarantine}")
+        os.unlink(quarantine, dir_fd=descriptor)
+        try:
+            os.stat(authorization.name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            fail("authorization path was recreated during cleanup")
         os.fsync(descriptor)
     finally:
         os.close(descriptor)

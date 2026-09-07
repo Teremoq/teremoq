@@ -302,27 +302,34 @@ m.main()
                 os.close(cleanup_descriptor)
 
     saved_authorization = authorization_path.with_name("authorization.verified")
-    original_identity_read = channel.read_regular_at_with_identity
-    replacement_written = False
+    original_rename = channel.os.rename
+    replacement_moved = [False]
 
-    def replace_after_verified_read(directory, name, maximum, mode=None):
-        nonlocal_result = original_identity_read(directory, name, maximum, mode)
-        authorization_path.rename(saved_authorization)
-        authorization_path.write_text("{}\n", encoding="utf-8")
-        authorization_path.chmod(0o600)
-        return nonlocal_result
+    def replace_at_atomic_move(source_name, destination_name, **keywords):
+        if source_name == authorization_path.name and not replacement_moved[0]:
+            original_rename(source_name, saved_authorization.name, **keywords)
+            directory = keywords["src_dir_fd"]
+            foreign = os.open(source_name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=directory)
+            try:
+                os.write(foreign, b"{}\n")
+            finally:
+                os.close(foreign)
+            replacement_moved[0] = True
+        return original_rename(source_name, destination_name, **keywords)
 
-    channel.read_regular_at_with_identity = replace_after_verified_read
+    channel.os.rename = replace_at_atomic_move
     try:
         try:
             channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
             raise AssertionError("replaced authorization was deleted")
         except ValueError:
-            replacement_written = authorization_path.exists()
+            pass
     finally:
-        channel.read_regular_at_with_identity = original_identity_read
-    assert replacement_written and saved_authorization.exists()
-    authorization_path.unlink()
+        channel.os.rename = original_rename
+    quarantined = list(root.glob(".authorization.json.revoke-*"))
+    assert replacement_moved[0] and saved_authorization.exists() and len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == "{}\n"
+    quarantined[0].unlink()
     saved_authorization.rename(authorization_path)
     channel.revoke_start_authorization(evidence, "192.168.77.10", "192.168.77.20")
     assert not authorization_path.exists()
