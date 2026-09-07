@@ -49,6 +49,34 @@ describe("aislamiento completo de configuración npm", () => {
     expect(Object.hasOwn(env, "Path")).toBe(false);
   });
 
+  it("mantiene las raíces Windows canónicas y saca la caché de PowerShell del checkout", () => {
+    const { root, paths } = isolationFixture();
+    const env = buildIsolatedNpmEnvironment({
+      PATH: "C:\\approved-node;C:\\approved-git",
+      SystemDrive: "C:",
+      ProgramData: "C:\\ProgramData",
+    }, paths);
+    expect(env.SystemDrive).toBe("C:");
+    expect(env.ProgramData).toBe("C:\\ProgramData");
+    expect(env.PSModuleAnalysisCachePath).toBe(join(
+      paths.localAppData, "Microsoft", "Windows", "PowerShell", "ModuleAnalysisCache",
+    ));
+    expect(env.PSModuleAnalysisCachePath.startsWith(root)).toBe(true);
+    expect(env.PSModuleAnalysisCachePath).not.toContain("%SystemDrive%");
+  });
+
+  it("rechaza raíces compartidas Windows no canónicas", () => {
+    const { paths } = isolationFixture();
+    expect(() => buildIsolatedNpmEnvironment({
+      SystemDrive: "D:",
+      ProgramData: "D:\\ProgramData",
+    }, paths)).toThrow("SystemDrive difiere");
+    expect(() => buildIsolatedNpmEnvironment({
+      SystemDrive: "C:",
+      ProgramData: "%SystemDrive%\\ProgramData",
+    }, paths)).toThrow("ProgramData difiere");
+  });
+
   it("sustituye HOME/perfiles/config global hostil y no hereda credenciales", () => {
     const { root, paths } = isolationFixture();
     const hostile = join(root, "hostile-global.npmrc");

@@ -6,6 +6,16 @@ export function buildIsolatedNpmEnvironment(processEnvironment, isolation) {
   const env = Object.create(null);
   const executablePath = processEnvironment.PATH ?? processEnvironment.Path;
   if (typeof executablePath === "string") env.PATH = executablePath;
+  const windowsSharedRoots = [
+    ["SystemDrive", "C:"],
+    ["ProgramData", "C:\\ProgramData"],
+  ];
+  for (const [key, expected] of windowsSharedRoots) {
+    const value = processEnvironment[key];
+    if (value === undefined) continue;
+    if (value !== expected) throw new Error(`${key} difiere de la ruta Windows revisada`);
+    env[key] = value;
+  }
   for (const key of [
     "SystemRoot", "SYSTEMROOT", "ComSpec", "PATHEXT",
     "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
@@ -23,6 +33,9 @@ export function buildIsolatedNpmEnvironment(processEnvironment, isolation) {
     USERPROFILE: isolation.userProfile,
     APPDATA: isolation.appData,
     LOCALAPPDATA: isolation.localAppData,
+    PSModuleAnalysisCachePath: join(
+      isolation.localAppData, "Microsoft", "Windows", "PowerShell", "ModuleAnalysisCache",
+    ),
     npm_config_cache: isolation.cache,
     npm_config_userconfig: isolation.userConfig,
     NPM_CONFIG_USERCONFIG: isolation.userConfig,
