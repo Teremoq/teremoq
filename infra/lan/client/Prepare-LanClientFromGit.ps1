@@ -76,6 +76,7 @@ $stateParent = Split-Path -Parent $state
 [void](Get-TeremoqNonReparseDirectoryPath -Path $stateParent)
 Assert-TeremoqRootsSeparated -CheckoutRoot $checkout.CheckoutRoot -StateRoot $state
 $layout = Initialize-TeremoqLanClientLayout -StateRoot $state
+$candidateRecovery = Reset-TeremoqLanUnconfirmedCandidate -StateRoot $state
 $builder = Assert-TeremoqNonReparseFilePath -Path (Join-Path $checkout.CheckoutRoot 'supervisor-web\lan-player\Build-LanPlayerFromGit.ps1')
 $hostPath = (Get-Process -Id $PID).Path
 if (-not $hostPath -or -not $hostPath.EndsWith('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) {
@@ -125,6 +126,9 @@ try {
     }
     Write-Output ("LAN client candidate activated pending health: updater={0}, player={1}, build={2}." -f `
         $ExpectedCommit.Substring(0, 8), $parsed.Receipt.player_identity, $parsed.Receipt.status)
+    if ($candidateRecovery.Status -cne 'clean') {
+        Write-Output ("Recovered prior unconfirmed LAN client state: {0}." -f $candidateRecovery.Status)
+    }
 } finally {
     if (Test-Path -LiteralPath $receiptPath) { Remove-Item -LiteralPath $receiptPath -Force -ErrorAction SilentlyContinue }
 }

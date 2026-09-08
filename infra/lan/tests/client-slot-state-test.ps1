@@ -6,12 +6,13 @@ Set-StrictMode -Version 3.0
 . (Join-Path $PSScriptRoot '..\client\Client-Slot-State.ps1')
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('teremoq-lan-slots-' + [Guid]::NewGuid().ToString('N'))
+$initialRoot = Join-Path ([IO.Path]::GetTempPath()) ('teremoq-lan-initial-' + [Guid]::NewGuid().ToString('N'))
 $utf8 = New-Object Text.UTF8Encoding($false)
 $hash = 'a' * 64
 
 function New-FixtureSlot {
-    param([string]$Commit, [string]$Tree, [string]$Lock)
-    $layout = Initialize-TeremoqLanClientLayout -StateRoot $root
+    param([string]$Commit, [string]$Tree, [string]$Lock, [string]$StateRoot = $root)
+    $layout = Initialize-TeremoqLanClientLayout -StateRoot $StateRoot
     if (-not (Test-Path -LiteralPath (Join-Path $layout.ConfigRoot 'public-identity'))) {
         [void][IO.Directory]::CreateDirectory((Join-Path $layout.ConfigRoot 'public-identity'))
         [IO.File]::WriteAllText((Join-Path $layout.ConfigRoot 'LAN-CONFIG.json'), "{}`n", $utf8)
@@ -94,6 +95,54 @@ try {
         throw 'updater-only update retained an obsolete updater version'
     }
 
+    $staged = New-FixtureSlot -Commit ('6' * 40) -Tree ('7' * 40) -Lock ('8' * 64)
+    [void](Stage-TeremoqLanClientSlot -StateRoot $root -Record $staged)
+    $recovered = Reset-TeremoqLanUnconfirmedCandidate -StateRoot $root
+    if ($recovered.Status -cne 'discarded-staged' -or
+        (Get-TeremoqActiveLanClientSlot -StateRoot $root).Record.slot_id -cne $third.slot_id -or
+        (Test-Path -LiteralPath (Join-Path $root $staged.version_relative_path))) {
+        throw 'staged candidate recovery did not preserve the active slot'
+    }
+
+    $interrupted = New-FixtureSlot -Commit ('d' * 40) -Tree ('7' * 40) -Lock ('8' * 64)
+    [void](Stage-TeremoqLanClientSlot -StateRoot $root -Record $interrupted)
+    Write-TeremoqLanSlotPointer -Path (Join-Path $root 'control\rollback.json') -Record $third
+    $recovered = Reset-TeremoqLanUnconfirmedCandidate -StateRoot $root
+    if ($recovered.Status -cne 'discarded-interrupted-stage' -or
+        (Get-TeremoqActiveLanClientSlot -StateRoot $root).Record.slot_id -cne $third.slot_id -or
+        (Test-Path -LiteralPath (Join-Path $root $interrupted.version_relative_path)) -or
+        (Test-Path -LiteralPath (Join-Path $root 'control\candidate.json')) -or
+        (Test-Path -LiteralPath (Join-Path $root 'control\rollback.json'))) {
+        throw 'interrupted stage recovery did not preserve the active slot'
+    }
+
+    $activated = New-FixtureSlot -Commit ('f' * 40) -Tree ('7' * 40) -Lock ('8' * 64)
+    [void](Stage-TeremoqLanClientSlot -StateRoot $root -Record $activated)
+    [void](Activate-TeremoqLanClientSlot -StateRoot $root)
+    $recovered = Reset-TeremoqLanUnconfirmedCandidate -StateRoot $root
+    if ($recovered.Status -cne 'rolled-back' -or
+        (Get-TeremoqActiveLanClientSlot -StateRoot $root).Record.slot_id -cne $third.slot_id -or
+        (Test-Path -LiteralPath (Join-Path $root $activated.version_relative_path)) -or
+        (Test-Path -LiteralPath (Join-Path $root 'control\candidate.json')) -or
+        (Test-Path -LiteralPath (Join-Path $root 'control\rollback.json'))) {
+        throw 'activated candidate recovery did not restore the previous slot'
+    }
+
+    $initial = New-FixtureSlot -Commit ('2' * 40) -Tree ('a' * 40) -Lock ('b' * 64) -StateRoot $initialRoot
+    [void](Stage-TeremoqLanClientSlot -StateRoot $initialRoot -Record $initial)
+    [void](Activate-TeremoqLanClientSlot -StateRoot $initialRoot)
+    $recovered = Reset-TeremoqLanUnconfirmedCandidate -StateRoot $initialRoot
+    if ($recovered.Status -cne 'initial-candidate-deactivated' -or
+        (Test-Path -LiteralPath (Join-Path $initialRoot 'control\active.json')) -or
+        (Test-Path -LiteralPath (Join-Path $initialRoot 'control\candidate.json')) -or
+        (Test-Path -LiteralPath (Join-Path $initialRoot $initial.version_relative_path)) -or
+        -not (Test-Path -LiteralPath (Join-Path $initialRoot $initial.player_relative_path))) {
+        throw 'initial candidate recovery did not retain only the verified player cache'
+    }
+    if ((Get-TeremoqBoundedFileSha256 -Path $configPath -MaxBytes 4096) -cne $configBefore) {
+        throw 'candidate recovery changed local configuration'
+    }
+
     $lockPath = Join-Path $root 'control\update.lock'
     $heldLock = New-Object IO.FileStream($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
@@ -117,7 +166,8 @@ try {
     try { Stage-TeremoqLanClientSlot -StateRoot $root -Record $tampered | Out-Null; throw 'tampered config was accepted' }
     catch { if ($_.Exception.Message -match 'tampered config was accepted') { throw } }
 
-    Write-Output 'client slot state tests passed: reuse, update, atomic activation, rollback, updater cleanup, verified cache retention, config preservation, locking, interruption recovery, tamper rejection'
+    Write-Output 'client slot state tests passed: reuse, update, atomic activation, rollback, stale candidate recovery, updater cleanup, verified cache retention, config preservation, locking, interruption recovery, tamper rejection'
 } finally {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $initialRoot) { Remove-Item -LiteralPath $initialRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }

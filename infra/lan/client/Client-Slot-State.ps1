@@ -240,6 +240,63 @@ function Write-TeremoqLanSlotPointer {
     Write-TeremoqAtomicUtf8File -Path $Path -Content (ConvertTo-TeremoqLanSlotJson -Record $Record)
 }
 
+function Reset-TeremoqLanUnconfirmedCandidate {
+    param([Parameter(Mandatory = $true)][string]$StateRoot)
+
+    return Invoke-TeremoqLanClientStateLocked -StateRoot $StateRoot -Action {
+        param($layout)
+        $active = Read-TeremoqLanSlotPointer -Path $layout.ActivePointer -AllowMissing
+        $candidate = Read-TeremoqLanSlotPointer -Path $layout.CandidatePointer -AllowMissing
+        $rollback = Read-TeremoqLanSlotPointer -Path $layout.RollbackPointer -AllowMissing
+
+        foreach ($record in @($active, $candidate, $rollback)) {
+            if ($null -ne $record) { [void](Assert-TeremoqLanSlotMaterial -Layout $layout -Record $record) }
+        }
+
+        if ($null -eq $candidate) {
+            if ($null -ne $rollback) { throw 'rollback pointer exists without an unconfirmed candidate' }
+            return [pscustomobject]@{ Status = 'clean'; Record = $active }
+        }
+
+        if ($null -ne $rollback) {
+            if ($null -eq $active -or $rollback.slot_id -ceq $candidate.slot_id) {
+                throw 'unconfirmed LAN client rollback state is ambiguous'
+            }
+            if ($active.slot_id -ceq $rollback.slot_id -and $active.slot_id -cne $candidate.slot_id) {
+                Remove-Item -LiteralPath $layout.RollbackPointer -Force
+                Remove-Item -LiteralPath $layout.CandidatePointer -Force
+                Remove-TeremoqLanClientRecordMaterial -Layout $layout -Record $candidate
+                return [pscustomobject]@{ Status = 'discarded-interrupted-stage'; Record = $candidate; ActiveRecord = $active }
+            }
+            if ($active.slot_id -cne $candidate.slot_id) {
+                throw 'unconfirmed LAN client rollback state is ambiguous'
+            }
+            Write-TeremoqLanSlotPointer -Path $layout.ActivePointer -Record $rollback
+            Remove-Item -LiteralPath $layout.RollbackPointer -Force
+            Remove-Item -LiteralPath $layout.CandidatePointer -Force
+            Remove-TeremoqLanClientRecordMaterial -Layout $layout -Record $candidate
+            return [pscustomobject]@{ Status = 'rolled-back'; Record = $rollback; FailedRecord = $candidate }
+        }
+
+        if ($null -eq $active) {
+            Remove-Item -LiteralPath $layout.CandidatePointer -Force
+            Remove-TeremoqLanClientRecordMaterial -Layout $layout -Record $candidate
+            return [pscustomobject]@{ Status = 'discarded-staged'; Record = $candidate }
+        }
+
+        if ($active.slot_id -ceq $candidate.slot_id) {
+            Remove-Item -LiteralPath $layout.ActivePointer -Force
+            Remove-Item -LiteralPath $layout.CandidatePointer -Force
+            Remove-TeremoqLanClientRecordMaterial -Layout $layout -Record $candidate
+            return [pscustomobject]@{ Status = 'initial-candidate-deactivated'; Record = $candidate }
+        }
+
+        Remove-Item -LiteralPath $layout.CandidatePointer -Force
+        Remove-TeremoqLanClientRecordMaterial -Layout $layout -Record $candidate
+        return [pscustomobject]@{ Status = 'discarded-staged'; Record = $candidate; ActiveRecord = $active }
+    }
+}
+
 function Assert-TeremoqLanSlotMaterial {
     param(
         [Parameter(Mandatory = $true)]$Layout,

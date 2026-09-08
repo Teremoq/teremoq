@@ -57,6 +57,7 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${launc
     -PinScript "${launcher_pin_script}" -LauncherPath "${launcher_under_test}" >/dev/null
 grep -Fq "'-BuildMode','node'" "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq 'Initialize-TeremoqLanClientLayout -StateRoot $state' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
+grep -Fq 'Reset-TeremoqLanUnconfirmedCandidate -StateRoot $state' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq 'Activate-TeremoqLanClientSlot -StateRoot $state' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq 'Invoke-TeremoqBoundedNativeProcess' "${ROOT}/client/Prepare-LanClientFromGit.ps1"
 grep -Fq '[Console]::OutputEncoding = $utf8NoBom' "${REPO_ROOT}/supervisor-web/lan-player/Build-LanPlayerFromGit.ps1"
