@@ -72,6 +72,12 @@ if (-not $activeCheckout.StartsWith($clientRoot + [IO.Path]::DirectorySeparatorC
         [StringComparison]::OrdinalIgnoreCase)) {
     throw 'the active channel checkout is outside the managed Teremoq root'
 }
+$activeAgentPath = [IO.Path]::GetFullPath((Join-Path $activeCheckout 'infra\lan\client\Lan-Interactive-Agent.mjs'))
+$agentPathPattern = '(?i)(?:^|\s)(?:"' + [regex]::Escape($activeAgentPath) + '"|' +
+    [regex]::Escape($activeAgentPath) + ')(?=\s|$)'
+if (-not [regex]::IsMatch($agents[0].CommandLine, $agentPathPattern)) {
+    throw 'the active channel process does not execute the agent from its declared checkout'
+}
 $activeState = [pscustomobject]@{
     StateRoot = Join-Path $clientRoot '.slot-recovery-validation-state'
     Compatibility = [pscustomobject]@{
@@ -100,12 +106,15 @@ foreach ($slotName in @('checkout-updater-a', 'checkout-updater-b')) {
     $head = Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('rev-parse', 'HEAD')
     $branch = Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('symbolic-ref', '--short', 'HEAD')
     $remote = (Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('remote', 'get-url', 'origin')).TrimEnd('/')
+    $remotes = @((Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('remote')) -split "`n" |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     if ($topLevel -cne $slot -or $head -cnotmatch $commitPattern -or
-        $branch -cne 'codex/lan-e2e-integration' -or $remote -cne $repositoryUrl) {
+        $branch -cne 'codex/lan-e2e-integration' -or $remote -cne $repositoryUrl -or
+        $remotes.Count -ne 1 -or $remotes[0] -cne 'origin') {
         throw "managed inactive updater slot has unexpected Git identity: $slotName"
     }
     try {
-        Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('merge-base', '--is-ancestor', $head, $RecoveryCommit) | Out-Null
+        Invoke-TeremoqGit -CheckoutRoot $checkoutRoot -Arguments @('merge-base', '--is-ancestor', $head, $RecoveryCommit) | Out-Null
     } catch {
         throw "managed inactive updater slot is not an ancestor of the recovery commit: $slotName"
     }
