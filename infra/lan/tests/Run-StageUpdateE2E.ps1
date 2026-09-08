@@ -84,7 +84,6 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $blockedSlot 'local-untracked.txt') -PathType Leaf)) {
         throw 'dirty inactive updater slot was modified'
     }
-    Remove-Item -LiteralPath $blockedSlot -Recurse -Force
     $target = Join-Path $clientRoot 'checkout-updater-b'
     if ((Invoke-TestGit $current @('rev-parse','HEAD')) -cne $first) { throw 'current checkout changed during staged update' }
     if ((Invoke-TestGit $target @('rev-parse','HEAD')) -cne $second) { throw 'staged checkout differs from target commit' }
@@ -107,6 +106,10 @@ try {
         -RepositoryRef $repositoryRef
     $targetA = Join-Path $clientRoot 'checkout-updater-a'
     if ((Invoke-TestGit $targetA @('rev-parse','HEAD')) -cne $third) { throw 'updater A slot differs from third commit' }
+    if ((Invoke-TestGit $targetA @('status','--porcelain=v1','--untracked-files=all')) -ne '' -or
+        (Test-Path -LiteralPath (Join-Path $targetA 'local-untracked.txt'))) {
+        throw 'dirty inactive updater slot was not replaced by a verified clean candidate'
+    }
 
     [IO.File]::AppendAllText((Join-Path $seed 'update-marker.txt'), "four`n", (New-Object Text.UTF8Encoding($false)))
     Invoke-TestGit $seed @('commit','-am','fourth') | Out-Null
@@ -122,7 +125,7 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $clientRoot 'local-config-preserved.txt') -PathType Leaf)) {
         throw 'A/B updater changed local configuration'
     }
-    Write-Output 'lan-stage-update-e2e: PASS (bounded updater A/B, ff-only reuse, rollback source and preserved local state)'
+    Write-Output 'lan-stage-update-e2e: PASS (bounded updater A/B, ff-only reuse, dirty inactive recovery, rollback source and preserved local state)'
 } finally {
     $env:LOCALAPPDATA = $oldLocalAppData
     Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue

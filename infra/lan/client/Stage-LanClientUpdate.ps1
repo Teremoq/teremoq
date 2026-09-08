@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 . (Join-Path $PSScriptRoot 'Client-Distribution.ps1')
+. (Join-Path $PSScriptRoot 'Client-Slot-State.ps1')
 
 if ($RepositoryUrl -cne 'https://github.com/Teremoq/teremoq' -or
     $RepositoryRef -cne 'refs/heads/codex/lan-e2e-integration' -or
@@ -53,6 +54,7 @@ if ($current.Equals($slotA, [StringComparison]::OrdinalIgnoreCase)) {
 }
 
 $lastFailure = $null
+$dirtyTargets = New-Object Collections.Generic.List[string]
 foreach ($target in $targets) {
     if ($target.Equals($current, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'inactive updater slot selection failed'
@@ -94,7 +96,49 @@ foreach ($target in $targets) {
         return
     } catch {
         $lastFailure = $_
-        if ($targets.Count -eq 1) { throw }
+        $dirtyInactiveSlot = $_.Exception.Message -ceq 'Git checkout must be clean, including untracked files'
+        if ($dirtyInactiveSlot) {
+            $dirtyTargets.Add($target)
+        }
+        if ($targets.Count -eq 1 -and -not $dirtyInactiveSlot) { throw }
+    }
+}
+
+# A previously inactive managed slot can contain residue from an interrupted
+# build. Prepare and verify its replacement first, then recycle only that slot.
+foreach ($target in $dirtyTargets) {
+    $temporary = Join-Path $root ('.checkout-updater-recycle-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        $branch = Get-TeremoqRepositoryBranchName -RepositoryRef $RepositoryRef
+        Invoke-TeremoqGit -CheckoutRoot $root -Arguments @(
+            'clone','--local','--no-hardlinks','--origin','origin','--branch',$branch,
+            '--single-branch','--no-tags',$current,$temporary
+        ) | Out-Null
+        Invoke-TeremoqGit -CheckoutRoot $temporary -Arguments @('remote','set-url','origin',$RepositoryUrl) | Out-Null
+        foreach ($setting in @(@('core.autocrlf','false'), @('core.eol','lf'), @('core.safecrlf','true'))) {
+            Invoke-TeremoqGit -CheckoutRoot $temporary -Arguments @('config','--local',$setting[0],$setting[1]) | Out-Null
+        }
+        [void](Get-TeremoqGitCheckoutContext -CheckoutRoot $temporary -StateContext (New-ValidationState $CurrentCommit) -RequireExactHead)
+        $updated = Invoke-TeremoqGitFastForwardUpdate -CheckoutRoot $temporary -RepositoryUrl $RepositoryUrl `
+            -RepositoryRef $RepositoryRef -RepositorySubdirectory 'infra/lan' -CurrentCommit $CurrentCommit -ExpectedCommit $TargetCommit
+        [void](Get-TeremoqGitCheckoutContext -CheckoutRoot $updated.CheckoutRoot -StateContext (New-ValidationState $TargetCommit) -RequireExactHead)
+
+        Remove-TeremoqBoundedRegularTree -Path $target -ExpectedParent $root
+        [IO.Directory]::Move($temporary, $target)
+        [void](Get-TeremoqGitCheckoutContext -CheckoutRoot $target -StateContext (New-ValidationState $TargetCommit) -RequireExactHead)
+        [ordered]@{
+            schema_version = 1
+            status = 'staged'
+            commit = $TargetCommit
+            slot = [IO.Path]::GetFileName($target)
+        } | ConvertTo-Json -Compress
+        return
+    } catch {
+        $lastFailure = $_
+    } finally {
+        if (Test-Path -LiteralPath $temporary) {
+            Remove-TeremoqBoundedRegularTree -Path $temporary -ExpectedParent $root
+        }
     }
 }
 if ($null -ne $lastFailure) { throw $lastFailure }
