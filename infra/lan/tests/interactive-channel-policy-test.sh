@@ -6,6 +6,7 @@ set -Eeuo pipefail
 TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(cd -- "${TEST_DIR}/.." && pwd -P)"
 agent="${ROOT}/client/Lan-Interactive-Agent.mjs"
+recovery="${ROOT}/client/Repair-LanUpdaterSlots.ps1"
 launcher="${ROOT}/client/Start-LanInteractiveClient.ps1"
 control="${ROOT}/interactive-channel-control.sh"
 channel="${ROOT}/interactive_channel.py"
@@ -19,6 +20,14 @@ grep -Fq 'node_modules\\npm\\bin\\npm-cli.js' "${agent}"
 ! grep -Fq '"build:lan"' "${agent}"
 ! grep -Fq '"diagnose-build"' "${channel}"
 grep -Fq 'allowed = {"update-client", "prepare-client"}' "${channel}"
+grep -Fq 'expected exactly one matching active LAN channel client' "${recovery}"
+grep -Fq "@('checkout-updater-a', 'checkout-updater-b')" "${recovery}"
+grep -Fq 'Remove-TeremoqBoundedRegularTree -Path $slot -ExpectedParent $clientRoot' "${recovery}"
+grep -Fq 'Get-TeremoqGitCheckoutContext -CheckoutRoot $activeCheckout' "${recovery}"
+if grep -Eqi 'Remove-Item.+(config|evidence|state)|wsl|firewall|pairing|management-token' "${recovery}"; then
+    printf 'interactive-channel-policy-test: updater recovery broadened into protected channel or client state\n' >&2
+    exit 1
+fi
 grep -Fq 'UPDATE_REPOSITORY_URL = "https://github.com/Teremoq/teremoq"' "${channel}"
 grep -Fq 'UPDATE_REPOSITORY_REF = "refs/heads/codex/lan-e2e-integration"' "${channel}"
 grep -Fq '"update-client": "Actualizar el cliente desde GitHub"' "${agent}"

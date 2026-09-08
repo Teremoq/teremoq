@@ -39,6 +39,23 @@ diagnostics. The server channel identity stays fixed while the client identity
 advances, so firewall authorization and rollback remain tied to the original
 server run.
 
+Do not recreate the server channel after a workload, player, build or updater
+failure. Those failures are task results. Keep the listener, certificate,
+firewall rule and authenticated session unchanged, then retry or update the
+client through the existing channel. Replace the channel only when its own
+protocol, certificate, exact endpoint or security policy changes, or when the
+transport itself cannot be recovered.
+
+Clients deployed before updater version 2.0.0 may have left both managed A/B
+checkout slots dirty. `Repair-LanUpdaterSlots.ps1` is the one-time migration
+for that condition. It requires the old channel client to remain running,
+identifies its exact active checkout from the native process inventory, and
+removes only inactive direct-child updater slots that belong to the official
+repository and are ancestors of the reviewed recovery commit. It does not
+read or change the in-memory session, local configuration, player cache,
+evidence, certificate or firewall state. After this migration, enqueue the
+normal `update-client` action on the existing channel.
+
 The remote `diagnose-build` action is removed. It previously ran the checkout's
 ignored `node_modules`, which is not part of the reviewed commit. The matching
 server gate begins with `prepare-client`; that action creates one isolated
