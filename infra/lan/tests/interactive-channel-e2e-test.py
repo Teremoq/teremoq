@@ -50,7 +50,7 @@ def server_preflight(run_id, source_commit, server_ip, client_ip):
     })
     for port in (*lab_runtime.LEGACY_UDP_PORTS, 14433, 19000):
         checks[f"listener_udp_{port}"] = check(f"listener_udp_{port}", "free", "pass")
-    for port in lab_runtime.LEGACY_TCP_PORTS:
+    for port in (*lab_runtime.LEGACY_TCP_PORTS, lab_runtime.COORDINATION_TLS_PORT):
         checks[f"listener_tcp_{port}"] = check(f"listener_tcp_{port}", "free", "pass")
     return {
         "schema_version": 2, "report_kind": "teremoq-lan-windows-preflight-v2", "run_id": run_id,

@@ -113,7 +113,7 @@ $newCoordinationRule = @{
 
 if ($Action -eq 'Validate') {
     [pscustomobject]@{ status = 'valid'; group = $group; classic_rule = $ruleName; hyperv_rule = $hyperVRuleName; remote = $ClientIPv4; protocol = 'UDP'; port = $MoqUdpPort; coordination_tls_port = $CoordinationTlsPort; profile = $NetworkProfile } | ConvertTo-Json -Compress
-    exit 0
+    return
 }
 if ($Action -eq 'Plan') {
     Write-Output "New-NetFirewallRule -Name '$ruleName' -DisplayName '$ruleName' -Group '$group' -Description 'Temporary Teremoq LAN run $RunId; exact client only' -Direction Inbound -Action Allow -Enabled True -Profile '$NetworkProfile' -LocalAddress '$ServerIPv4' -RemoteAddress '$ClientIPv4' -Protocol UDP -LocalPort $MoqUdpPort -EdgeTraversalPolicy Block"
@@ -129,7 +129,7 @@ if ($Action -eq 'Plan') {
         Write-Output "Remove-NetFirewallHyperVRule -Name '$coordinationHyperVRuleName' -ErrorAction SilentlyContinue"
     }
     Write-Output "# Verify both exact names are absent; do not change DefaultInboundAction or the network profile."
-    exit 0
+    return
 }
 if ($Action -eq 'Verify') {
     $classicRules = @(Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue)
@@ -202,7 +202,7 @@ if ($Action -eq 'Verify') {
         $attestation.coordination_firewall_verified = $true
     }
     $attestation | ConvertTo-Json -Compress
-    exit 0
+    return
 }
 if (-not $ConfirmApply) { throw 'Apply and Rollback require explicit -ConfirmApply' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -231,7 +231,7 @@ if ($Action -eq 'Apply') {
         throw
     }
     Write-Output "created exact classic and Hyper-V rules for $group"
-    exit 0
+    return
 }
 $classic = @(Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue)
 $hyperv = @(Get-NetFirewallHyperVRule -Name $hyperVRuleName -ErrorAction SilentlyContinue)

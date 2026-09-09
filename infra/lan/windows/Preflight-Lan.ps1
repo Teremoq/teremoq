@@ -155,7 +155,7 @@ foreach ($port in @(4433, 9000, $MoqUdpPort, $SrtUdpPort)) {
     $status = if ($state -eq 'free') { 'pass' } else { 'blocked' }
     Add-Check "listener_udp_$port" $status $state 'real'
 }
-foreach ($port in @(4433, 5678, 6379, 11434)) {
+foreach ($port in @(4433, 5678, 6379, 11434, 18443)) {
     $tcp = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
     $state = if ($tcp.Count -gt 0) { 'occupied' } else { 'free' }
     $status = if ($state -eq 'free') { 'pass' } else { 'blocked' }

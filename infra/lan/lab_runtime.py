@@ -57,6 +57,7 @@ PROXY_ATTESTATION_KEYS = {
 }
 LEGACY_UDP_PORTS = (4433, 9000)
 LEGACY_TCP_PORTS = (4433, 5678, 6379, 11434)
+COORDINATION_TLS_PORT = 18443
 PROCESS_BASENAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,123}\.exe$")
 
 
@@ -238,7 +239,7 @@ SERVER_WINDOWS_CHECKS = {
     "browser_msedge.exe", "browser_chrome.exe", "docker_server", "docker_publication_inventory",
     "wslconfig_present", "preflight_gate",
     *(f"listener_udp_{port}" for port in (*LEGACY_UDP_PORTS, 14433, 19000)),
-    *(f"listener_tcp_{port}" for port in LEGACY_TCP_PORTS),
+    *(f"listener_tcp_{port}" for port in (*LEGACY_TCP_PORTS, COORDINATION_TLS_PORT)),
 }
 CLIENT_WINDOWS_CHECKS = {
     "windows_caption", "windows_version", "capture_origin", "client_private_ip_present", "network_profile", "mtu",
@@ -446,7 +447,12 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
             "evidence_quality": "real",
         }:
             fail("Windows server Docker publication inventory is not exact")
-        validate_listener_checks(checks, label, (*LEGACY_UDP_PORTS, 14433, 19000), LEGACY_TCP_PORTS)
+        validate_listener_checks(
+            checks,
+            label,
+            (*LEGACY_UDP_PORTS, 14433, 19000),
+            (*LEGACY_TCP_PORTS, COORDINATION_TLS_PORT),
+        )
     else:
         validate_wifi_advisory(checks["wifi_5ghz"], "wifi_5ghz", label)
         if checks["player_loopback_tcp_3000"]["status"] != "pass" or checks["player_loopback_tcp_3000"]["value"] != "free":

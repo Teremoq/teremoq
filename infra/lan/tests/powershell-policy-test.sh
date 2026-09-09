@@ -115,6 +115,14 @@ Write-Output "$($ip.IPAddress)`t$candidate`t$($route.NextHop)`t$($ip.PrefixLengt
 IFS=$'\t' read -r server_ip client_ip router_ip prefix profile <<<"${context}"
 [[ -n "${profile}" ]]
 firewall="$(wslpath -w "${ROOT}/windows/Firewall-Lan.ps1")"
+if grep -Eq '(^|[;[:space:]])exit([[:space:]]|$)' "${ROOT}/windows/Firewall-Lan.ps1"; then
+    printf 'powershell-policy-test: firewall script may terminate its caller\n' >&2; exit 1
+fi
+firewall_caller_fixture="$(wslpath -w "${TEST_DIR}/firewall-caller-fixture.ps1")"
+caller_probe="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall_caller_fixture}" \
+    -ScriptPath "${firewall}" -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${client_ip}" \
+    -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" 2>/dev/null | tr -d '\r')"
+[[ "${caller_probe}" == 'firewall-caller-survived' ]]
 plan="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall}" \
     -Action Plan -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${client_ip}" \
     -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" 2>/dev/null | tr -d '\r')"
@@ -126,6 +134,7 @@ coordination_plan="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy 
     -Action Plan -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${client_ip}" \
     -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" -CoordinationTlsPort 18443 2>/dev/null | tr -d '\r')"
 [[ "${coordination_plan}" == *'TCP'* && "${coordination_plan}" == *'18443'* && "${coordination_plan}" == *'Control'* ]]
+grep -Fq 'foreach ($port in @(4433, 5678, 6379, 11434, 18443))' "${ROOT}/windows/Preflight-Lan.ps1"
 if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall}" \
     -Action Validate -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${client_ip}" \
     -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" -CoordinationTlsPort 18444 >/dev/null 2>&1; then

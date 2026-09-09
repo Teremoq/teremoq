@@ -82,7 +82,7 @@ def windows_preflight(role: str) -> dict[str, object]:
         checks["docker_publication_inventory"] = check("docker_publication_inventory", "bounded-scan", "pass")
         for port in (*RUNTIME.LEGACY_UDP_PORTS, 14433, 19000):
             checks[f"listener_udp_{port}"] = check(f"listener_udp_{port}", "free", "pass")
-        for port in RUNTIME.LEGACY_TCP_PORTS:
+        for port in (*RUNTIME.LEGACY_TCP_PORTS, RUNTIME.COORDINATION_TLS_PORT):
             checks[f"listener_tcp_{port}"] = check(f"listener_tcp_{port}", "free", "pass")
     else:
         checks["wifi_radio"] = check("wifi_radio", "802.11ac")
@@ -319,7 +319,10 @@ class LabRuntimePolicyTest(unittest.TestCase):
                                             MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
 
     def test_every_legacy_listener_port_is_fail_closed(self) -> None:
-        for protocol, ports in (("udp", RUNTIME.LEGACY_UDP_PORTS), ("tcp", RUNTIME.LEGACY_TCP_PORTS)):
+        for protocol, ports in (
+            ("udp", RUNTIME.LEGACY_UDP_PORTS),
+            ("tcp", (*RUNTIME.LEGACY_TCP_PORTS, RUNTIME.COORDINATION_TLS_PORT)),
+        ):
             for port in ports:
                 with self.subTest(protocol=protocol, port=port):
                     document = windows_preflight("server")
