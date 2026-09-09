@@ -7,6 +7,7 @@ TEST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(cd -- "${TEST_DIR}/.." && pwd -P)"
 agent="${ROOT}/client/Lan-Interactive-Agent.mjs"
 recovery="${ROOT}/client/Repair-LanUpdaterSlots.ps1"
+recovery_bootstrap="${ROOT}/client/RECUPERAR-CANAL-LAN.ps1"
 launcher="${ROOT}/client/Start-LanInteractiveClient.ps1"
 control="${ROOT}/interactive-channel-control.sh"
 channel="${ROOT}/interactive_channel.py"
@@ -31,6 +32,19 @@ grep -Fq 'Invoke-TeremoqTaskkill -TaskkillPath $taskkillPath -ProcessId $process
 grep -Fq 'verified inactive Teremoq client processes did not stop before slot cleanup' "${recovery}"
 grep -Fq '$processCommit -cne $Head' "${recovery}"
 grep -Fq 'Assert-ReachableRecoveryCommit -Commit $processChannelCommit' "${recovery}"
+grep -Fq "\$repositoryUrl = 'https://github.com/Teremoq/teremoq'" "${recovery_bootstrap}"
+grep -Fq '[Parameter(Mandatory = $true)][string]$RecoveryCommit' "${recovery_bootstrap}"
+grep -Fq "\$repositoryRef = 'refs/heads/codex/lan-e2e-integration'" "${recovery_bootstrap}"
+grep -Fq "\$channelCommit = '50e60ea00d87ebd03f855c5e1c17c1ac9e447598'" "${recovery_bootstrap}"
+grep -Fq "\$clientCommit = '309f38981a8d2adabbbea6757d715f72f284cb8d'" "${recovery_bootstrap}"
+grep -Fq "'ls-remote', '--exit-code', '--refs', \$repositoryUrl, \$repositoryRef" "${recovery_bootstrap}"
+grep -Fq '$remoteBeforeClone -cne $RecoveryCommit' "${recovery_bootstrap}"
+grep -Fq "'clone', '--branch', \$branch, '--single-branch', '--no-tags', \$repositoryUrl, \$checkout" "${recovery_bootstrap}"
+grep -Fq '& $repair -RecoveryCommit $recoveryCommit -ChannelCommit $channelCommit -ClientCommit $clientCommit' "${recovery_bootstrap}"
+if grep -Eqi 'gmail|correo|usb|wsl\.exe|netsh|firewall|private.?key|password|capability|reset[[:space:]]+--hard|clean[[:space:]]+-f' "${recovery_bootstrap}"; then
+    printf 'interactive-channel-policy-test: recovery bootstrap broadened beyond Git and updater slots\n' >&2
+    exit 1
+fi
 if grep -Eqi 'Remove-Item.+(config|evidence|state)|wsl|firewall|pairing|management-token' "${recovery}"; then
     printf 'interactive-channel-policy-test: updater recovery broadened into protected channel or client state\n' >&2
     exit 1
