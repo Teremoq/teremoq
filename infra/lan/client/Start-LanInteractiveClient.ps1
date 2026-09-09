@@ -4,6 +4,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$ExpectedCommit,
     [string]$ChannelCommit = '',
+    [string]$WorkCheckout = '',
+    [string]$ChannelCoreAgentSha256 = '',
     [switch]$ResumeSessionStdin,
     [string]$HandoffAckPath = ''
 )
@@ -20,6 +22,8 @@ function Get-TeremoqSafeAgentOutput([AllowEmptyString()][string]$Line) {
     if ($Line -ceq $connected) { return $Line }
     $updated = '[Teremoq] Cliente actualizado; la sesion segura continua en la nueva version.'
     if ($Line -ceq $updated) { return $Line }
+    $stableUpdated = '[Teremoq] Cliente actualizado; el canal seguro permanece conectado.'
+    if ($Line -ceq $stableUpdated) { return $Line }
     if ($Line -cnotmatch '^\[Teremoq\] Paso [1-9][0-9]{0,5} - ([A-Za-z ]{1,64}): ([a-z ]{1,32})$') {
         return $null
     }
@@ -362,7 +366,8 @@ function New-TeremoqAgentArguments {
         [Parameter(Mandatory = $true)][string]$StateRoot,
         [Parameter(Mandatory = $true)][string]$EvidenceRoot,
         [Parameter(Mandatory = $true)][hashtable]$SessionHashes,
-        [Parameter(Mandatory = $true)][ValidateSet('pair','session')][string]$CredentialMode
+        [Parameter(Mandatory = $true)][ValidateSet('pair','session')][string]$CredentialMode,
+        [Parameter(Mandatory = $true)][ValidateSet('stable','worktree')][string]$ChannelMode
     )
     return @(
         $AgentPath,
@@ -373,7 +378,8 @@ function New-TeremoqAgentArguments {
         '--git-sha256',$SessionHashes.Git,'--node-sha256',$SessionHashes.Node,
         '--npm-cli-sha256',$SessionHashes.NpmCli,
         '--powershell-sha256',$SessionHashes.PowerShell,
-        '--taskkill-sha256',$SessionHashes.Taskkill
+        '--taskkill-sha256',$SessionHashes.Taskkill,
+        '--channel-mode',$ChannelMode
     )
 }
 
@@ -391,8 +397,20 @@ if ($ExpectedCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'ExpectedCommit must be
 if ([string]::IsNullOrEmpty($ChannelCommit)) { $ChannelCommit = $ExpectedCommit }
 if ($ChannelCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'ChannelCommit must identify the exact paired server channel' }
 
-$checkout = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
+$stableChannel = -not [string]::IsNullOrEmpty($WorkCheckout) -or
+    -not [string]::IsNullOrEmpty($ChannelCoreAgentSha256)
+if ($stableChannel -and ([string]::IsNullOrEmpty($WorkCheckout) -or
+    $ChannelCoreAgentSha256 -cnotmatch '^[0-9a-f]{64}$')) {
+    throw 'Stable channel checkout and agent digest must be supplied together'
+}
+$checkout = if ($stableChannel) {
+    [IO.Path]::GetFullPath($WorkCheckout).TrimEnd('\', '/')
+} else {
+    [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..')).TrimEnd('\', '/')
+}
+$channelMode = if ($stableChannel) { 'stable' } else { 'worktree' }
 $launcherPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
+$agentPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'Lan-Interactive-Agent.mjs'))
 $gitPath = 'C:\Program Files\Git\cmd\git.exe'
 $nodePath = 'C:\Program Files\nodejs\node.exe'
 $npmCliPath = 'C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js'
@@ -406,6 +424,13 @@ $locks = New-Object Collections.Generic.List[IO.FileStream]
 try {
     $launcherPin = Open-TeremoqPinnedFile -Path $launcherPath
     $locks.Add($launcherPin.Stream)
+    if ($stableChannel) {
+        if ([IO.Path]::GetFileName($PSScriptRoot) -cnotmatch '^channel-core-[0-9a-f]{16}$') {
+            throw 'Stable channel core directory name differs from contract'
+        }
+        $agentPin = Open-TeremoqPinnedFile -Path $agentPath -ExpectedSha256 $ChannelCoreAgentSha256
+        $locks.Add($agentPin.Stream)
+    }
     $npmCliPin = Open-TeremoqPinnedFile -Path $npmCliPath
     $locks.Add($npmCliPin.Stream)
     $sessionHashes = @{
@@ -443,18 +468,20 @@ try {
             if ($dirty.Count -ne 0) { $problems.Add('local changes') }
             throw ("The Git checkout failed validation: {0}" -f ($problems -join ', '))
         }
-        $tree = @(Invoke-TeremoqGitText $gitPath $gitPrefix @('ls-tree','-r','--full-tree',$ExpectedCommit,'--','infra/lan','supervisor-web') $sessionHashes.Git)
-        if ($tree.Count -lt 1 -or $tree.Count -gt 4096) { throw 'Approved client source inventory is outside limits' }
-        foreach ($line in $tree) {
-            if ($line -cnotmatch '^100(?:644|755) blob ([0-9a-f]{40})\t([A-Za-z0-9._/-]{1,512})$') {
-                throw 'Approved client source inventory contains an unsupported entry'
+        if (-not $stableChannel) {
+            $tree = @(Invoke-TeremoqGitText $gitPath $gitPrefix @('ls-tree','-r','--full-tree',$ExpectedCommit,'--','infra/lan','supervisor-web') $sessionHashes.Git)
+            if ($tree.Count -lt 1 -or $tree.Count -gt 4096) { throw 'Approved client source inventory is outside limits' }
+            foreach ($line in $tree) {
+                if ($line -cnotmatch '^100(?:644|755) blob ([0-9a-f]{40})\t([A-Za-z0-9._/-]{1,512})$') {
+                    throw 'Approved client source inventory contains an unsupported entry'
+                }
+                $sourcePath = [IO.Path]::GetFullPath((Join-Path $checkout ($Matches[2] -replace '/', '\')))
+                if (-not $sourcePath.StartsWith($checkout + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Approved source path escapes checkout'
+                }
+                $pin = Open-TeremoqPinnedFile -Path $sourcePath -ExpectedBlobId $Matches[1]
+                $locks.Add($pin.Stream)
             }
-            $sourcePath = [IO.Path]::GetFullPath((Join-Path $checkout ($Matches[2] -replace '/', '\')))
-            if (-not $sourcePath.StartsWith($checkout + '\', [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'Approved source path escapes checkout'
-            }
-            $pin = Open-TeremoqPinnedFile -Path $sourcePath -ExpectedBlobId $Matches[1]
-            $locks.Add($pin.Stream)
         }
         $headAfterLocks = (Invoke-TeremoqGitText $gitPath $gitPrefix @('rev-parse','HEAD') $sessionHashes.Git | Select-Object -First 1).Trim()
         $dirtyAfterLocks = @(Invoke-TeremoqGitText $gitPath $gitPrefix @('status','--porcelain=v1','--untracked-files=all') $sessionHashes.Git |
@@ -478,7 +505,7 @@ try {
     Assert-TeremoqNonReparseAncestors $stateRoot
     Assert-TeremoqNonReparseAncestors $evidenceRoot
 
-    Write-Host "Teremoq LAN interactive client: commit $head; $($locks.Count) immutable read handles"
+    Write-Host "Teremoq LAN interactive client: commit $head; channel=$channelMode; $($locks.Count) immutable read handles"
     Write-Host 'The client only initiates outbound HTTPS and executes the reviewed fixed action list.'
     if ($ResumeSessionStdin) {
         if ([string]::IsNullOrEmpty($HandoffAckPath)) { throw 'resumed session requires a handoff acknowledgement path' }
@@ -503,9 +530,9 @@ try {
         if ($credential -cnotmatch '^[0-9a-f]{48}$') { throw 'The pairing code must contain exactly 48 lowercase hexadecimal characters' }
         $credentialMode = 'pair'
     }
-    $agentArguments = New-TeremoqAgentArguments -AgentPath (Join-Path $PSScriptRoot 'Lan-Interactive-Agent.mjs') `
+    $agentArguments = New-TeremoqAgentArguments -AgentPath $agentPath `
         -RunId $runId -ChannelCommit $ChannelCommit -ClientCommit $head -Checkout $checkout -StateRoot $stateRoot `
-        -EvidenceRoot $evidenceRoot -SessionHashes $sessionHashes -CredentialMode $credentialMode
+        -EvidenceRoot $evidenceRoot -SessionHashes $sessionHashes -CredentialMode $credentialMode -ChannelMode $channelMode
     $sessionRestart = 0
     while ($true) {
         $agentExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -WorkingDirectory $checkout `

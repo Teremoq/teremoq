@@ -53,12 +53,15 @@ expect(isolatedFailure.code === -1 && isolatedFailure.signal === "task-error" &&
   isolatedFailure.output === "simulated task failure",
 "task exception escaped and would close the interactive channel");
 let integrityFailureRejected = false;
-try {
-  await executeTaskSafely("prepare-client", {}, async () => ({}), async () => {
-    throw new Error("checkout integrity failure");
-  });
-} catch { integrityFailureRejected = true; }
-expect(integrityFailureRejected, "integrity failure was downgraded to a recoverable task error");
+const isolatedIntegrityFailure = await executeTaskSafely("prepare-client", {}, async () => ({}), async () => {
+  throw new Error("checkout integrity failure");
+});
+const taskAfterFailure = await executeTaskSafely("preflight", {}, async () => ({}), async () => ({
+  code: 0, signal: "", output: "next task completed", residualPid: null,
+}));
+expect(isolatedIntegrityFailure.code === -1 && isolatedIntegrityFailure.signal === "task-error" &&
+  taskAfterFailure.code === 0,
+"a local integrity failure escaped the task boundary or prevented the next task");
 let transientAttempts = 0;
 const recoveredTransport = await retryChannelOperation(async () => {
   transientAttempts += 1;
@@ -118,11 +121,13 @@ const agentArgv = [
   "--evidence-root", "C:\\evidence", "--git-sha256", "3".repeat(64),
   "--node-sha256", "4".repeat(64), "--npm-cli-sha256", "5".repeat(64),
   "--powershell-sha256", "6".repeat(64), "--taskkill-sha256", "7".repeat(64),
+  "--channel-mode", "stable",
 ];
 const parsedArgv = parseArguments(agentArgv);
-expect(agentArgv.length === 28 && Object.keys(parsedArgv).length === 14, "closed agent argv cardinality drifted");
+expect(agentArgv.length === 30 && Object.keys(parsedArgv).length === 15, "closed agent argv cardinality drifted");
 expect(parsedArgv["--taskkill-sha256"] === "7".repeat(64), "taskkill session hash was not parsed");
 expect(parsedArgv["--credential-mode"] === "pair", "credential mode was not parsed");
+expect(parsedArgv["--channel-mode"] === "stable", "stable channel mode was not parsed");
 const originalProgramFiles = process.env.ProgramFiles;
 const originalEnvironmentSystemRoot = process.env.SystemRoot;
 try {

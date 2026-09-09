@@ -140,6 +140,55 @@ function Get-TeremoqCheckoutValidation {
     }
 }
 
+function Install-TeremoqStableChannelCore {
+    param(
+        [Parameter(Mandatory = $true)][string]$ClientRoot,
+        [Parameter(Mandatory = $true)][string]$CheckoutRoot
+    )
+    $clientRootFull = [IO.Path]::GetFullPath($ClientRoot).TrimEnd('\', '/')
+    $checkoutFull = [IO.Path]::GetFullPath($CheckoutRoot).TrimEnd('\', '/')
+    $sourceLauncher = Join-Path $checkoutFull 'infra\lan\client\Start-LanInteractiveClient.ps1'
+    $sourceAgent = Join-Path $checkoutFull 'infra\lan\client\Lan-Interactive-Agent.mjs'
+    $launcherSha256 = (Get-FileHash -LiteralPath $sourceLauncher -Algorithm SHA256).Hash.ToLowerInvariant()
+    $agentSha256 = (Get-FileHash -LiteralPath $sourceAgent -Algorithm SHA256).Hash.ToLowerInvariant()
+    $identityBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($launcherSha256 + "`n" + $agentSha256 + "`n")
+    $identityHash = [Security.Cryptography.SHA256]::Create()
+    try {
+        $version = (([BitConverter]::ToString($identityHash.ComputeHash($identityBytes)) -replace '-', '').ToLowerInvariant()).Substring(0, 16)
+    } finally { $identityHash.Dispose() }
+    $channelRoot = [IO.Path]::GetFullPath((Join-Path $clientRootFull ('channel-core-' + $version))).TrimEnd('\', '/')
+    if (-not $channelRoot.StartsWith($clientRootFull + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase) -or $channelRoot.StartsWith($checkoutFull + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Stable channel core path overlaps a mutable checkout'
+    }
+
+    if (-not (Test-Path -LiteralPath $channelRoot)) {
+        $staging = Join-Path $clientRootFull ('.channel-core-next-' + [Guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($staging)
+        [IO.File]::Copy($sourceLauncher, (Join-Path $staging 'Start-LanInteractiveClient.ps1'), $false)
+        [IO.File]::Copy($sourceAgent, (Join-Path $staging 'Lan-Interactive-Agent.mjs'), $false)
+        if ((Get-FileHash -LiteralPath (Join-Path $staging 'Start-LanInteractiveClient.ps1') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $launcherSha256 -or
+            (Get-FileHash -LiteralPath (Join-Path $staging 'Lan-Interactive-Agent.mjs') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $agentSha256) {
+            throw 'Stable channel core copy failed verification'
+        }
+        [IO.Directory]::Move($staging, $channelRoot)
+    }
+    $channelLauncher = Join-Path $channelRoot 'Start-LanInteractiveClient.ps1'
+    $channelAgent = Join-Path $channelRoot 'Lan-Interactive-Agent.mjs'
+    if ((Get-FileHash -LiteralPath $channelLauncher -Algorithm SHA256).Hash.ToLowerInvariant() -cne $launcherSha256 -or
+        (Get-FileHash -LiteralPath $channelAgent -Algorithm SHA256).Hash.ToLowerInvariant() -cne $agentSha256) {
+        throw 'Existing stable channel core differs from the reviewed version'
+    }
+    return [pscustomobject]@{
+        Version = $version
+        Root = $channelRoot
+        Launcher = $channelLauncher
+        Agent = $channelAgent
+        AgentSha256 = $agentSha256
+    }
+}
+
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 $root = Join-Path $env:LOCALAPPDATA 'Teremoq'
@@ -188,6 +237,7 @@ if (-not $validation.Valid) {
 }
 $head = $validation.Head
 
-Write-Host ("4/4 Iniciando cliente Teremoq en commit {0}..." -f $head.Substring(0, 8)) -ForegroundColor Green
-& (Join-Path $checkout 'infra\lan\client\Start-LanInteractiveClient.ps1') `
-    -ExpectedCommit $ExpectedCommit -ChannelCommit $ChannelCommit
+$channelCore = Install-TeremoqStableChannelCore -ClientRoot $root -CheckoutRoot $checkout
+Write-Host ("4/4 Iniciando canal estable {0} con cliente {1}..." -f $channelCore.Version, $head.Substring(0, 8)) -ForegroundColor Green
+& $channelCore.Launcher -ExpectedCommit $ExpectedCommit -ChannelCommit $ChannelCommit `
+    -WorkCheckout $checkout -ChannelCoreAgentSha256 $channelCore.AgentSha256

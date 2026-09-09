@@ -13,6 +13,13 @@ shell command, URL or path from the server. The server can enqueue only the
 closed actions `update-client`, `prepare-client`, `preflight`, `player-1`, `load-5`, `load-10`,
 `load-25`, `wifi-observe`, `collect` and `stop`.
 
+`Start-LanClientFromGit.ps1` first installs a content-addressed communication
+core under `channel-core-<version>`, outside every updater checkout. The core
+contains only its launcher and transport agent. It stays loaded while test,
+player and updater commands run as bounded child processes from disposable
+checkouts. Neither A/B cleanup nor a failed child can move, overwrite or stop
+the communication core.
+
 Task failures are isolated from the control loop: the client reports a failed
 terminal event and returns to waiting for the next approved action. Temporary
 transport errors retry with bounded attempts and backoff using the existing
@@ -32,12 +39,12 @@ reviewed target commit. It alternates the bounded `checkout-updater-a` and
 `checkout-updater-b` locations, requires a fast-forward update, and preserves
 the active checkout plus all external state and evidence. Existing Git object
 stores are reused, so later updates fetch only missing objects. After the server
-confirms the commit transition,
-the session credential moves to the new launcher through a bounded stdin pipe;
-it is never placed in command arguments, environment variables, files or
-diagnostics. The server channel identity stays fixed while the client identity
-advances, so firewall authorization and rollback remain tied to the original
-server run.
+confirms the commit transition, the stable core switches its workload checkout
+in memory and continues polling with the existing session. The session
+credential never moves to the updater and is never placed in command arguments,
+environment variables, files or diagnostics. The server channel identity stays
+fixed while the client identity advances, so firewall authorization and rollback
+remain tied to the original server run.
 
 Do not recreate the server channel after a workload, player, build or updater
 failure. Those failures are task results. Keep the listener, certificate,
@@ -72,6 +79,11 @@ read or change the in-memory session, local configuration, player cache,
 evidence, certificate or firewall state. After this migration, enqueue the
 normal `update-client` action on the existing channel.
 
+For the stable core, an invalid slot that Windows still holds open is preserved
+and reported as deferred cleanup. It is not a channel error. The next update can
+use the other clean slot or create a fresh managed checkout without modifying
+the communication core.
+
 The remote `diagnose-build` action is removed. It previously ran the checkout's
 ignored `node_modules`, which is not part of the reviewed commit. The matching
 server gate begins with `prepare-client`; that action creates one isolated
@@ -101,9 +113,12 @@ hashes internally to the agent for immediate verification before every spawn.
 The loader cannot start an executable while it is held with the source-file
 sharing policy, so installed executables rely on protected Program Files/System32
 ACLs plus path, handle-final-path and immediate SHA-256 verification. The
-launcher and every tracked file under `infra/lan` and `supervisor-web` remain
-open with handles denying write/delete for the entire agent session. The
-installed npm-cli.js is also hash-verified and held by such a handle while used.
+stable launcher and agent remain open with handles denying write/delete for the
+entire channel session. The mutable workload checkout is not held open by the
+channel; it is verified for exact commit, branch, official remote and
+cleanliness before each task. The installed npm-cli.js is also hash-verified and
+held by such a handle while used. The original whole-checkout pinning remains
+only as a migration mode for older launchers.
 
 The LAN client no longer runs from a USB or tarball package. The first action
 executes `Start-LanClientFromGit.ps1` directly from an immutable GitHub commit
@@ -112,13 +127,16 @@ URL. That bootstrap performs a native Git clone of
 incompatible checkout is preserved and skipped; a clean managed checkout is
 updated only by fast-forward, or a fresh checkout is created automatically.
 Every run-specific or local artifact is initialized on the client, outside the
-checkout, after the exact Git commit has been validated. Later changes travel
-through the already authenticated LAN channel rather than another manual
-bootstrap.
+checkout, after the exact Git commit has been validated. The bootstrap copies
+the reviewed launcher and agent into a content-addressed channel-core directory.
+Later updater and player changes travel through that authenticated core without
+another manual bootstrap.
 
 Current boundary:
 
 - Git checkout: reviewed scripts and support files under the repository root.
+- Channel-core root: content-addressed launcher and agent bytes, separate from
+  updater A/B slots and changed only by an explicit channel-core installation.
 - External state root: immutable local configuration under `config`,
   content-addressed players under `players`, updater/player combinations under
   `versions`, atomic A/B pointers under `control`, and verified dependency and

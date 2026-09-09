@@ -10,6 +10,18 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
+function Test-TeremoqDeferrableSlotMoveError {
+    param([Parameter(Mandatory = $true)][Exception]$Exception)
+    $current = $Exception
+    for ($depth = 0; $null -ne $current -and $depth -lt 8; $depth += 1) {
+        if ($current -is [IO.IOException] -or $current -is [UnauthorizedAccessException]) { return $true }
+        $current = $current.InnerException
+    }
+    return $false
+}
+
+if ($MyInvocation.InvocationName -eq '.') { return }
+
 $repositoryUrl = 'https://github.com/Teremoq/teremoq'
 $repositoryRef = 'refs/heads/codex/lan-e2e-integration'
 $serverUrl = 'https://192.168.1.130:18443'
@@ -239,6 +251,7 @@ $activeState = [pscustomobject]@{
 
 $removed = New-Object Collections.Generic.List[string]
 $quarantined = New-Object Collections.Generic.List[string]
+$deferred = New-Object Collections.Generic.List[string]
 foreach ($slotName in @('checkout-updater-a', 'checkout-updater-b')) {
     $slot = [IO.Path]::GetFullPath((Join-Path $clientRoot $slotName)).TrimEnd('\', '/')
     if ($slot.Equals($activeCheckout, [StringComparison]::OrdinalIgnoreCase)) { continue }
@@ -267,8 +280,16 @@ foreach ($slotName in @('checkout-updater-a', 'checkout-updater-b')) {
         }
     }
     if (-not $validGitSlot) {
-        $quarantineName = Move-TeremoqInvalidUpdaterSlotToQuarantine -Slot $slot -SlotName $slotName
-        $quarantined.Add($quarantineName)
+        try {
+            $quarantineName = Move-TeremoqInvalidUpdaterSlotToQuarantine -Slot $slot -SlotName $slotName
+            $quarantined.Add($quarantineName)
+        } catch {
+            if (-not (Test-TeremoqDeferrableSlotMoveError -Exception $_.Exception)) { throw }
+            # PowerShell wraps Directory.Move failures in a method invocation
+            # exception. Preserve the slot and never turn cleanup into a
+            # communication-channel failure.
+            $deferred.Add($slotName)
+        }
         continue
     }
     try {
@@ -289,5 +310,8 @@ if ($removed.Count -eq 0) {
 }
 if ($quarantined.Count -gt 0) {
     Write-Host ("[Teremoq] Carpetas incompletas conservadas en cuarentena: {0}." -f ($quarantined -join ', '))
+}
+if ($deferred.Count -gt 0) {
+    Write-Host ("[Teremoq] Limpieza aplazada sin afectar al canal: {0}." -f ($deferred -join ', '))
 }
 Write-Host '[Teremoq] El servidor ya puede enviar la actualizacion por el canal existente.'

@@ -96,7 +96,9 @@ async function executeTaskSafely(action, context, progress, executor = execute) 
   try {
     return await executor(action, context, progress);
   } catch (error) {
-    if (error?.taskFailure !== true) throw error;
+    // Everything invoked by the task executor is workload state.  Checkout,
+    // build and process failures must be reported without taking down the
+    // transport loop that received the task.
     return { code: -1, signal: "task-error", output: scrub(error?.message || "task failed"), residualPid: null };
   }
 }
@@ -117,7 +119,7 @@ function parseArguments(argv) {
   const required = [
     "--server", "--fingerprint", "--run-id", "--source-commit", "--client-commit", "--credential-mode",
     "--checkout", "--state-root", "--evidence-root", "--git-sha256", "--node-sha256",
-    "--npm-cli-sha256", "--powershell-sha256", "--taskkill-sha256",
+    "--npm-cli-sha256", "--powershell-sha256", "--taskkill-sha256", "--channel-mode",
   ];
   if (Object.keys(values).length !== required.length || required.some((key) => !values[key])) fail("agent arguments differ from the closed contract");
   if (values["--server"] !== "https://192.168.1.130:18443") fail("server URL differs from the exact LAN endpoint");
@@ -127,6 +129,7 @@ function parseArguments(argv) {
     if (!/^[0-9a-f]{64}$/.test(values[key])) fail("invalid executable approval hash");
   }
   if (!/^lan-[a-z0-9][a-z0-9-]{0,31}$/.test(values["--run-id"]) || !["pair", "session"].includes(values["--credential-mode"])) fail("invalid run or credential input policy");
+  if (!["stable", "worktree"].includes(values["--channel-mode"])) fail("invalid channel execution mode");
   return values;
 }
 
@@ -911,6 +914,7 @@ async function main() {
     npmCliSha256: values["--npm-cli-sha256"],
     powershellSha256: values["--powershell-sha256"],
     taskkillSha256: values["--taskkill-sha256"],
+    channelMode: values["--channel-mode"],
     activeLevel: 0,
   };
   verifyApprovedFile(context.git, context.gitSha256);
@@ -979,6 +983,21 @@ async function main() {
         `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`);
       process.stdout.write(`${formatLocalStatus(task.action, "complete", task.sequence)}\n`);
       if (!result.handoff || terminal.source_commit !== context.channelCommit || terminal.client_commit !== result.handoff.commit) fail("server did not confirm the client commit transition");
+      if (context.channelMode === "stable") {
+        // The communication core remains loaded from its dedicated directory.
+        // Only the disposable workload checkout changes underneath it.
+        // parseStagedUpdateResult already resolved and validated this directory
+        // before the server accepted the transition. Avoid any fallible local
+        // operation after that acceptance.
+        context.checkout = result.handoff.checkout;
+        context.commit = result.handoff.commit;
+        context.preparedStateRoot = undefined;
+        context.pendingPlayerCandidate = false;
+        context.activeLevel = 0;
+        identity = { ...identity, client_commit: result.handoff.commit };
+        process.stdout.write("[Teremoq] Cliente actualizado; el canal seguro permanece conectado.\n");
+        continue;
+      }
       await restartUpdatedClient(context, result.handoff, session);
       process.stdout.write("[Teremoq] Cliente actualizado; la sesion segura continua en la nueva version.\n");
       break;

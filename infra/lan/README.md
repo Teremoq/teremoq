@@ -224,12 +224,13 @@ artifact, or the client rejects the task before any process is started.
 `update-client` is the only action with parameters. Its closed payload fixes
 the official repository URL, the reviewed LAN branch and one exact target
 commit. The client fetches only missing Git objects, rejects a dirty or
-divergent source checkout and stages the target in a new side-by-side checkout.
-It never overwrites the active checkout or external configuration/evidence.
-The existing in-memory session is handed to the new launcher only over a
-bounded stdin pipe; it is absent from argv, environment, disk and logs. The
-server channel commit remains immutable for authorization and rollback while
-the separately recorded client commit advances after a successful update.
+divergent source checkout and stages the target in a side-by-side A/B checkout.
+It never overwrites the active checkout or external configuration/evidence. A
+content-addressed communication core runs outside those checkouts and remains
+loaded while only its workload checkout changes. The in-memory session is
+absent from argv, environment, disk and logs. The server channel commit remains
+immutable for authorization and rollback while the separately recorded client
+commit advances after a successful update.
 
 The channel cannot listen until the native server preflight passes and the
 exact Defender and Hyper-V rules for UDP/14433 and TCP/18443 have been applied
@@ -265,7 +266,10 @@ infra/lan/interactive-channel-control.sh start --confirm-start \
   --firewall-attestation /ABSOLUTE/PRIVATE/firewall-verify.json
 ```
 
-On the client, from native Windows PowerShell 5 in the clean Git checkout:
+On the client, use the one-line GitHub bootstrap documented under
+`infra/lan/client`. It selects or clones a clean reviewed checkout, installs the
+stable communication core outside A/B, and launches it from native Windows
+PowerShell 5. The equivalent direct command for development migration is:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
@@ -276,10 +280,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
 The launcher remains a one-command entrypoint. It validates a non-elevated
 token, protected installed-executable ACLs, non-reparse paths and final handle
 paths, then records local SHA-256 values as session invariants. The agent checks
-each invariant immediately before `spawn` with `shell:false`. Source files,
-launcher, agent and npm-cli.js remain locked against write/delete and are
-compared with the approved Git blobs for the complete tracked `infra/lan` and
-`supervisor-web` inventory.
+each invariant immediately before `spawn` with `shell:false`. In stable mode,
+only the content-addressed launcher, agent and npm-cli.js remain locked for the
+session. The mutable workload checkout is revalidated before every task and can
+therefore be advanced or quarantined without closing the channel.
 
 The server operator enqueues one action at a time with `enqueue` and reads
 bounded progress with `status`. A `stop` request can cancel a running child

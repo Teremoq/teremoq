@@ -6,13 +6,26 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
 $launcher = Join-Path $PSScriptRoot '..\client\Start-LanInteractiveClient.ps1'
+$repair = Join-Path $PSScriptRoot '..\client\Repair-LanUpdaterSlots.ps1'
 $zeroCommit = '0' * 40
 $zeroHash = '0' * 64
 . $launcher -ExpectedCommit $zeroCommit
+. $repair -RecoveryCommit $zeroCommit -ChannelCommit $zeroCommit -ClientCommit $zeroCommit
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('teremoq-interactive-lock-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
+    $wrappedMoveFailureObserved = $false
+    try {
+        [IO.Directory]::Move((Join-Path $root 'missing-slot'), (Join-Path $root 'unused-quarantine'))
+    } catch {
+        $wrappedMoveFailureObserved = Test-TeremoqDeferrableSlotMoveError -Exception $_.Exception
+    }
+    if (-not $wrappedMoveFailureObserved -or
+        (Test-TeremoqDeferrableSlotMoveError -Exception (New-Object InvalidOperationException('not an IO failure')))) {
+        throw 'Updater slot cleanup did not isolate the wrapped directory move failure'
+    }
+
     $source = Join-Path $root 'source'
     New-Item -ItemType Directory -Path $source | Out-Null
     $entrypoint = Join-Path $source 'entrypoint.mjs'
@@ -70,6 +83,10 @@ try {
     if ((Get-TeremoqSafeAgentOutput -Line $safeStatus) -cne $safeStatus) {
         throw 'Fixed local client progress was not relayed'
     }
+    $stableUpdateStatus = '[Teremoq] Cliente actualizado; el canal seguro permanece conectado.'
+    if ((Get-TeremoqSafeAgentOutput -Line $stableUpdateStatus) -cne $stableUpdateStatus) {
+        throw 'Stable channel update status was not relayed'
+    }
     if ($null -ne (Get-TeremoqSafeAgentOutput -Line '[Teremoq] Paso 1 - C:\secret: en ejecucion') -or
         $null -ne (Get-TeremoqSafeAgentOutput -Line '[Teremoq] Paso 1 - Preparar y verificar el cliente: token=secret')) {
         throw 'Arbitrary agent output was relayed to the client console'
@@ -84,8 +101,8 @@ try {
     $argvCanary = Join-Path $root 'argv-canary.mjs'
     $argvCanarySource = @'
 const argv = process.argv.slice(2);
-const required = new Set(["--server","--fingerprint","--run-id","--source-commit","--client-commit","--credential-mode","--checkout","--state-root","--evidence-root","--git-sha256","--node-sha256","--npm-cli-sha256","--powershell-sha256","--taskkill-sha256"]);
-if (argv.length !== 28) process.exit(20);
+const required = new Set(["--server","--fingerprint","--run-id","--source-commit","--client-commit","--credential-mode","--checkout","--state-root","--evidence-root","--git-sha256","--node-sha256","--npm-cli-sha256","--powershell-sha256","--taskkill-sha256","--channel-mode"]);
+if (argv.length !== 30) process.exit(20);
 for (let index = 0; index < argv.length; index += 2) {
   if (!required.delete(argv[index]) || !argv[index + 1]) process.exit(21);
 }
@@ -95,19 +112,19 @@ if (required.size !== 0) process.exit(22);
     $sessionHashes = @{ Git=$zeroHash; Node=$nodeHash; NpmCli=$zeroHash; PowerShell=$zeroHash; Taskkill=$zeroHash }
     $agentArguments = New-TeremoqAgentArguments -AgentPath $argvCanary -RunId 'lan-argv-canary' `
         -ChannelCommit $zeroCommit -ClientCommit $zeroCommit -Checkout $root -StateRoot $root -EvidenceRoot $root `
-        -SessionHashes $sessionHashes -CredentialMode 'pair'
+        -SessionHashes $sessionHashes -CredentialMode 'pair' -ChannelMode 'stable'
     $argumentMap = @{}
     for ($index = 1; $index -lt $agentArguments.Count; $index += 2) {
         if ($argumentMap.ContainsKey($agentArguments[$index])) { throw 'Real launcher duplicated an agent argument' }
         $argumentMap[$agentArguments[$index]] = $agentArguments[$index + 1]
     }
-    if ($agentArguments.Count -ne 29 -or $argumentMap.Count -ne 14 -or
+    if ($agentArguments.Count -ne 31 -or $argumentMap.Count -ne 15 -or
         $argumentMap['--git-sha256'] -cne $sessionHashes.Git -or
         $argumentMap['--node-sha256'] -cne $sessionHashes.Node -or
         $argumentMap['--npm-cli-sha256'] -cne $sessionHashes.NpmCli -or
         $argumentMap['--powershell-sha256'] -cne $sessionHashes.PowerShell -or
         $argumentMap['--taskkill-sha256'] -cne $sessionHashes.Taskkill) {
-        throw 'Real launcher agent argv differs from its 14-pair closed contract'
+        throw 'Real launcher agent argv differs from its 15-pair closed contract'
     }
     $argvExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -ExpectedSha256 $nodeHash `
         -Arguments $agentArguments -WorkingDirectory $root

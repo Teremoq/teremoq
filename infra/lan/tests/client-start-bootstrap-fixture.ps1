@@ -35,6 +35,29 @@ try {
     if ($env:GIT_CONFIG_GLOBAL -cne $globalConfig) {
         throw 'bootstrap Git invocation did not restore the caller environment'
     }
+
+    $clientRoot = Join-Path $root 'client-root'
+    $checkout = Join-Path $clientRoot 'checkout-updater-a'
+    $clientSource = Join-Path $checkout 'infra\lan\client'
+    [void][IO.Directory]::CreateDirectory($clientSource)
+    [IO.File]::WriteAllText((Join-Path $clientSource 'Start-LanInteractiveClient.ps1'), 'launcher-v1')
+    [IO.File]::WriteAllText((Join-Path $clientSource 'Lan-Interactive-Agent.mjs'), 'agent-v1')
+    $sentinel = Join-Path $checkout 'workload-sentinel.txt'
+    [IO.File]::WriteAllText($sentinel, 'untouched')
+    $firstCore = Install-TeremoqStableChannelCore -ClientRoot $clientRoot -CheckoutRoot $checkout
+    $secondCore = Install-TeremoqStableChannelCore -ClientRoot $clientRoot -CheckoutRoot $checkout
+    if ($firstCore.Root -cne $secondCore.Root -or
+        $firstCore.Root.StartsWith($checkout + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        [IO.File]::ReadAllText($sentinel) -cne 'untouched') {
+        throw 'stable channel core was not reused independently of the workload checkout'
+    }
+    [IO.File]::WriteAllText((Join-Path $clientSource 'Lan-Interactive-Agent.mjs'), 'agent-v2')
+    $thirdCore = Install-TeremoqStableChannelCore -ClientRoot $clientRoot -CheckoutRoot $checkout
+    if ($thirdCore.Root -ceq $firstCore.Root -or -not (Test-Path -LiteralPath $firstCore.Agent -PathType Leaf) -or
+        [IO.File]::ReadAllText($firstCore.Agent) -cne 'agent-v1' -or
+        [IO.File]::ReadAllText($thirdCore.Agent) -cne 'agent-v2') {
+        throw 'stable channel core versioning overwrote an active or prior core'
+    }
     Write-Output 'client-start-bootstrap-fixture: PASS'
 } finally {
     $env:GIT_CONFIG_GLOBAL = $oldGlobal
