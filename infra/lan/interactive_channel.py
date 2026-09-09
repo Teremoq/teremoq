@@ -1303,6 +1303,8 @@ def daemon_reload(arguments: argparse.Namespace, server_ip: str, client_ip: str)
                 arguments, descriptor, server_ip, client_ip, stdout_descriptor, stderr_descriptor,
             )
             atomic_json_at(descriptor, "channel-process.json", replacement_record)
+            if not matching_process(replacement_record, arguments.state_root):
+                fail("replacement coordination process identity changed before commit")
         except Exception as replacement_error:
             if replacement is not None and replacement.poll() is None:
                 replacement.terminate()
@@ -1318,6 +1320,8 @@ def daemon_reload(arguments: argparse.Namespace, server_ip: str, client_ip: str)
                     original_argv=previous_command,
                 )
                 atomic_json_at(descriptor, "channel-process.json", restored_record)
+                if not matching_process(restored_record, arguments.state_root):
+                    fail("restored coordination process identity changed before commit")
             except Exception as restore_error:
                 if restored is not None and restored.poll() is None:
                     restored.terminate()
