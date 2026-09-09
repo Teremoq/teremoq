@@ -660,6 +660,87 @@ class ChannelState:
             return {"schema_version": SCHEMA_VERSION, "run_id": self.run_id, "source_commit": self.source_commit,
                     "client_commit": self.document["client_commit"], "session": session}
 
+    def recover_pairing(self, request: dict[str, Any], management: str) -> dict[str, Any]:
+        exact_object(
+            request,
+            {
+                "schema_version", "run_id", "source_commit", "client_commit", "next_client_commit",
+                "management_sequence", "request_id",
+            },
+            "pairing recovery request",
+        )
+        if (type(request["schema_version"]) is not int or request["schema_version"] != SCHEMA_VERSION
+                or type(request["management_sequence"]) is not int or request["management_sequence"] < 1
+                or not isinstance(request["client_commit"], str)
+                or not re.fullmatch(r"[0-9a-f]{40}", request["client_commit"])
+                or not isinstance(request["next_client_commit"], str)
+                or not re.fullmatch(r"[0-9a-f]{40}", request["next_client_commit"])
+                or not isinstance(request["request_id"], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", request["request_id"])):
+            fail("pairing recovery request is outside the closed contract")
+        try:
+            candidate = management.encode("ascii")
+        except UnicodeEncodeError as error:
+            raise ValueError("management credential rejected") from error
+        with self.lock:
+            self._verify_root()
+            if (request["run_id"] != self.run_id or request["source_commit"] != self.source_commit
+                    or request["client_commit"] != self.document["client_commit"]):
+                fail("pairing recovery request identity differs from the channel")
+            expected = read_regular_at(self.root_descriptor, "management-token", 128, 0o600).strip()
+            if not hmac.compare_digest(candidate, expected):
+                fail("management credential rejected")
+            self._rate_limit("management")
+            if (request["management_sequence"] != self.document["management_sequence"] + 1
+                    or request["request_id"] == self.document["last_management_request"]):
+                fail("management replay or sequence gap rejected")
+            if any(not task["completed"] for task in self.document["tasks"]):
+                fail("pairing recovery is blocked while a task is pending")
+
+            pairing = secrets.token_hex(24)
+            previous = {
+                "paired": self.document["paired"],
+                "session_sha256": self.document["session_sha256"],
+                "management_sequence": self.document["management_sequence"],
+                "last_management_request": self.document["last_management_request"],
+                "client_commit": self.document["client_commit"],
+            }
+            try:
+                previous_pairing = read_regular_at(
+                    self.root_descriptor, "pairing-code", 128, 0o600,
+                )
+            except FileNotFoundError:
+                previous_pairing = None
+            try:
+                try:
+                    os.unlink("pairing-code", dir_fd=self.root_descriptor)
+                except FileNotFoundError:
+                    pass
+                write_new_at(self.root_descriptor, "pairing-code", (pairing + "\n").encode("ascii"))
+                self.document["paired"] = False
+                self.document["session_sha256"] = None
+                self.document["client_commit"] = request["next_client_commit"]
+                self.document["management_sequence"] = request["management_sequence"]
+                self.document["last_management_request"] = request["request_id"]
+                self._persist()
+            except Exception:
+                self.document.update(previous)
+                try:
+                    os.unlink("pairing-code", dir_fd=self.root_descriptor)
+                except FileNotFoundError:
+                    pass
+                if previous_pairing is not None:
+                    write_new_at(self.root_descriptor, "pairing-code", previous_pairing)
+                raise
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "run_id": self.run_id,
+                "source_commit": self.source_commit,
+                "client_commit": self.document["client_commit"],
+                "management_sequence": self.document["management_sequence"],
+                "pairing_code": pairing,
+            }
+
     def authenticate(self, session: str) -> None:
         if not isinstance(session, str) or len(session) != 64 or any(character not in "0123456789abcdef" for character in session):
             fail("invalid session credential")
@@ -903,6 +984,10 @@ def make_handler(state: ChannelState):
                     if self.client_address[0] != state.server_ip:
                         fail("management source address rejected")
                     response = state.enqueue(request, self.headers.get("X-Teremoq-Management", ""))
+                elif self.path == "/v1/recover-pairing":
+                    if self.client_address[0] != state.server_ip:
+                        fail("management source address rejected")
+                    response = state.recover_pairing(request, self.headers.get("X-Teremoq-Management", ""))
                 elif self.path == "/v1/pair":
                     if self.client_address[0] != state.client_ip:
                         fail("client source address rejected")
@@ -929,11 +1014,21 @@ def make_handler(state: ChannelState):
     return Handler
 
 
-def initialize(root: Path, run_id: str, source_commit: str, client_ip: str, keep_descriptor: bool = False) -> str | tuple[str, int]:
+def initialize(
+    root: Path,
+    run_id: str,
+    source_commit: str,
+    client_ip: str,
+    keep_descriptor: bool = False,
+    initial_client_commit: str | None = None,
+) -> str | tuple[str, int]:
     if root.exists():
         fail("channel state root must be absent")
     if not root.is_absolute() or root.parent.is_symlink() or not root.parent.is_dir():
         fail("channel state root parent must be an existing absolute directory")
+    client_commit = source_commit if initial_client_commit is None else initial_client_commit
+    if not re.fullmatch(r"[0-9a-f]{40}", client_commit):
+        fail("initial client commit must be one exact lowercase Git commit")
     root.mkdir(mode=0o700)
     pairing = secrets.token_hex(24)
     management = secrets.token_hex(32)
@@ -945,7 +1040,7 @@ def initialize(root: Path, run_id: str, source_commit: str, client_ip: str, keep
             "schema_version": SCHEMA_VERSION,
             "run_id": run_id,
             "source_commit": source_commit,
-            "client_commit": source_commit,
+            "client_commit": client_commit,
             "client_ipv4": client_ip,
             "paired": False,
             "session_sha256": None,
@@ -1028,7 +1123,14 @@ def daemon_server_command(arguments: argparse.Namespace, root_descriptor: int, s
 
 def daemon_start(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
     validate_server_arguments(arguments, server_ip, client_ip)
-    initialized = initialize(arguments.state_root, arguments.run_id, arguments.source_commit, client_ip, keep_descriptor=True)
+    initialized = initialize(
+        arguments.state_root,
+        arguments.run_id,
+        arguments.source_commit,
+        client_ip,
+        keep_descriptor=True,
+        initial_client_commit=getattr(arguments, "initial_client_commit", None),
+    )
     pairing, root_descriptor = initialized
     stdout_descriptor = -1
     stderr_descriptor = -1
@@ -1077,6 +1179,154 @@ def daemon_start(arguments: argparse.Namespace, server_ip: str, client_ip: str) 
         if stderr_descriptor >= 0:
             os.close(stderr_descriptor)
         os.close(root_descriptor)
+
+
+def open_daemon_log(directory: int, name: str) -> int:
+    descriptor = os.open(
+        name,
+        os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=directory,
+    )
+    metadata = os.fstat(descriptor)
+    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o777 != 0o600
+            or metadata.st_uid != os.getuid()):
+        os.close(descriptor)
+        fail(f"unsafe daemon log: {name}")
+    return descriptor
+
+
+def spawn_existing_daemon(
+    arguments: argparse.Namespace,
+    root_descriptor: int,
+    server_ip: str,
+    client_ip: str,
+    stdout_descriptor: int,
+    stderr_descriptor: int,
+    original_argv: list[str] | None = None,
+) -> tuple[subprocess.Popen[bytes], dict[str, Any]]:
+    command = daemon_server_command(
+        arguments, root_descriptor, server_ip, client_ip, original_argv=original_argv,
+    )
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=stdout_descriptor,
+        stderr=stderr_descriptor,
+        pass_fds=(root_descriptor,),
+        close_fds=True,
+        start_new_session=True,
+    )
+    try:
+        start_ticks = process_start_ticks(process.pid)
+        process_record: dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": arguments.run_id,
+            "source_commit": arguments.source_commit,
+            "pid": process.pid,
+            "start_ticks": start_ticks,
+        }
+        pinned_identity = pinned_process_identity(command, arguments.state_root)
+        if pinned_identity is not None:
+            process_record.update(pinned_identity)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                fail("replacement coordination server exited during startup")
+            try:
+                with socket.create_connection((server_ip, PORT), timeout=0.2):
+                    return process, process_record
+            except OSError:
+                time.sleep(0.05)
+        fail("replacement coordination listener did not become ready")
+    except Exception:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        raise
+
+
+def daemon_reload(arguments: argparse.Namespace, server_ip: str, client_ip: str) -> None:
+    if not arguments.confirm_reload:
+        fail("daemon reload requires explicit confirmation")
+    validate_server_arguments(arguments, server_ip, client_ip)
+    descriptor = open_state_root(arguments.state_root)
+    stdout_descriptor = -1
+    stderr_descriptor = -1
+    replacement: subprocess.Popen[bytes] | None = None
+    try:
+        state = ChannelState(
+            arguments.state_root, arguments.run_id, arguments.source_commit,
+            server_ip, client_ip, descriptor,
+        )
+        try:
+            if any(not task["completed"] for task in state.document["tasks"]):
+                fail("daemon reload is blocked while a task is pending")
+        finally:
+            os.close(state.root_descriptor)
+        previous_record = read_process_record(descriptor, arguments.run_id, arguments.source_commit)
+        if not matching_process(previous_record, arguments.state_root):
+            fail("coordination process ownership differs from the recorded identity")
+        previous_command_payload = read_proc_file(Path(f"/proc/{previous_record['pid']}/cmdline"), 65536)
+        if (not previous_command_payload.endswith(b"\0")
+                or process_start_ticks(previous_record["pid"]) != previous_record["start_ticks"]):
+            fail("coordination process changed while preparing reload")
+        try:
+            previous_command = [os.fsdecode(item) for item in previous_command_payload[:-1].split(b"\0")]
+        except UnicodeError as error:
+            raise ValueError("coordination command encoding differs from policy") from error
+        stdout_descriptor = open_daemon_log(descriptor, "channel.stdout")
+        stderr_descriptor = open_daemon_log(descriptor, "channel.stderr")
+
+        os.kill(previous_record["pid"], signal.SIGTERM)
+        if not wait_for_process_exit(previous_record, arguments.state_root, 5.0):
+            os.kill(previous_record["pid"], signal.SIGKILL)
+            if not wait_for_process_exit(previous_record, arguments.state_root, 2.0):
+                fail("coordination server did not stop within the bounded reload deadline")
+        try:
+            replacement, replacement_record = spawn_existing_daemon(
+                arguments, descriptor, server_ip, client_ip, stdout_descriptor, stderr_descriptor,
+            )
+            atomic_json_at(descriptor, "channel-process.json", replacement_record)
+        except Exception as replacement_error:
+            if replacement is not None and replacement.poll() is None:
+                replacement.terminate()
+                try:
+                    replacement.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    replacement.kill()
+                    replacement.wait(timeout=2)
+            restored: subprocess.Popen[bytes] | None = None
+            try:
+                restored, restored_record = spawn_existing_daemon(
+                    arguments, descriptor, server_ip, client_ip, stdout_descriptor, stderr_descriptor,
+                    original_argv=previous_command,
+                )
+                atomic_json_at(descriptor, "channel-process.json", restored_record)
+            except Exception as restore_error:
+                if restored is not None and restored.poll() is None:
+                    restored.terminate()
+                    try:
+                        restored.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        restored.kill()
+                        restored.wait(timeout=2)
+                raise RuntimeError(
+                    f"coordination reload failed and listener restoration also failed: {restore_error}"
+                ) from replacement_error
+            raise RuntimeError(
+                "coordination reload failed; the listener was restored with the previous launcher"
+            ) from replacement_error
+        print("coordination listener reloaded; state, credentials and network evidence retained")
+    finally:
+        if stdout_descriptor >= 0:
+            os.close(stdout_descriptor)
+        if stderr_descriptor >= 0:
+            os.close(stderr_descriptor)
+        os.close(descriptor)
 
 
 def channel_status(arguments: argparse.Namespace, server_ip: str) -> None:
@@ -1175,6 +1425,63 @@ def enqueue(
     print(json.dumps(reply, separators=(",", ":"), sort_keys=True))
 
 
+def request_pairing_recovery(
+    server_ip: str,
+    client_ip: str,
+    certificate: Path,
+    root: Path,
+    run_id: str,
+    source_commit: str,
+    next_client_commit: str,
+) -> str:
+    descriptor = open_state_root(root)
+    try:
+        management = read_regular_at(descriptor, "management-token", 128, 0o600).decode("ascii").strip()
+        document = decode_json_object(
+            read_regular_at(descriptor, "channel-state.json", 65536, 0o600),
+            "channel state",
+        )
+    finally:
+        os.close(descriptor)
+    management_sequence = document.get("management_sequence")
+    client_commit = document.get("client_commit")
+    if (type(management_sequence) is not int or management_sequence < 0
+            or document.get("run_id") != run_id or document.get("source_commit") != source_commit
+            or document.get("client_ipv4") != client_ip
+            or not isinstance(client_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", client_commit)):
+        fail("management state sequence is invalid")
+    body = json.dumps({
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "source_commit": source_commit,
+        "client_commit": client_commit,
+        "next_client_commit": next_client_commit,
+        "management_sequence": management_sequence + 1,
+        "request_id": secrets.token_hex(16),
+    }, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        f"https://{server_ip}:{PORT}/v1/recover-pairing",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Teremoq-Management": management},
+    )
+    context = ssl.create_default_context(cafile=str(certificate))
+    with urllib.request.urlopen(request, context=context, timeout=READ_TIMEOUT_SECONDS) as response:
+        reply = decode_json_object(response.read(MAX_BODY + 1), "pairing recovery response")
+    expected_keys = {
+        "schema_version", "run_id", "source_commit", "client_commit", "management_sequence", "pairing_code",
+    }
+    if (response.status != 200 or set(reply) != expected_keys
+            or reply.get("schema_version") != SCHEMA_VERSION or reply.get("run_id") != run_id
+            or reply.get("source_commit") != source_commit or reply.get("client_commit") != next_client_commit
+            or reply.get("management_sequence") != management_sequence + 1
+            or not isinstance(reply.get("pairing_code"), str)
+            or not re.fullmatch(r"[0-9a-f]{48}", reply["pairing_code"])):
+        fail("pairing recovery was not acknowledged")
+    print(f"PAIRING_CODE={reply['pairing_code']}")
+    return reply["pairing_code"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1182,15 +1489,17 @@ def main() -> None:
     serve_parser = subparsers.add_parser("serve")
     serve_fd_parser = subparsers.add_parser("serve-fd")
     daemon_start_parser = subparsers.add_parser("daemon-start")
+    daemon_reload_parser = subparsers.add_parser("daemon-reload")
     status_parser = subparsers.add_parser("status")
     daemon_stop_parser = subparsers.add_parser("daemon-stop")
     enqueue_parser = subparsers.add_parser("enqueue")
+    recover_pairing_parser = subparsers.add_parser("recover-pairing")
     rollback_parser = subparsers.add_parser("verify-rollback")
     authorize_parser = subparsers.add_parser("authorize")
     revoke_parser = subparsers.add_parser("revoke-authorization")
     cleanup_proof_parser = subparsers.add_parser("verify-startup-clean")
-    for item in (initialize_parser, serve_parser, serve_fd_parser, daemon_start_parser, status_parser,
-                 daemon_stop_parser, enqueue_parser, rollback_parser, cleanup_proof_parser):
+    for item in (initialize_parser, serve_parser, serve_fd_parser, daemon_start_parser, daemon_reload_parser, status_parser,
+                 daemon_stop_parser, enqueue_parser, recover_pairing_parser, rollback_parser, cleanup_proof_parser):
         item.add_argument("--state-root", required=True, type=Path)
         item.add_argument("--run-id", required=True)
         item.add_argument("--source-commit", required=True)
@@ -1208,7 +1517,7 @@ def main() -> None:
     authorize_parser.add_argument("--confirm-authorize", required=True, action="store_true")
     revoke_parser.add_argument("--authorization", required=True, type=Path)
     revoke_parser.add_argument("--confirm-revoke", required=True, action="store_true")
-    for item in (serve_parser, serve_fd_parser, daemon_start_parser):
+    for item in (serve_parser, serve_fd_parser, daemon_start_parser, daemon_reload_parser):
         item.add_argument("--server-ip", required=True)
         item.add_argument("--port", required=True, type=int)
         item.add_argument("--certificate", required=True, type=Path)
@@ -1218,6 +1527,8 @@ def main() -> None:
         item.add_argument("--server-preflight", required=True, type=Path)
         item.add_argument("--firewall-attestation", required=True, type=Path)
     serve_fd_parser.add_argument("--state-fd", required=True, type=int)
+    daemon_start_parser.add_argument("--initial-client-commit")
+    daemon_reload_parser.add_argument("--confirm-reload", required=True, action="store_true")
     status_parser.add_argument("--server-ip", required=True)
     daemon_stop_parser.add_argument("--server-ip", required=True)
     daemon_stop_parser.add_argument("--attestation", required=True, type=Path)
@@ -1225,6 +1536,9 @@ def main() -> None:
     enqueue_parser.add_argument("--certificate", required=True, type=Path)
     enqueue_parser.add_argument("--action", required=True)
     enqueue_parser.add_argument("--target-commit")
+    recover_pairing_parser.add_argument("--server-ip", required=True)
+    recover_pairing_parser.add_argument("--certificate", required=True, type=Path)
+    recover_pairing_parser.add_argument("--next-client-commit", required=True)
     rollback_parser.add_argument("--server-ip", required=True)
     rollback_parser.add_argument("--attestation", required=True, type=Path)
     cleanup_proof_parser.add_argument("--server-ip", required=True)
@@ -1257,6 +1571,13 @@ def main() -> None:
         enqueue(server_ip, arguments.certificate, arguments.state_root, arguments.run_id,
                 arguments.source_commit, arguments.action, arguments.target_commit)
         return
+    if arguments.command == "recover-pairing":
+        server_ip = exact_private_ipv4(arguments.server_ip, "server IP")
+        if not re.fullmatch(r"[0-9a-f]{40}", arguments.next_client_commit):
+            fail("next client commit must be one exact lowercase Git commit")
+        request_pairing_recovery(server_ip, client_ip, arguments.certificate, arguments.state_root,
+                                 arguments.run_id, arguments.source_commit, arguments.next_client_commit)
+        return
     if arguments.command == "verify-rollback":
         server_ip = exact_private_ipv4(arguments.server_ip, "server IP")
         verify_rollback_evidence(arguments.attestation, arguments.run_id, arguments.source_commit, server_ip, client_ip)
@@ -1265,6 +1586,8 @@ def main() -> None:
     server_ip = exact_private_ipv4(arguments.server_ip, "server IP")
     if arguments.command == "daemon-start":
         daemon_start(arguments, server_ip, client_ip)
+    elif arguments.command == "daemon-reload":
+        daemon_reload(arguments, server_ip, client_ip)
     elif arguments.command == "status":
         channel_status(arguments, server_ip)
     elif arguments.command == "daemon-stop":

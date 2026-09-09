@@ -82,6 +82,142 @@ assert channel.daemon_child_prefix([sys.executable, str(Path(channel.__file__))]
     sys.executable, str(Path(channel.__file__).resolve()),
 ]
 with tempfile.TemporaryDirectory() as temporary:
+    recovery_root = Path(temporary) / "recovery-state"
+    recovery_client_commit = "c" * 40
+    channel.initialize(
+        recovery_root,
+        "lan-recovery-test",
+        commit,
+        "192.168.77.20",
+        initial_client_commit=recovery_client_commit,
+    )
+    recovery_pairing = (recovery_root / "pairing-code").read_text(encoding="ascii").strip()
+    recovery_management = (recovery_root / "management-token").read_text(encoding="ascii").strip()
+    recovery_state = channel.ChannelState(
+        recovery_root, "lan-recovery-test", commit, "192.168.77.10", "192.168.77.20"
+    )
+    recovery_identity = {
+        "schema_version": 1,
+        "run_id": "lan-recovery-test",
+        "source_commit": commit,
+        "client_commit": recovery_client_commit,
+    }
+    recovered_client_commit = "d" * 40
+    old_session = recovery_state.pair({**recovery_identity, "pairing_code": recovery_pairing})["session"]
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    recovery_request = {
+        **recovery_identity,
+        "next_client_commit": recovered_client_commit,
+        "management_sequence": 1,
+        "request_id": "9" * 32,
+    }
+    recovered = recovery_state.recover_pairing(recovery_request, recovery_management)
+    assert recovered["management_sequence"] == 1
+    assert recovered["client_commit"] == recovered_client_commit
+    assert len(recovered["pairing_code"]) == 48
+    assert (recovery_root / "pairing-code").stat().st_mode & 0o777 == 0o600
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    try:
+        recovery_state.poll({**recovery_identity, "client_commit": recovered_client_commit}, old_session)
+        raise AssertionError("old session remained valid after pairing recovery")
+    except ValueError:
+        pass
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    recovered_identity = {**recovery_identity, "client_commit": recovered_client_commit}
+    final_client_commit = "e" * 40
+    recovered_again = recovery_state.recover_pairing({
+        **recovered_identity,
+        "next_client_commit": final_client_commit,
+        "management_sequence": 2,
+        "request_id": "8" * 32,
+    }, recovery_management)
+    final_identity = {**recovered_identity, "client_commit": final_client_commit}
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    try:
+        recovery_state.pair({**final_identity, "pairing_code": recovered["pairing_code"]})
+        raise AssertionError("superseded pairing code remained valid")
+    except ValueError:
+        pass
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    new_session = recovery_state.pair({**final_identity, "pairing_code": recovered_again["pairing_code"]})["session"]
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    assert recovery_state.poll(final_identity, new_session)["action"] == "wait"
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    try:
+        recovery_state.recover_pairing({
+            **final_identity,
+            "next_client_commit": "f" * 40,
+            "management_sequence": 2,
+            "request_id": "8" * 32,
+        }, recovery_management)
+        raise AssertionError("pairing recovery accepted a replayed management request")
+    except ValueError:
+        pass
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    try:
+        recovery_state.recover_pairing({
+            **final_identity,
+            "next_client_commit": "f" * 40,
+            "management_sequence": 3,
+            "request_id": "7" * 32,
+        }, "0" * 64)
+        raise AssertionError("pairing recovery accepted an invalid management credential")
+    except ValueError:
+        pass
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    recovery_state.enqueue({
+        **final_identity,
+        "management_sequence": 3,
+        "request_id": "6" * 32,
+        "action": "prepare-client",
+        "parameters": {},
+    }, recovery_management)
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    try:
+        recovery_state.recover_pairing({
+            **final_identity,
+            "next_client_commit": "f" * 40,
+            "management_sequence": 4,
+            "request_id": "5" * 32,
+        }, recovery_management)
+        raise AssertionError("pairing recovery interrupted a pending task")
+    except ValueError:
+        pass
+    reloaded_recovery = channel.ChannelState(
+        recovery_root, "lan-recovery-test", commit, "192.168.77.10", "192.168.77.20"
+    )
+    assert reloaded_recovery.document["paired"] is True
+    assert reloaded_recovery.document["client_commit"] == final_client_commit
+    assert reloaded_recovery.document["management_sequence"] == 3
+
+    failed_recovery_root = Path(temporary) / "failed-recovery-state"
+    channel.initialize(failed_recovery_root, "lan-failed-recovery", commit, "192.168.77.20")
+    original_pairing = (failed_recovery_root / "pairing-code").read_bytes()
+    failed_management = (failed_recovery_root / "management-token").read_text(encoding="ascii").strip()
+    failed_recovery_state = channel.ChannelState(
+        failed_recovery_root, "lan-failed-recovery", commit, "192.168.77.10", "192.168.77.20"
+    )
+    original_persist = failed_recovery_state._persist
+    failed_recovery_state._persist = lambda: (_ for _ in ()).throw(ValueError("persist failure canary"))
+    try:
+        failed_recovery_state.recover_pairing({
+            "schema_version": 1,
+            "run_id": "lan-failed-recovery",
+            "source_commit": commit,
+            "client_commit": commit,
+            "next_client_commit": "b" * 40,
+            "management_sequence": 1,
+            "request_id": "4" * 32,
+        }, failed_management)
+        raise AssertionError("pairing recovery ignored a persistence failure")
+    except ValueError:
+        pass
+    finally:
+        failed_recovery_state._persist = original_persist
+    assert (failed_recovery_root / "pairing-code").read_bytes() == original_pairing
+    assert failed_recovery_state.document["client_commit"] == commit
+    assert failed_recovery_state.document["management_sequence"] == 0
+
     root = Path(temporary) / "state"
     channel.initialize(root, "lan-channel-test", commit, "192.168.77.20")
     assert root.stat().st_mode & 0o777 == 0o700

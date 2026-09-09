@@ -149,13 +149,34 @@ with tempfile.TemporaryDirectory() as temporary:
     try:
         pair = post(url + "/v1/pair", {**identity, "pairing_code": pairing}, client_context)
         session = pair["session"]
-        removed_build = {**identity, "management_sequence": 1, "request_id": "1" * 32, "action": "diagnose-build", "parameters": {}}
+        original_port = channel.PORT
+        channel.PORT = server.server_port
+        try:
+            recovered_pairing = channel.request_pairing_recovery(
+                "127.0.0.1", "127.0.0.1", certificate, state_root, identity["run_id"], commit, commit,
+            )
+        finally:
+            channel.PORT = original_port
+        assert len(recovered_pairing) == 48
+        time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+        try:
+            post(url + "/v1/poll", identity, client_context, {"X-Teremoq-Session": session})
+            raise AssertionError("recovered channel accepted the revoked session")
+        except urllib.error.HTTPError as error:
+            assert error.code == 403
+        time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+        pair = post(url + "/v1/pair", {
+            **identity,
+            "pairing_code": recovered_pairing,
+        }, client_context)
+        session = pair["session"]
+        removed_build = {**identity, "management_sequence": 2, "request_id": "1" * 32, "action": "diagnose-build", "parameters": {}}
         try:
             post(url + "/v1/manage", removed_build, client_context, {"X-Teremoq-Management": management})
             raise AssertionError("removed diagnose-build action was accepted")
         except urllib.error.HTTPError as error:
             assert error.code == 403
-        management_request = {**identity, "management_sequence": 1, "request_id": "2" * 32, "action": "prepare-client", "parameters": {}}
+        management_request = {**identity, "management_sequence": 2, "request_id": "2" * 32, "action": "prepare-client", "parameters": {}}
         managed = post(url + "/v1/manage", management_request, client_context, {"X-Teremoq-Management": management})
         assert managed["accepted"] is True
         time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
@@ -223,6 +244,28 @@ m.main()
     assert original_record["launcher_kind"] == "pinned-loader"
     assert original_record["pinned_loader_sha256"] == hashlib.sha256(loader).hexdigest()
     assert channel.matching_process(original_record, daemon_root)
+    state_before_reload = (daemon_root / "channel-state.json").read_bytes()
+    management_before_reload = (daemon_root / "management-token").read_bytes()
+    reloaded = subprocess.run(
+        pinned_prefix + [
+            "daemon-reload", "--confirm-reload", *common,
+            "--port", str(daemon_port), "--certificate", str(certificate),
+            "--private-key", str(private_key), "--fingerprint", str(fingerprint_path),
+            "--authorization", str(authorization_path), "--server-preflight", str(preflight_path),
+            "--firewall-attestation", str(firewall_path),
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert "state, credentials and network evidence retained" in reloaded.stdout
+    reloaded_record = json.loads(process_record_path.read_text(encoding="utf-8"))
+    assert reloaded_record["pid"] != original_record["pid"]
+    assert channel.matching_process(reloaded_record, daemon_root)
+    assert (daemon_root / "channel-state.json").read_bytes() == state_before_reload
+    assert (daemon_root / "management-token").read_bytes() == management_before_reload
+    original_record = reloaded_record
     status_command = pinned_prefix + ["status", *common]
     subprocess.run(status_command, check=True, text=True, capture_output=True, timeout=10)
     for field in ("command_sha256", "pinned_loader_sha256"):

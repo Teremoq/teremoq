@@ -46,6 +46,22 @@ client through the existing channel. Replace the channel only when its own
 protocol, certificate, exact endpoint or security policy changes, or when the
 transport itself cannot be recovered.
 
+If the client process exits and its memory-only session is lost, the server
+operator uses the authenticated `recover-pairing` control action. It revokes
+the previous session, refuses to interrupt a pending task, advances the
+management replay counter and emits a new 48-character pairing code. The
+listener, certificate, endpoint, firewall rules, task evidence and local
+configuration remain unchanged. The replacement client must still prove the
+exact channel and client commits before the one-use code is accepted.
+
+When recovery support itself must be loaded into an older running channel,
+the server operator uses the explicit `reload` control action. It stops only
+the process whose PID, start time and command identity match the private
+record, starts the reviewed implementation on the same endpoint, and retains
+the state, management credential, certificate and network evidence. A failed
+replacement makes one bounded restoration attempt with the previous pinned
+launcher; it never creates or broadens a firewall rule.
+
 Clients deployed before updater version 2.0.0 may have left both managed A/B
 checkout slots dirty. `Repair-LanUpdaterSlots.ps1` is the one-time migration
 for that condition. It requires the old channel client to remain running,
