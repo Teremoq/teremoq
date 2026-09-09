@@ -1278,6 +1278,18 @@ def daemon_reload(arguments: argparse.Namespace, server_ip: str, client_ip: str)
             previous_command = [os.fsdecode(item) for item in previous_command_payload[:-1].split(b"\0")]
         except UnicodeError as error:
             raise ValueError("coordination command encoding differs from policy") from error
+        if previous_command.count("--state-fd") != 1:
+            fail("coordination command state descriptor differs from policy")
+        state_fd_index = previous_command.index("--state-fd")
+        try:
+            previous_state_fd = int(previous_command[state_fd_index + 1])
+        except (IndexError, ValueError) as error:
+            raise ValueError("coordination command state descriptor is invalid") from error
+        expected_previous_command = daemon_server_command(
+            arguments, previous_state_fd, server_ip, client_ip, original_argv=previous_command,
+        )
+        if previous_command != expected_previous_command:
+            fail("coordination command differs from the exact reload identity")
         stdout_descriptor = open_daemon_log(descriptor, "channel.stdout")
         stderr_descriptor = open_daemon_log(descriptor, "channel.stderr")
 
