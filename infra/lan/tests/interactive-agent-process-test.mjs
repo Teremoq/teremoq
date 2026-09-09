@@ -7,7 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ChannelRequestError, actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, parseStagedUpdateResult, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validateEventAck, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
+import { ChannelRequestError, actionTimeoutMs, activePreparedStateRoot, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, mergeSourcePinReleaseError, parseArguments, parseStagedUpdateResult, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validateEventAck, waitForHandoffAck } from "../client/Lan-Interactive-Agent.mjs";
 
 function expect(condition, message) {
   if (!condition) throw new Error(message);
@@ -62,6 +62,16 @@ const taskAfterFailure = await executeTaskSafely("preflight", {}, async () => ({
 expect(isolatedIntegrityFailure.code === -1 && isolatedIntegrityFailure.signal === "task-error" &&
   taskAfterFailure.code === 0,
 "a local integrity failure escaped the task boundary or prevented the next task");
+const preservedResidue = mergeSourcePinReleaseError({
+  code: -1,
+  signal: "termination-residue",
+  output: "residual_process_pid=4242",
+  residualPid: 4242,
+}, new Error("pin helper exited"));
+expect(preservedResidue.code === -1 && preservedResidue.signal === "termination-residue" &&
+  preservedResidue.residualPid === 4242 &&
+  preservedResidue.output.includes("source_pin_release_error=pin helper exited"),
+"source pin release failure hid workload residue evidence");
 let transientAttempts = 0;
 const recoveredTransport = await retryChannelOperation(async () => {
   transientAttempts += 1;
@@ -114,6 +124,24 @@ for (const invalidAck of [
   expect(rejected, "invalid event acknowledgement was accepted");
 }
 const nodeSha256 = crypto.createHash("sha256").update(fs.readFileSync(process.execPath)).digest("hex");
+let guardedSpawns = 0;
+let deadGuardRejected = false;
+try {
+  await runProcess(process.execPath, ["-e", "process.exit(0)"], process.cwd(), async () => ({}), {
+    expectedFileSha256: nodeSha256,
+    sourceGuardState: {
+      assertAlive() { throw new Error("task source pin is not alive"); },
+    },
+    spawnProcess() {
+      guardedSpawns += 1;
+      throw new Error("guarded workload must not spawn");
+    },
+  });
+} catch (error) {
+  deadGuardRejected = error.message === "task source pin is not alive";
+}
+expect(deadGuardRejected && guardedSpawns === 0,
+  "workload started after its source pin was already lost");
 const agentArgv = [
   "--server", "https://192.168.1.130:18443", "--fingerprint", "1".repeat(64),
   "--run-id", "lan-argv-canary", "--source-commit", "2".repeat(40),

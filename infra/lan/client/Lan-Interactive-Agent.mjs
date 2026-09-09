@@ -109,6 +109,14 @@ async function executeTaskSafely(action, context, progress, executor = execute) 
     return { code: -1, signal: "task-error", output: scrub(error?.message || "task failed"), residualPid: null };
   }
 }
+function mergeSourcePinReleaseError(result, error) {
+  return {
+    code: result.code === 0 ? -1 : result.code,
+    signal: result.signal || "source-pin-release-failed",
+    output: scrub(`${result.output}\nsource_pin_release_error=${error?.message || "unknown"}`),
+    residualPid: result.residualPid ?? null,
+  };
+}
 function formatLocalStatus(action, stage, sequence) {
   if (!ACTIONS.has(action) || !Object.hasOwn(LOCAL_STAGE_LABELS, stage) ||
       !Number.isSafeInteger(sequence) || sequence < 1) {
@@ -464,7 +472,9 @@ function approvedTaskSourceInventory(context) {
 }
 
 async function pinTaskSources(context, options = {}) {
-  if (context.channelMode !== "stable") return { lost: new Promise(() => {}), release: async () => {} };
+  if (context.channelMode !== "stable") {
+    return { assertAlive: () => {}, lost: new Promise(() => {}), release: async () => {} };
+  }
   const powershell = `${WINDOWS_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   const helper = path.join(path.dirname(fileURLToPath(import.meta.url)), "Pin-LanTaskSources.ps1");
   verifyApprovedFile(powershell, context.powershellSha256);
@@ -480,6 +490,7 @@ async function pinTaskSources(context, options = {}) {
   let stderr = "";
   let ready = false;
   let releasing = false;
+  let terminalState = null;
   let settleReady;
   let rejectReady;
   const readyPromise = new Promise((resolve, reject) => { settleReady = resolve; rejectReady = reject; });
@@ -491,7 +502,8 @@ async function pinTaskSources(context, options = {}) {
   }, options.readyTimeoutMs ?? 30_000);
   const completeExit = (code, signal, error = null) => {
     clearTimeout(readyTimer);
-    settleExit({ code: code ?? -1, signal: signal ?? "", error, releasing });
+    terminalState ??= { code: code ?? -1, signal: signal ?? "", error, releasing };
+    settleExit(terminalState);
     if (!ready) rejectReady(error || new Error(`task source pin exited before readiness (${code ?? -1})`));
   };
   child.once("error", (error) => completeExit(-1, "spawn-error", error));
@@ -520,6 +532,11 @@ async function pinTaskSources(context, options = {}) {
   child.stdin.write(manifest, "ascii");
   await readyPromise;
   return {
+    assertAlive: () => {
+      if (terminalState || child.exitCode !== null || child.signalCode !== null) {
+        throw new Error("task source pin is not alive");
+      }
+    },
     lost: exitPromise.then((terminal) => ({ ...terminal, detail: scrub(stderr || "source pin exited") })),
     release: async () => {
       releasing = true;
@@ -723,7 +740,9 @@ async function containUpdatedClientBeforeRelease(child, context, releasePin, opt
 function runProcess(file, args, cwd, onProgress, options = {}) {
   return new Promise((resolve) => {
     const spawnProcess = options.spawnProcess ?? spawn;
+    options.sourceGuardState?.assertAlive();
     verifyApprovedFile(file, options.expectedFileSha256);
+    options.sourceGuardState?.assertAlive();
     const child = spawnProcess(file, args, {
       cwd,
       windowsHide: true,
@@ -839,25 +858,38 @@ async function execute(action, context, progress) {
   if (!ACTIONS.has(action)) fail("action is not approved");
   verifyCheckout(context);
   const sourcePin = await pinTaskSources(context);
+  let result;
+  let executionError = null;
   try {
-    return await executeWithPinnedSources(action, context, progress, sourcePin.lost);
-  } finally {
-    await sourcePin.release();
+    result = await executeWithPinnedSources(action, context, progress, sourcePin);
+  } catch (error) {
+    executionError = error;
   }
+  let releaseError = null;
+  try {
+    await sourcePin.release();
+  } catch (error) {
+    releaseError = error;
+  }
+  if (executionError) throw executionError;
+  if (releaseError) return mergeSourcePinReleaseError(result, releaseError);
+  return result;
 }
 
-async function executeWithPinnedSources(action, context, progress, sourceGuard) {
+async function executeWithPinnedSources(action, context, progress, sourcePin) {
   const powershell = `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   const nodeOptions = {
     expectedFileSha256: context.nodeSha256,
     taskkillSha256: context.taskkillSha256,
-    sourceGuard,
+    sourceGuard: sourcePin.lost,
+    sourceGuardState: sourcePin,
   };
   const powershellOptions = {
     expectedFileSha256: context.powershellSha256,
     taskkillSha256: context.taskkillSha256,
     actionTimeoutMs: actionTimeoutMs(action),
-    sourceGuard,
+    sourceGuard: sourcePin.lost,
+    sourceGuardState: sourcePin,
   };
   if (action === "update-client") {
     const update = context.taskParameters;
@@ -905,6 +937,16 @@ async function executeWithPinnedSources(action, context, progress, sourceGuard) 
       "-EvidenceRoot", context.evidenceRoot, "-ConfirmStart"];
     const result = await runProcess(powershell, args, context.checkout, progress, powershellOptions);
     if (action === "player-1" && context.pendingPlayerCandidate) {
+      try {
+        sourcePin.assertAlive();
+      } catch {
+        return {
+          code: result.code === 0 ? -1 : result.code,
+          signal: result.signal || "source-pin-lost",
+          output: `${result.output}\nPlayer slot transition skipped because the reviewed source pin was lost.`,
+          residualPid: result.residualPid ?? null,
+        };
+      }
       const manager = path.join(context.checkout, "infra", "lan", "client", "Manage-LanClientSlots.ps1");
       const transition = result.code === 0 ? "Confirm" : "Rollback";
       const switched = await runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", manager,
@@ -1142,7 +1184,7 @@ async function main() {
   }
 }
 
-export { ChannelRequestError, actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, parseArguments, parseStagedUpdateResult, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validateEventAck, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
+export { ChannelRequestError, actionTimeoutMs, activePreparedStateRoot, approvedGitBlobId, confirmUpdateTransition, containUpdatedClientBeforeRelease, execute, executeTaskSafely, formatLocalStatus, mergeSourcePinReleaseError, parseArguments, parseStagedUpdateResult, pinnedAgent, pinUpdatedLauncher, preparedStateRootForTask, probeResumedSession, receiveNextTask, requestJson, restartUpdatedClient, restrictedEnvironment, retryChannelOperation, retryableChannelError, runProcess, scrub, sendTerminalEventWithFallback, terminateProcessTree, truncateUtf8Tail, updaterCandidateCheckout, validateEventAck, validatePolledTask, verifyCheckout, waitForChildExit, waitForHandoffAck };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => { process.stderr.write(`Teremoq LAN agent: ${scrub(error.message)}\n`); process.exitCode = 1; });
