@@ -451,4 +451,33 @@ with tempfile.TemporaryDirectory() as temporary:
     }, recovered_update_management)
     assert resumed_preparation["accepted"] is True and resumed_preparation["sequence"] == 2
 
+    live_update_root = Path(temporary) / "live-update-state"
+    channel.initialize(live_update_root, "lan-live-update", commit, "192.168.77.20")
+    live_pairing = (live_update_root / "pairing-code").read_text(encoding="ascii").strip()
+    live_management = (live_update_root / "management-token").read_text(encoding="ascii").strip()
+    live_state = channel.ChannelState(
+        live_update_root, "lan-live-update", commit, "192.168.77.10", "192.168.77.20"
+    )
+    live_identity = {
+        "schema_version": 1, "run_id": "lan-live-update", "source_commit": commit, "client_commit": commit,
+    }
+    live_session = live_state.pair({**live_identity, "pairing_code": live_pairing})["session"]
+    for sequence, action, request_id in ((1, "prepare-client", "e" * 32), (2, "preflight", "f" * 32)):
+        time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+        live_state.enqueue({
+            **live_identity, "management_sequence": sequence, "request_id": request_id,
+            "action": action, "parameters": {},
+        }, live_management)
+        time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+        live_state.event({
+            **live_identity, "sequence": sequence, "event": 1,
+            "action": action, "status": "complete", "message": "complete",
+        }, live_session)
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    live_update = live_state.enqueue({
+        **live_identity, "management_sequence": 3, "request_id": "0" * 32,
+        "action": "update-client", "parameters": recovered_update_parameters,
+    }, live_management)
+    assert live_update["accepted"] is True and live_update["sequence"] == 3
+
 print("lan-interactive-channel-test: PASS")

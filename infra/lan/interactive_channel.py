@@ -909,6 +909,8 @@ class ChannelState:
                     allowed = {allowed, "stop"}
                 else:
                     allowed = set()
+                if previous["action"] != "stop":
+                    allowed.add("update-client")
             if request["action"] not in allowed:
                 fail("management action violates the progressive LAN gate")
             if len(self.document["tasks"]) >= MAX_TASKS:

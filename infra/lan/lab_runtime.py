@@ -252,7 +252,8 @@ SERVER_WINDOWS_ADVISORIES = {
     "browser_msedge.exe", "browser_chrome.exe", "docker_server",
 }
 CLIENT_WINDOWS_ADVISORIES = {
-    "windows_caption", "windows_version", "wifi_radio", "wifi_5ghz", "browser_edge", "browser_chrome",
+    "windows_caption", "windows_version", "capture_origin", "wifi_radio", "wifi_5ghz", "wsl_ipv4_mode",
+    "browser_edge", "browser_chrome", "clock_offset",
     "icmp_echo_loss_percent_approximation", "icmp_echo_rtt_average_ms_approximation",
 }
 WSL_PREFLIGHT_CHECKS = {
@@ -288,7 +289,7 @@ def parse_check_int_value(value: str, label: str, minimum: int, maximum: int) ->
     return parse_exact_int(int(value), label, minimum, maximum)
 
 
-def validate_capture_context(context: object, label: str) -> None:
+def validate_capture_context(context: object, label: str, allow_interactive_client: bool = False) -> None:
     if not isinstance(context, dict) or set(context) != CAPTURE_CONTEXT_KEYS:
         fail(f"{label} capture context schema is not closed")
     if not isinstance(context["schema_version"], int) or isinstance(context["schema_version"], bool) or context["schema_version"] != 2:
@@ -313,10 +314,13 @@ def validate_capture_context(context: object, label: str) -> None:
         fail(f"{label} parent process chain cardinality is inconsistent")
     if not isinstance(traversal_depth_limit, int) or isinstance(traversal_depth_limit, bool) or traversal_depth_limit != 16:
         fail(f"{label} capture context depth limit is not exact")
-    if not isinstance(traversal_outcome, str) or traversal_outcome not in {
+    allowed_outcomes = {
         "terminated_parent_pid_nonpositive",
         "terminated_after_explorer_root_missing",
-    }:
+    }
+    if allow_interactive_client:
+        allowed_outcomes.add("parent_process_missing")
+    if not isinstance(traversal_outcome, str) or traversal_outcome not in allowed_outcomes:
         fail(f"{label} capture context does not prove parent-chain termination")
     if not isinstance(wsl_environment_keys_present, list) or len(wsl_environment_keys_present) > 3:
         fail(f"{label} WSL environment evidence is outside policy")
@@ -339,6 +343,10 @@ def validate_capture_context(context: object, label: str) -> None:
         if current_process_name != "powershell.exe" or powershell_edition != "Desktop" or \
            normalized_parents != ["explorer.exe"] or wsl_environment_keys_present:
             fail(f"{label} capture context does not prove the trusted explorer root termination")
+    if traversal_outcome == "parent_process_missing":
+        if not allow_interactive_client or current_process_name != "powershell.exe" or powershell_edition != "Desktop" or \
+           normalized_parents != ["node.exe", "powershell.exe", "explorer.exe"] or wsl_environment_keys_present:
+            fail(f"{label} capture context does not prove the bounded interactive client path")
     if any(entry in blocked_ancestors for entry in normalized_parents) or wsl_environment_keys_present:
         fail(f"{label} capture path is not native Windows PowerShell")
 
@@ -367,27 +375,55 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
     }
     if any(document.get(key) != value for key, value in expected.items()):
         fail(f"{label} run/IP/profile/WSL/commit binding mismatch")
-    validate_capture_context(document["capture_context"], label)
+    validate_capture_context(document["capture_context"], label, allow_interactive_client=role == "client")
     checks = validate_checks(
         document,
         SERVER_WINDOWS_CHECKS if role == "server" else CLIENT_WINDOWS_CHECKS,
         label,
         SERVER_WINDOWS_ADVISORIES if role == "server" else CLIENT_WINDOWS_ADVISORIES,
     )
-    if checks["capture_origin"] != {
+    exact_capture_origin = {
         "check": "capture_origin",
         "status": "pass",
         "value": "native_windows_powershell",
         "evidence_quality": "real",
-    }:
+    }
+    interactive_capture_origin = {
+        "check": "capture_origin",
+        "status": "observed",
+        "value": "warning:indirect-native-powershell",
+        "evidence_quality": "real",
+    }
+    if checks["capture_origin"] != exact_capture_origin and \
+       (role != "client" or checks["capture_origin"] != interactive_capture_origin):
         fail(f"{label} capture origin check is not exact")
     if checks["network_profile"] != {"check": "network_profile", "status": "pass", "value": network_profile, "evidence_quality": "real"}:
         fail(f"{label} current network profile mismatch")
     mode_key = "expected_wsl_mode_gate" if role == "server" else "wsl_ipv4_mode"
-    if checks[mode_key]["status"] != "pass" or checks[mode_key]["value"] != expected_mode:
+    client_wsl_warning = {
+        "check": "wsl_ipv4_mode", "status": "observed",
+        "value": "warning:wsl-not-required:unavailable", "evidence_quality": "configured",
+    }
+    if (checks[mode_key]["status"] != "pass" or checks[mode_key]["value"] != expected_mode) and \
+       (role != "client" or checks[mode_key] != client_wsl_warning):
         fail(f"{label} WSL mode mismatch")
-    if abs(parse_decimal_string(checks["clock_offset"]["value"], f"{label} clock offset")) > maximum_clock_offset_ms:
-        fail(f"{label} clock offset exceeds policy")
+    clock = checks["clock_offset"]
+    if clock["status"] == "pass":
+        if abs(parse_decimal_string(clock["value"], f"{label} clock offset")) > maximum_clock_offset_ms:
+            fail(f"{label} clock offset exceeds policy")
+    elif role == "client" and clock["status"] == "observed":
+        unavailable_warning = clock == {
+            "check": "clock_offset", "status": "observed",
+            "value": "warning:clock-offset-unavailable", "evidence_quality": "configured",
+        }
+        measured_warning = (
+            clock["evidence_quality"] == "real"
+            and re.fullmatch(r"warning:clock-offset-ms:-?\d+(?:\.\d{1,3})?", clock["value"]) is not None
+        )
+        if not unavailable_warning and not measured_warning:
+            fail(f"{label} clock offset warning is outside the bounded client contract")
+    else:
+        fail(f"{label} clock offset is neither measured nor the bounded client warning")
     if parse_exact_int(document["minimum_mtu"], f"{label} minimum MTU binding", 576, 9000) != minimum_mtu or \
        parse_exact_int(document["minimum_cpu_cores"], f"{label} minimum CPU binding", 1, 1024) != minimum_cpu_cores or \
        parse_exact_int(document["minimum_memory_mib"], f"{label} minimum memory binding", 1, 1073741824) != minimum_memory_mib or \

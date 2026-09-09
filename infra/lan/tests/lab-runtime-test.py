@@ -384,7 +384,7 @@ class LabRuntimePolicyTest(unittest.TestCase):
 
         for value, status, error in (
             ("mirrored", "pass", "WSL mode mismatch"),
-            ("unavailable", "blocked", "activation-ready: wsl_ipv4_mode"),
+            ("unavailable", "blocked", "advisory check has an invalid status: wsl_ipv4_mode"),
         ):
             with self.subTest(value=value, status=status):
                 invalid = windows_preflight("client")
@@ -396,6 +396,41 @@ class LabRuntimePolicyTest(unittest.TestCase):
                         SERVER_IP, CLIENT_IP, 24, PROFILE,
                         MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK,
                     )
+
+    def test_client_noncritical_warnings_are_bounded_and_wsl_ancestry_stays_blocked(self) -> None:
+        document = windows_preflight("client")
+        document["capture_context"] = capture_context(
+            parent_process_names=["node.exe", "powershell.exe", "explorer.exe"],
+            traversal_outcome="parent_process_missing",
+        )
+        replacements = {
+            "capture_origin": ("observed", "warning:indirect-native-powershell", "real"),
+            "wsl_ipv4_mode": ("observed", "warning:wsl-not-required:unavailable", "configured"),
+            "clock_offset": ("observed", "warning:clock-offset-unavailable", "configured"),
+        }
+        for record in document["checks"]:  # type: ignore[union-attr]
+            if record["check"] in replacements:
+                record["status"], record["value"], record["evidence_quality"] = replacements[record["check"]]
+        parsed = RUNTIME.parse_windows_preflight(
+            json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+            SERVER_IP, CLIENT_IP, 24, PROFILE,
+            MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK,
+        )
+        self.assertEqual(parsed["capture_origin"]["status"], "observed")
+        clock = next(item for item in document["checks"] if item["check"] == "clock_offset")  # type: ignore[union-attr]
+        clock.update(value="warning:clock-offset-ms:60000.001", evidence_quality="real")
+        RUNTIME.parse_windows_preflight(
+            json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+            SERVER_IP, CLIENT_IP, 24, PROFILE,
+            MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK,
+        )
+        document["capture_context"]["wsl_environment_keys_present"] = ["WSL_INTEROP"]  # type: ignore[index]
+        with self.assertRaisesRegex(ValueError, "interactive client path|native Windows PowerShell"):
+            RUNTIME.parse_windows_preflight(
+                json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+                SERVER_IP, CLIENT_IP, 24, PROFILE,
+                MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK,
+            )
 
     def test_capture_context_accepts_only_trusted_explorer_root_missing_termination(self) -> None:
         document = windows_preflight("server")

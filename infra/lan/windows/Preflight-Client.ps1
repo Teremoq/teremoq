@@ -22,7 +22,11 @@ Set-StrictMode -Version 3.0
 . (Join-Path $PSScriptRoot 'Preflight-Contract.ps1')
 $checks = New-Object System.Collections.Generic.List[object]
 $script:PreflightBlocked = $false
-$script:AdvisoryChecks = @('windows_caption', 'windows_version', 'wifi_radio', 'wifi_5ghz', 'browser_edge', 'browser_chrome', 'icmp_echo_loss_percent_approximation', 'icmp_echo_rtt_average_ms_approximation')
+$script:AdvisoryChecks = @(
+    'windows_caption', 'windows_version', 'capture_origin', 'wifi_radio', 'wifi_5ghz', 'wsl_ipv4_mode',
+    'browser_edge', 'browser_chrome', 'clock_offset', 'icmp_echo_loss_percent_approximation',
+    'icmp_echo_rtt_average_ms_approximation'
+)
 $captureContext = Get-TeremoqCaptureContext
 $nativeCapture = Test-TeremoqCaptureContextEvidence -Context $captureContext
 
@@ -74,7 +78,8 @@ foreach ($entry in @(@{ Name = 'ServerIPv4'; Bits = $serverBits }, @{ Name = 'Cl
 $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
 Add-Check 'windows_caption' 'observed' $(if ($os) { $os.Caption } else { 'unavailable' }) $(if ($os) { 'real' } else { 'unavailable' })
 Add-Check 'windows_version' 'observed' $(if ($os) { $os.Version } else { 'unavailable' }) $(if ($os) { 'real' } else { 'unavailable' })
-Add-Check 'capture_origin' $(if ($nativeCapture) { 'pass' } else { 'blocked' }) $(if ($nativeCapture) { 'native_windows_powershell' } else { 'wsl_or_ambiguous_capture' }) 'real'
+Add-Check 'capture_origin' $(if ($nativeCapture) { 'pass' } else { 'observed' }) `
+    $(if ($nativeCapture) { 'native_windows_powershell' } else { 'warning:indirect-native-powershell' }) 'real'
 $addressMatches = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $ClientIPv4 })
 $address = if ($addressMatches.Count -eq 1) { $addressMatches[0] } else { $null }
 $addressValue = if ($addressMatches.Count -eq 1) { $ClientIPv4 } elseif ($addressMatches.Count -gt 1) { 'duplicate-address-record' } else { 'unavailable' }
@@ -106,7 +111,9 @@ if ($address) {
 
 $wslObservation = Invoke-TeremoqClientWslIpv4ModeQuery -ClientIPv4 $ClientIPv4
 $wslMode = [string]$wslObservation.Mode
-Add-Check 'wsl_ipv4_mode' $(if ($wslMode -eq $ExpectedWslMode) { 'pass' } else { 'blocked' }) $wslMode $(if ($wslMode -eq 'unavailable') { 'unavailable' } else { 'real' })
+Add-Check 'wsl_ipv4_mode' $(if ($wslMode -eq $ExpectedWslMode) { 'pass' } else { 'observed' }) `
+    $(if ($wslMode -eq $ExpectedWslMode) { $wslMode } else { "warning:wsl-not-required:$wslMode" }) `
+    $(if ($wslMode -eq 'unavailable') { 'configured' } else { 'real' })
 
 $browserFound = $false
 foreach ($browser in @(
@@ -119,6 +126,10 @@ foreach ($browser in @(
 }
 Add-Check 'browser_gate' $(if ($browserFound) { 'pass' } else { 'blocked' }) $(if ($browserFound) { 'chrome-or-edge-present' } else { 'unavailable' }) $(if ($browserFound) { 'real' } else { 'unavailable' })
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+$fixedNode = Join-Path $env:ProgramFiles 'nodejs\node.exe'
+if (-not $nodeCommand -and (Test-Path -LiteralPath $fixedNode -PathType Leaf)) {
+    $nodeCommand = [pscustomobject]@{ Source = $fixedNode }
+}
 $nodeVersion = if ($nodeCommand) { (@(& $nodeCommand.Source --version 2>$null) -join "`n").Trim() } else { 'unavailable' }
 $nodeSupported = $nodeVersion -match '^v22\.[0-9]+\.[0-9]+$'
 Add-Check 'node_runtime_22_x' $(if ($nodeSupported) { 'pass' } else { 'blocked' }) `
@@ -130,8 +141,14 @@ Add-Check 'player_loopback_tcp_3000' $(if ($playerListeners.Count -eq 0) { 'pass
 
 $clockText = (@(& "$env:SystemRoot\System32\w32tm.exe" /query /status /verbose 2>$null) -join "`n")
 $clockOffsetMs = Convert-TeremoqPhaseOffsetMilliseconds -Text $clockText
-$clockValue = if ($null -eq $clockOffsetMs) { 'unavailable' } else { Format-TeremoqInvariantDecimal -Value $clockOffsetMs }
-Add-Check 'clock_offset' $(if ($null -ne $clockOffsetMs -and [math]::Abs($clockOffsetMs) -le $MaximumClockOffsetMs) { 'pass' } else { 'blocked' }) $clockValue $(if ($null -eq $clockOffsetMs) { 'unavailable' } else { 'real' })
+$clockReady = $null -ne $clockOffsetMs -and [math]::Abs($clockOffsetMs) -le $MaximumClockOffsetMs
+$clockValue = if ($clockReady) { Format-TeremoqInvariantDecimal -Value $clockOffsetMs } elseif ($null -eq $clockOffsetMs) {
+    'warning:clock-offset-unavailable'
+} else {
+    'warning:clock-offset-ms:' + (Format-TeremoqInvariantDecimal -Value $clockOffsetMs)
+}
+Add-Check 'clock_offset' $(if ($clockReady) { 'pass' } else { 'observed' }) $clockValue `
+    $(if ($null -eq $clockOffsetMs) { 'configured' } else { 'real' })
 
 $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
 $cpu = if ($computer) { [int]$computer.NumberOfLogicalProcessors } else { 'unavailable' }

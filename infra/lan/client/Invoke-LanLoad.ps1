@@ -23,6 +23,10 @@ if (-not (Test-Path -LiteralPath $evidenceRootFull -PathType Container)) { throw
 if (((Get-Item -LiteralPath $evidenceRootFull -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'EvidenceRoot may not be a reparse point' }
 $node = Get-Command node.exe -ErrorAction SilentlyContinue
 if (-not $node) { $node = Get-Command node -ErrorAction SilentlyContinue }
+$fixedNode = Join-Path $env:ProgramFiles 'nodejs\node.exe'
+if (-not $node -and (Test-Path -LiteralPath $fixedNode -PathType Leaf)) {
+    $node = [pscustomobject]@{ Source = $fixedNode }
+}
 $nodeVersion = if ($node) { (& $node.Source --version 2>$null | Out-String).Trim() } else { 'unavailable' }
 if ($nodeVersion -notmatch '^v22\.[0-9]+\.[0-9]+$') { throw 'approved Node 22.x runtime is required; no runtime is embedded or installed' }
 if ($Action -eq 'Validate') {

@@ -757,7 +757,7 @@ async function execute(action, context, progress) {
   if (action === "preflight") {
     const script = path.join(context.checkout, "infra", "lan", "windows", "Preflight-Client.ps1");
     return runProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
-      "-RunId", context.runId, "-SourceCommit", context.commit, "-ServerIPv4", "192.168.1.130", "-ClientIPv4", "192.168.1.139",
+      "-RunId", context.runId, "-SourceCommit", context.channelCommit, "-ServerIPv4", "192.168.1.130", "-ClientIPv4", "192.168.1.139",
       "-PrefixLength", "24", "-NetworkProfile", "Public", "-ExpectedWslMode", "nat", "-MaximumClockOffsetMs", "60000",
       "-MinimumMtu", "1280", "-MinimumCpuCores", "2", "-MinimumMemoryMiB", "2048", "-MinimumDiskMiB", "4096"], context.checkout, progress, powershellOptions);
   }
