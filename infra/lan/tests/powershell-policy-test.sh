@@ -134,7 +134,11 @@ coordination_plan="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy 
     -Action Plan -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${client_ip}" \
     -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" -CoordinationTlsPort 18443 2>/dev/null | tr -d '\r')"
 [[ "${coordination_plan}" == *'TCP'* && "${coordination_plan}" == *'18443'* && "${coordination_plan}" == *'Control'* ]]
-grep -Fq 'foreach ($port in @(4433, 5678, 6379, 11434, 18443))' "${ROOT}/windows/Preflight-Lan.ps1"
+grep -Fq 'Get-NetTCPConnection -State Listen -ErrorAction Stop' "${ROOT}/windows/Preflight-Lan.ps1"
+listener_fixture="$(wslpath -w "${TEST_DIR}/listener-query-fixture.ps1")"
+contract_helper="$(wslpath -w "${ROOT}/windows/Preflight-Contract.ps1")"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${listener_fixture}" \
+    -ScriptPath "${contract_helper}" | tr -d '\r' | grep -Fq 'listener-query-fixture: PASS'
 if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${firewall}" \
     -Action Validate -RunId lan-firewall-test -SourceCommit "${policy_commit}" -ServerIPv4 "${server_ip}" -ClientIPv4 "${client_ip}" \
     -RouterIPv4 "${router_ip}" -PrefixLength "${prefix}" -NetworkProfile "${profile}" -CoordinationTlsPort 18444 >/dev/null 2>&1; then
@@ -168,7 +172,6 @@ if powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${fi
     printf 'powershell-policy-test: firewall Verify accepted coordination protocol tamper\n' >&2; exit 1
 fi
 wlan_fixture="$(wslpath -w "${TEST_DIR}/preflight-contract-fixture.ps1")"
-contract_helper="$(wslpath -w "${ROOT}/windows/Preflight-Contract.ps1")"
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wlan_fixture}" -ScriptPath "${contract_helper}" >/dev/null
 wsl_plan="$(wslpath -w "${ROOT}/windows/Wsl-Mirrored-Plan.ps1")"
 wsl_plan_output="$(powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${wsl_plan}" -Action Plan -RunId lan-firewall-test 2>/dev/null | tr -d '\r')"

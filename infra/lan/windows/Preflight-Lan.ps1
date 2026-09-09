@@ -149,17 +149,15 @@ try {
 } catch {
     Add-Check 'docker_publication_inventory' 'blocked' 'malformed-or-unavailable' 'real'
 }
-foreach ($port in @(4433, 9000, $MoqUdpPort, $SrtUdpPort)) {
-    $udp = @(Get-NetUDPEndpoint -LocalPort $port -ErrorAction SilentlyContinue)
-    $state = if ($udp.Count -gt 0) { 'occupied' } else { 'free' }
-    $status = if ($state -eq 'free') { 'pass' } else { 'blocked' }
-    Add-Check "listener_udp_$port" $status $state 'real'
+foreach ($record in @(Get-TeremoqListenerCheckRecords -Protocol udp -Ports @(4433, 9000, $MoqUdpPort, $SrtUdpPort) -Query {
+    @(Get-NetUDPEndpoint -ErrorAction Stop)
+})) {
+    Add-Check $record.check $record.status $record.value $record.evidence_quality
 }
-foreach ($port in @(4433, 5678, 6379, 11434, 18443)) {
-    $tcp = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
-    $state = if ($tcp.Count -gt 0) { 'occupied' } else { 'free' }
-    $status = if ($state -eq 'free') { 'pass' } else { 'blocked' }
-    Add-Check "listener_tcp_$port" $status $state 'real'
+foreach ($record in @(Get-TeremoqListenerCheckRecords -Protocol tcp -Ports @(4433, 5678, 6379, 11434, 18443) -Query {
+    @(Get-NetTCPConnection -State Listen -ErrorAction Stop)
+})) {
+    Add-Check $record.check $record.status $record.value $record.evidence_quality
 }
 $wslConfigPath = Join-Path $env:USERPROFILE '.wslconfig'
 Add-Check 'wslconfig_present' 'observed' $(if (Test-Path -LiteralPath $wslConfigPath) { 'present' } else { 'absent' }) 'real'

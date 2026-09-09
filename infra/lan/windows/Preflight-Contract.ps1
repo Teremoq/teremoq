@@ -407,6 +407,45 @@ function Get-TeremoqDockerPsFormat {
     return "{{.Names}}" + [string][char]9 + "{{.Ports}}"
 }
 
+function Get-TeremoqListenerCheckRecords {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('tcp', 'udp')][string]$Protocol,
+        [Parameter(Mandatory = $true)][ValidateCount(1, 32)][int[]]$Ports,
+        [Parameter(Mandatory = $true)][scriptblock]$Query
+    )
+    $rows = @()
+    $queryFailed = $false
+    try {
+        $rows = @(& $Query)
+        if ($rows.Count -gt 65536) { throw 'listener query row count exceeds policy' }
+        foreach ($row in $rows) {
+            $parsedPort = 0
+            if ($null -eq $row -or -not [int]::TryParse([string]$row.LocalPort, [ref]$parsedPort) -or
+                $parsedPort -lt 1 -or $parsedPort -gt 65535) {
+                throw 'listener query returned a malformed port'
+            }
+        }
+    } catch {
+        $queryFailed = $true
+        $rows = @()
+    }
+    foreach ($port in $Ports) {
+        if ($port -lt 1 -or $port -gt 65535) { throw 'listener check port is outside policy' }
+        if ($queryFailed) {
+            [pscustomobject]@{ check = "listener_${Protocol}_$port"; status = 'blocked'; value = 'query-failed'; evidence_quality = 'unavailable' }
+            continue
+        }
+        $matches = @($rows | Where-Object { [int]$_.LocalPort -eq $port })
+        $state = if ($matches.Count -gt 0) { 'occupied' } else { 'free' }
+        [pscustomobject]@{
+            check = "listener_${Protocol}_$port"
+            status = $(if ($state -eq 'free') { 'pass' } else { 'blocked' })
+            value = $state
+            evidence_quality = 'real'
+        }
+    }
+}
+
 function Convert-TeremoqProcessCreationDateToCanonicalDmtf {
     param([Parameter(Mandatory = $true)]$Value)
     if ($Value -is [datetime]) {
