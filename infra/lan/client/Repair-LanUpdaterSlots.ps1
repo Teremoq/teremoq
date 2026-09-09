@@ -54,6 +54,134 @@ function Get-AgentCheckoutArgument {
     return [IO.Path]::GetFullPath($value).TrimEnd('\', '/')
 }
 
+function Get-ExactProcessArgument {
+    param(
+        [Parameter(Mandatory = $true)][string]$CommandLine,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    $pattern = '(?i)(?:^|\s)' + [regex]::Escape($Name) + '\s+(?:"(?<quoted>[^"]+)"|(?<plain>\S+))(?=\s|$)'
+    $matches = [regex]::Matches($CommandLine, $pattern)
+    if ($matches.Count -ne 1) { return $null }
+    if ($matches[0].Groups['quoted'].Success) { return $matches[0].Groups['quoted'].Value }
+    return $matches[0].Groups['plain'].Value
+}
+
+function Test-ExactProcessPathToken {
+    param(
+        [Parameter(Mandatory = $true)][string]$CommandLine,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    $pattern = '(?i)(?:^|\s)(?:"' + [regex]::Escape($Path) + '"|' +
+        [regex]::Escape($Path) + ')(?=\s|$)'
+    return [regex]::Matches($CommandLine, $pattern).Count -eq 1
+}
+
+function Assert-ReachableRecoveryCommit {
+    param([Parameter(Mandatory = $true)][string]$Commit)
+    if ($Commit -cnotmatch $commitPattern) { throw 'managed client process has an invalid commit argument' }
+    try {
+        Invoke-TeremoqGit -CheckoutRoot $checkoutRoot -Arguments @('merge-base', '--is-ancestor', $Commit, $RecoveryCommit) | Out-Null
+    } catch {
+        throw 'managed client process commit is not an ancestor of the recovery commit'
+    }
+}
+
+function Invoke-TeremoqTaskkill {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskkillPath,
+        [Parameter(Mandatory = $true)][int]$ProcessId
+    )
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $TaskkillPath
+    $startInfo.Arguments = Convert-TeremoqWindowsCommandLine -Arguments @('/PID', [string]$ProcessId, '/T', '/F')
+    $startInfo.WorkingDirectory = $checkoutRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { throw 'failed to start taskkill.exe for updater recovery' }
+        if (-not $process.WaitForExit(10000)) {
+            try { $process.Kill() } catch {}
+            if (-not $process.WaitForExit(5000)) { throw 'taskkill.exe did not terminate after timeout' }
+            throw 'taskkill.exe timed out during updater recovery'
+        }
+        return $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Stop-TeremoqInactiveSlotProcesses {
+    param(
+        [Parameter(Mandatory = $true)][string]$Slot,
+        [Parameter(Mandatory = $true)][string]$Head
+    )
+    $launcherPath = [IO.Path]::GetFullPath((Join-Path $Slot 'infra\lan\client\Start-LanInteractiveClient.ps1'))
+    $agentPath = [IO.Path]::GetFullPath((Join-Path $Slot 'infra\lan\client\Lan-Interactive-Agent.mjs'))
+    $powershellPath = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+    $taskkillPath = 'C:\Windows\System32\taskkill.exe'
+    $nodePath = 'C:\Program Files\nodejs\node.exe'
+    foreach ($requiredExecutable in @($powershellPath, $taskkillPath, $nodePath)) {
+        if (-not (Test-Path -LiteralPath $requiredExecutable -PathType Leaf)) {
+            throw 'a reviewed executable required for updater recovery is unavailable'
+        }
+    }
+    $taskkillHash = (Get-FileHash -LiteralPath $taskkillPath -Algorithm SHA256).Hash
+    $managed = New-Object Collections.Generic.List[object]
+    foreach ($process in @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine })) {
+        $isLauncher = $process.Name -ieq 'powershell.exe' -and $process.ExecutablePath -and
+            $process.ExecutablePath.Equals($powershellPath, [StringComparison]::OrdinalIgnoreCase) -and
+            (Test-ExactProcessPathToken -CommandLine $process.CommandLine -Path $launcherPath)
+        $isAgent = $process.Name -ieq 'node.exe' -and $process.ExecutablePath -and
+            $process.ExecutablePath.Equals($nodePath, [StringComparison]::OrdinalIgnoreCase) -and
+            (Test-ExactProcessPathToken -CommandLine $process.CommandLine -Path $agentPath)
+        if (-not $isLauncher -and -not $isAgent) { continue }
+
+        $processCommit = if ($isLauncher) {
+            Get-ExactProcessArgument -CommandLine $process.CommandLine -Name '-ExpectedCommit'
+        } else {
+            Get-ExactProcessArgument -CommandLine $process.CommandLine -Name '--client-commit'
+        }
+        $processChannelCommit = if ($isLauncher) {
+            Get-ExactProcessArgument -CommandLine $process.CommandLine -Name '-ChannelCommit'
+        } else {
+            Get-ExactProcessArgument -CommandLine $process.CommandLine -Name '--source-commit'
+        }
+        if ($processCommit -cne $Head) { throw 'managed inactive-slot process commit differs from the checkout' }
+        Assert-ReachableRecoveryCommit -Commit $processChannelCommit
+        if ($isAgent) {
+            $declaredCheckout = Get-ExactProcessArgument -CommandLine $process.CommandLine -Name '--checkout'
+            if ([string]::IsNullOrEmpty($declaredCheckout) -or
+                -not ([IO.Path]::GetFullPath($declaredCheckout).TrimEnd('\', '/')).Equals($Slot, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'managed inactive-slot agent declares a different checkout'
+            }
+            if (-not (Test-ExactAgentArgument -CommandLine $process.CommandLine -Name '--server' -Value $serverUrl)) {
+                throw 'managed inactive-slot agent declares a different server'
+            }
+        }
+        $managed.Add($process)
+    }
+    if ($managed.Count -eq 0) { return }
+
+    # Kill parent launchers first so they cannot respawn an agent while the slot is retired.
+    $ordered = @($managed | Sort-Object @{ Expression = { if ($_.Name -ieq 'powershell.exe') { 0 } else { 1 } } }, ProcessId)
+    foreach ($process in $ordered) {
+        if (-not (Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue)) { continue }
+        $exitCode = Invoke-TeremoqTaskkill -TaskkillPath $taskkillPath -ProcessId $process.ProcessId
+        if ($exitCode -notin @(0, 128)) { throw 'failed to stop a verified inactive Teremoq client process' }
+    }
+    if ((Get-FileHash -LiteralPath $taskkillPath -Algorithm SHA256).Hash -cne $taskkillHash) {
+        throw 'taskkill.exe changed during updater recovery'
+    }
+    for ($attempt = 1; $attempt -le 20; $attempt += 1) {
+        $remaining = @($managed | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })
+        if ($remaining.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    throw 'verified inactive Teremoq client processes did not stop before slot cleanup'
+}
+
 $nodePath = 'C:\Program Files\nodejs\node.exe'
 $agents = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
     $_.ExecutablePath -and $_.ExecutablePath.Equals($nodePath, [StringComparison]::OrdinalIgnoreCase) -and
@@ -118,6 +246,7 @@ foreach ($slotName in @('checkout-updater-a', 'checkout-updater-b')) {
     } catch {
         throw "managed inactive updater slot is not an ancestor of the recovery commit: $slotName"
     }
+    Stop-TeremoqInactiveSlotProcesses -Slot $slot -Head $head
     Remove-TeremoqBoundedRegularTree -Path $slot -ExpectedParent $clientRoot
     $removed.Add($slotName)
 }

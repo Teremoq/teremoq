@@ -24,6 +24,13 @@ grep -Fq 'expected exactly one matching active LAN channel client' "${recovery}"
 grep -Fq "@('checkout-updater-a', 'checkout-updater-b')" "${recovery}"
 grep -Fq 'Remove-TeremoqBoundedRegularTree -Path $slot -ExpectedParent $clientRoot' "${recovery}"
 grep -Fq 'Get-TeremoqGitCheckoutContext -CheckoutRoot $activeCheckout' "${recovery}"
+grep -Fq 'Stop-TeremoqInactiveSlotProcesses -Slot $slot -Head $head' "${recovery}"
+grep -Fq "'C:\\Windows\\System32\\taskkill.exe'" "${recovery}"
+grep -Fq 'Invoke-TeremoqTaskkill -TaskkillPath $taskkillPath -ProcessId $process.ProcessId' "${recovery}"
+! grep -Fq 'Invoke-TeremoqBoundedNativeProcess -FilePath $taskkillPath' "${recovery}"
+grep -Fq 'verified inactive Teremoq client processes did not stop before slot cleanup' "${recovery}"
+grep -Fq '$processCommit -cne $Head' "${recovery}"
+grep -Fq 'Assert-ReachableRecoveryCommit -Commit $processChannelCommit' "${recovery}"
 if grep -Eqi 'Remove-Item.+(config|evidence|state)|wsl|firewall|pairing|management-token' "${recovery}"; then
     printf 'interactive-channel-policy-test: updater recovery broadened into protected channel or client state\n' >&2
     exit 1
