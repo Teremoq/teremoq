@@ -419,9 +419,8 @@ function Get-TeremoqListenerCheckRecords {
         $rows = @(& $Query)
         if ($rows.Count -gt 65536) { throw 'listener query row count exceeds policy' }
         foreach ($row in $rows) {
-            $parsedPort = 0
-            if ($null -eq $row -or -not [int]::TryParse([string]$row.LocalPort, [ref]$parsedPort) -or
-                $parsedPort -lt 1 -or $parsedPort -gt 65535) {
+            if ($null -eq $row -or $row.LocalPort -isnot [uint16] -or
+                [uint16]$row.LocalPort -lt 1) {
                 throw 'listener query returned a malformed port'
             }
         }
@@ -435,7 +434,7 @@ function Get-TeremoqListenerCheckRecords {
             [pscustomobject]@{ check = "listener_${Protocol}_$port"; status = 'blocked'; value = 'query-failed'; evidence_quality = 'unavailable' }
             continue
         }
-        $matches = @($rows | Where-Object { [int]$_.LocalPort -eq $port })
+        $matches = @($rows | Where-Object { [uint16]$_.LocalPort -eq $port })
         $state = if ($matches.Count -gt 0) { 'occupied' } else { 'free' }
         [pscustomobject]@{
             check = "listener_${Protocol}_$port"
