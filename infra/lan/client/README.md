@@ -93,7 +93,8 @@ for the original child. A failed kill or surviving process produces a terminal
 failed status containing the bounded residual PID instead of blocking the
 queue indefinitely or claiming successful cleanup.
 
-The public launcher still requires only the approved commit. It verifies that
+The public launcher requires the approved client commit and the stable server
+channel commit. It verifies that
 it is non-elevated, checks installed executable paths and ACLs, derives one
 session hash for Git, Node, Windows PowerShell and taskkill, and passes those
 hashes internally to the agent for immediate verification before every spawn.
@@ -105,10 +106,15 @@ open with handles denying write/delete for the entire agent session. The
 installed npm-cli.js is also hash-verified and held by such a handle while used.
 
 The LAN client no longer runs from a USB or tarball package. The first action
-is a native Git clone of `https://github.com/Teremoq/teremoq` on an explicit
-LAN branch ref. No PowerShell file or compatibility file is required before
-that clone. Every run-specific or local artifact is initialized on the client,
-outside the checkout, after the exact Git commit has been validated.
+executes `Start-LanClientFromGit.ps1` directly from an immutable GitHub commit
+URL. That bootstrap performs a native Git clone of
+`https://github.com/Teremoq/teremoq` on the explicit LAN branch. A dirty or
+incompatible checkout is preserved and skipped; a clean managed checkout is
+updated only by fast-forward, or a fresh checkout is created automatically.
+Every run-specific or local artifact is initialized on the client, outside the
+checkout, after the exact Git commit has been validated. Later changes travel
+through the already authenticated LAN channel rather than another manual
+bootstrap.
 
 Current boundary:
 

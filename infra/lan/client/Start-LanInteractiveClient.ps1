@@ -432,10 +432,16 @@ try {
         $head = (Invoke-TeremoqGitText $gitPath $gitPrefix @('rev-parse','HEAD') $sessionHashes.Git | Select-Object -First 1).Trim()
         $branch = (Invoke-TeremoqGitText $gitPath $gitPrefix @('symbolic-ref','--short','HEAD') $sessionHashes.Git | Select-Object -First 1).Trim()
         $remote = (Invoke-TeremoqGitText $gitPath $gitPrefix @('remote','get-url','origin') $sessionHashes.Git | Select-Object -First 1).Trim().TrimEnd('/')
-        $dirty = @(Invoke-TeremoqGitText $gitPath $gitPrefix @('status','--porcelain=v1','--untracked-files=all') $sessionHashes.Git)
+        $dirty = @(Invoke-TeremoqGitText $gitPath $gitPrefix @('status','--porcelain=v1','--untracked-files=all') $sessionHashes.Git |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
         if ($head -cne $ExpectedCommit -or $branch -cne 'codex/lan-e2e-integration' -or
             $remote -cne 'https://github.com/Teremoq/teremoq' -or $dirty.Count -ne 0) {
-            throw 'The Git checkout must be clean, on the reviewed LAN branch and use the official remote'
+            $problems = New-Object Collections.Generic.List[string]
+            if ($head -cne $ExpectedCommit) { $problems.Add('commit') }
+            if ($branch -cne 'codex/lan-e2e-integration') { $problems.Add('branch') }
+            if ($remote -cne 'https://github.com/Teremoq/teremoq') { $problems.Add('remote') }
+            if ($dirty.Count -ne 0) { $problems.Add('local changes') }
+            throw ("The Git checkout failed validation: {0}" -f ($problems -join ', '))
         }
         $tree = @(Invoke-TeremoqGitText $gitPath $gitPrefix @('ls-tree','-r','--full-tree',$ExpectedCommit,'--','infra/lan','supervisor-web') $sessionHashes.Git)
         if ($tree.Count -lt 1 -or $tree.Count -gt 4096) { throw 'Approved client source inventory is outside limits' }
@@ -451,7 +457,8 @@ try {
             $locks.Add($pin.Stream)
         }
         $headAfterLocks = (Invoke-TeremoqGitText $gitPath $gitPrefix @('rev-parse','HEAD') $sessionHashes.Git | Select-Object -First 1).Trim()
-        $dirtyAfterLocks = @(Invoke-TeremoqGitText $gitPath $gitPrefix @('status','--porcelain=v1','--untracked-files=all') $sessionHashes.Git)
+        $dirtyAfterLocks = @(Invoke-TeremoqGitText $gitPath $gitPrefix @('status','--porcelain=v1','--untracked-files=all') $sessionHashes.Git |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
         if ($headAfterLocks -cne $ExpectedCommit -or $dirtyAfterLocks.Count -ne 0) {
             throw 'Checkout changed while source handles were being pinned'
         }

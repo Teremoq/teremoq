@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$ExpectedCommit
+    [Parameter(Mandatory = $true)][string]$ExpectedCommit,
+    [Parameter(Mandatory = $true)][string]$ChannelCommit
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,9 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 if ($ExpectedCommit -cnotmatch '^[0-9a-f]{40}$') {
     throw 'ExpectedCommit must be an exact lowercase Git commit'
 }
+if ($ChannelCommit -cnotmatch '^[0-9a-f]{40}$') {
+    throw 'ChannelCommit must be an exact lowercase Git commit'
+}
 
 $script:Git = 'C:\Program Files\Git\cmd\git.exe'
 if (-not (Test-Path -LiteralPath $script:Git -PathType Leaf)) {
@@ -40,15 +44,32 @@ function Invoke-TeremoqClientGit {
         throw 'git.exe changed during client preparation'
     }
     $previousPreference = $ErrorActionPreference
+    $gitEnvironment = @{}
+    foreach ($name in @(
+        'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_GLOBAL', 'GIT_NO_REPLACE_OBJECTS',
+        'GIT_TERMINAL_PROMPT', 'GCM_INTERACTIVE'
+    )) {
+        $gitEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    }
     $ErrorActionPreference = 'Continue'
     try {
+        $env:GIT_CONFIG_NOSYSTEM = '1'
+        $env:GIT_CONFIG_GLOBAL = 'NUL'
+        $env:GIT_NO_REPLACE_OBJECTS = '1'
+        $env:GIT_TERMINAL_PROMPT = '0'
+        $env:GCM_INTERACTIVE = 'Never'
         $global:LASTEXITCODE = $null
         $lines = @(& $script:Git --no-replace-objects `
             -c core.hooksPath=NUL -c core.fsmonitor=false `
-            -c core.autocrlf=false -c core.eol=lf `
-            -c protocol.file.allow=never -C $WorkingDirectory @Arguments 2>&1)
+            -c core.attributesFile=NUL -c core.autocrlf=false `
+            -c core.eol=lf -c core.safecrlf=true `
+            -c protocol.file.allow=never -c protocol.ext.allow=never `
+            -C $WorkingDirectory @Arguments 2>&1)
         $exitCode = $global:LASTEXITCODE
     } finally {
+        foreach ($name in $gitEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($name, $gitEnvironment[$name], 'Process')
+        }
         $ErrorActionPreference = $previousPreference
     }
     $output = (($lines | ForEach-Object { [string]$_ }) -join "`n").Trim()
@@ -88,11 +109,38 @@ function Test-TeremoqReusableCheckout {
         [void](Invoke-TeremoqClientGit -WorkingDirectory $CheckoutRoot -Arguments @(
             'merge', '--ff-only', $ExpectedCommit
         ))
-        return $true
+        $head = Get-TeremoqGitValue -WorkingDirectory $CheckoutRoot -Arguments @('rev-parse','HEAD')
+        $branch = Get-TeremoqGitValue -WorkingDirectory $CheckoutRoot -Arguments @('symbolic-ref','--short','HEAD')
+        $remote = (Get-TeremoqGitValue -WorkingDirectory $CheckoutRoot -Arguments @('remote','get-url','origin')).TrimEnd('/')
+        $dirtyAfterUpdate = Get-TeremoqGitValue -WorkingDirectory $CheckoutRoot -Arguments @(
+            'status', '--porcelain=v1', '--untracked-files=all'
+        )
+        return ($head -ceq $ExpectedCommit -and $branch -ceq $Branch -and
+            $remote -ceq $RepositoryUrl -and [string]::IsNullOrEmpty($dirtyAfterUpdate))
     } catch {
         return $false
     }
 }
+
+function Get-TeremoqCheckoutValidation {
+    param([Parameter(Mandatory = $true)][string]$CheckoutRoot)
+    $headValue = Get-TeremoqGitValue -WorkingDirectory $CheckoutRoot -Arguments @('rev-parse','HEAD')
+    $branchValue = Get-TeremoqGitValue -WorkingDirectory $CheckoutRoot -Arguments @('symbolic-ref','--short','HEAD')
+    $remoteValue = (Get-TeremoqGitValue -WorkingDirectory $CheckoutRoot -Arguments @('remote','get-url','origin')).TrimEnd('/')
+    $dirtyValue = Get-TeremoqGitValue -WorkingDirectory $CheckoutRoot -Arguments @(
+        'status', '--porcelain=v1', '--untracked-files=all'
+    )
+    return [pscustomobject]@{
+        Valid = ($headValue -ceq $ExpectedCommit -and $branchValue -ceq $Branch -and
+            $remoteValue -ceq $RepositoryUrl -and [string]::IsNullOrEmpty($dirtyValue))
+        Head = $headValue
+        Branch = $branchValue
+        Remote = $remoteValue
+        Dirty = -not [string]::IsNullOrEmpty($dirtyValue)
+    }
+}
+
+if ($MyInvocation.InvocationName -eq '.') { return }
 
 $root = Join-Path $env:LOCALAPPDATA 'Teremoq'
 if (-not (Test-Path -LiteralPath $root -PathType Container)) {
@@ -129,16 +177,17 @@ if ($null -eq $checkout) {
 }
 
 Write-Host '3/4 Verificando el commit y la limpieza finales...' -ForegroundColor Cyan
-$head = Get-TeremoqGitValue -WorkingDirectory $checkout -Arguments @('rev-parse','HEAD')
-$branchName = Get-TeremoqGitValue -WorkingDirectory $checkout -Arguments @('symbolic-ref','--short','HEAD')
-$remote = (Get-TeremoqGitValue -WorkingDirectory $checkout -Arguments @('remote','get-url','origin')).TrimEnd('/')
-$dirtyFinal = Get-TeremoqGitValue -WorkingDirectory $checkout -Arguments @(
-    'status', '--porcelain=v1', '--untracked-files=all'
-)
-if ($head -cne $ExpectedCommit -or $branchName -cne $Branch -or $remote -cne $RepositoryUrl -or
-    -not [string]::IsNullOrEmpty($dirtyFinal)) {
-    throw 'The selected Git checkout does not match the exact reviewed client source'
+$validation = Get-TeremoqCheckoutValidation -CheckoutRoot $checkout
+if (-not $validation.Valid) {
+    $reasons = New-Object Collections.Generic.List[string]
+    if ($validation.Head -cne $ExpectedCommit) { $reasons.Add('commit') }
+    if ($validation.Branch -cne $Branch) { $reasons.Add('branch') }
+    if ($validation.Remote -cne $RepositoryUrl) { $reasons.Add('remote') }
+    if ($validation.Dirty) { $reasons.Add('local changes') }
+    throw ("The selected Git checkout failed final validation: {0}" -f ($reasons -join ', '))
 }
+$head = $validation.Head
 
 Write-Host ("4/4 Iniciando cliente Teremoq en commit {0}..." -f $head.Substring(0, 8)) -ForegroundColor Green
-& (Join-Path $checkout 'infra\lan\client\Start-LanInteractiveClient.ps1') -ExpectedCommit $ExpectedCommit
+& (Join-Path $checkout 'infra\lan\client\Start-LanInteractiveClient.ps1') `
+    -ExpectedCommit $ExpectedCommit -ChannelCommit $ChannelCommit
