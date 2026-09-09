@@ -393,4 +393,62 @@ with tempfile.TemporaryDirectory() as temporary:
     except ValueError:
         pass
 
+    recovered_update_root = Path(temporary) / "recovered-update-state"
+    recovered_update_target = "c" * 40
+    channel.initialize(recovered_update_root, "lan-recovered-update", commit, "192.168.77.20")
+    recovered_update_pairing = (recovered_update_root / "pairing-code").read_text(encoding="ascii").strip()
+    recovered_update_management = (recovered_update_root / "management-token").read_text(encoding="ascii").strip()
+    recovered_update_state = channel.ChannelState(
+        recovered_update_root, "lan-recovered-update", commit, "192.168.77.10", "192.168.77.20"
+    )
+    recovered_update_identity = {
+        "schema_version": 1, "run_id": "lan-recovered-update", "source_commit": commit, "client_commit": commit,
+    }
+    recovered_update_session = recovered_update_state.pair({
+        **recovered_update_identity, "pairing_code": recovered_update_pairing,
+    })["session"]
+    recovered_update_parameters = {
+        "repository_url": channel.UPDATE_REPOSITORY_URL,
+        "repository_ref": channel.UPDATE_REPOSITORY_REF,
+        "target_commit": target,
+    }
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    recovered_update_state.enqueue({
+        **recovered_update_identity, "management_sequence": 1, "request_id": "a" * 32,
+        "action": "update-client", "parameters": recovered_update_parameters,
+    }, recovered_update_management)
+    for event, status in ((1, "started"), (2, "failed")):
+        time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+        recovered_update_state.event({
+            **recovered_update_identity, "sequence": 1, "event": event,
+            "action": "update-client", "status": status, "message": status,
+        }, recovered_update_session)
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    try:
+        recovered_update_state.enqueue({
+            **recovered_update_identity, "management_sequence": 2, "request_id": "b" * 32,
+            "action": "prepare-client", "parameters": {},
+        }, recovered_update_management)
+        raise AssertionError("failed update advanced to preparation without pairing recovery")
+    except ValueError:
+        pass
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    recovered_update = recovered_update_state.recover_pairing({
+        **recovered_update_identity,
+        "next_client_commit": recovered_update_target,
+        "management_sequence": 2,
+        "request_id": "c" * 32,
+    }, recovered_update_management)
+    recovered_update_identity["client_commit"] = recovered_update_target
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    recovered_update_state.pair({
+        **recovered_update_identity, "pairing_code": recovered_update["pairing_code"],
+    })
+    time.sleep(channel.MIN_REQUEST_INTERVAL_SECONDS)
+    resumed_preparation = recovered_update_state.enqueue({
+        **recovered_update_identity, "management_sequence": 3, "request_id": "d" * 32,
+        "action": "prepare-client", "parameters": {},
+    }, recovered_update_management)
+    assert resumed_preparation["accepted"] is True and resumed_preparation["sequence"] == 2
+
 print("lan-interactive-channel-test: PASS")

@@ -889,6 +889,12 @@ class ChannelState:
                 previous = tasks[-1]
                 if previous["terminal_status"] in ("failed", "blocked"):
                     allowed = {previous["action"], "update-client", "stop"}
+                    # A recovery is the only management transition that does not append a task.
+                    recovered_after_previous = (
+                        self.document["last_management_request"] != previous["management_request_id"]
+                    )
+                    if previous["action"] == "update-client" and recovered_after_previous:
+                        allowed.add("prepare-client")
                 elif previous["action"] == "update-client":
                     allowed = {"prepare-client", "stop"}
                 elif previous["action"] == "prepare-client":
