@@ -14,7 +14,7 @@ function Test-TeremoqDeferrableSlotMoveError {
     param([Parameter(Mandatory = $true)][Exception]$Exception)
     $current = $Exception
     for ($depth = 0; $null -ne $current -and $depth -lt 8; $depth += 1) {
-        if ($current -is [IO.IOException] -or $current -is [UnauthorizedAccessException]) { return $true }
+        if ($current -is [IO.IOException]) { return $true }
         $current = $current.InnerException
     }
     return $false

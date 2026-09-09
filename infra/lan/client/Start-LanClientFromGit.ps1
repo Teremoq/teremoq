@@ -140,6 +140,114 @@ function Get-TeremoqCheckoutValidation {
     }
 }
 
+function Assert-TeremoqBootstrapNonReparsePath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $current = [IO.Path]::GetFullPath($Path)
+    while ($current) {
+        $item = Get-Item -LiteralPath $current -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Stable channel core path contains a reparse point'
+        }
+        $parent = [IO.Directory]::GetParent($current)
+        if ($null -eq $parent) { break }
+        $current = $parent.FullName
+    }
+}
+
+function Get-TeremoqReviewedCoreFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$CheckoutRoot,
+        [Parameter(Mandatory = $true)][string]$Commit,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+    if ($RelativePath -cnotmatch '^[A-Za-z0-9._/-]{1,256}$') {
+        throw 'Stable channel core source path is invalid'
+    }
+    $gitObject = ('{0}:{1}' -f $Commit, $RelativePath)
+    $expectedBlob = Get-TeremoqGitValue -WorkingDirectory $CheckoutRoot -Arguments @('rev-parse', $gitObject)
+    if ($expectedBlob -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'Stable channel core Git blob is invalid'
+    }
+    $source = [IO.Path]::GetFullPath((Join-Path $CheckoutRoot ($RelativePath -replace '/', '\')))
+    if (-not $source.StartsWith([IO.Path]::GetFullPath($CheckoutRoot).TrimEnd('\', '/') + '\',
+        [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Stable channel core source escapes checkout'
+    }
+    Assert-TeremoqBootstrapNonReparsePath -Path $source
+    $stream = New-Object IO.FileStream(
+        $source,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    try {
+        if ($stream.Length -lt 1 -or $stream.Length -gt 1048576) {
+            throw 'Stable channel core source size is outside contract'
+        }
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $count = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($count -lt 1) { throw 'Stable channel core source ended early' }
+            $offset += $count
+        }
+        $sha1 = [Security.Cryptography.SHA1]::Create()
+        try {
+            $header = [Text.Encoding]::ASCII.GetBytes(('blob ' + $bytes.Length))
+            $headerWithNull = New-Object byte[] ($header.Length + 1)
+            [Array]::Copy($header, $headerWithNull, $header.Length)
+            [void]$sha1.TransformBlock($headerWithNull, 0, $headerWithNull.Length, $headerWithNull, 0)
+            [void]$sha1.TransformFinalBlock($bytes, 0, $bytes.Length)
+            $actualBlob = ([BitConverter]::ToString($sha1.Hash) -replace '-', '').ToLowerInvariant()
+        } finally { $sha1.Dispose() }
+        if ($actualBlob -cne $expectedBlob) {
+            throw 'Stable channel core source differs from the approved Git blob'
+        }
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $contentSha256 = ([BitConverter]::ToString($sha256.ComputeHash($bytes)) -replace '-', '').ToLowerInvariant()
+        } finally { $sha256.Dispose() }
+        return [pscustomobject]@{
+            RelativePath = $RelativePath
+            Name = [IO.Path]::GetFileName($source)
+            Bytes = $bytes
+            Sha256 = $contentSha256
+            Blob = $expectedBlob
+        }
+    } finally { $stream.Dispose() }
+}
+
+function Open-TeremoqStableCoreFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ExpectedSha256
+    )
+    Assert-TeremoqBootstrapNonReparsePath -Path $Path
+    $stream = New-Object IO.FileStream(
+        [IO.Path]::GetFullPath($Path),
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    try {
+        if ($stream.Length -lt 1 -or $stream.Length -gt 1048576) {
+            throw 'Stable channel core installed file size is outside contract'
+        }
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $actual = ([BitConverter]::ToString($sha256.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+        } finally { $sha256.Dispose() }
+        if ($actual -cne $ExpectedSha256) {
+            throw 'Existing stable channel core differs from the reviewed version'
+        }
+        $stream.Position = 0
+        return $stream
+    } catch {
+        $stream.Dispose()
+        throw
+    }
+}
+
 function Install-TeremoqStableChannelCore {
     param(
         [Parameter(Mandatory = $true)][string]$ClientRoot,
@@ -147,11 +255,22 @@ function Install-TeremoqStableChannelCore {
     )
     $clientRootFull = [IO.Path]::GetFullPath($ClientRoot).TrimEnd('\', '/')
     $checkoutFull = [IO.Path]::GetFullPath($CheckoutRoot).TrimEnd('\', '/')
-    $sourceLauncher = Join-Path $checkoutFull 'infra\lan\client\Start-LanInteractiveClient.ps1'
-    $sourceAgent = Join-Path $checkoutFull 'infra\lan\client\Lan-Interactive-Agent.mjs'
-    $launcherSha256 = (Get-FileHash -LiteralPath $sourceLauncher -Algorithm SHA256).Hash.ToLowerInvariant()
-    $agentSha256 = (Get-FileHash -LiteralPath $sourceAgent -Algorithm SHA256).Hash.ToLowerInvariant()
-    $identityBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($launcherSha256 + "`n" + $agentSha256 + "`n")
+    Assert-TeremoqBootstrapNonReparsePath -Path $clientRootFull
+    Assert-TeremoqBootstrapNonReparsePath -Path $checkoutFull
+    $sources = @(
+        Get-TeremoqReviewedCoreFile -CheckoutRoot $checkoutFull -Commit $ExpectedCommit `
+            -RelativePath 'infra/lan/client/Start-LanInteractiveClient.ps1'
+        Get-TeremoqReviewedCoreFile -CheckoutRoot $checkoutFull -Commit $ExpectedCommit `
+            -RelativePath 'infra/lan/client/Lan-Interactive-Agent.mjs'
+        Get-TeremoqReviewedCoreFile -CheckoutRoot $checkoutFull -Commit $ExpectedCommit `
+            -RelativePath 'infra/lan/client/Pin-LanTaskSources.ps1'
+    )
+    $launcherSha256 = $sources[0].Sha256
+    $agentSha256 = $sources[1].Sha256
+    $sourcePinSha256 = $sources[2].Sha256
+    $identityBytes = (New-Object Text.UTF8Encoding($false)).GetBytes(
+        $launcherSha256 + "`n" + $agentSha256 + "`n" + $sourcePinSha256 + "`n"
+    )
     $identityHash = [Security.Cryptography.SHA256]::Create()
     try {
         $version = (([BitConverter]::ToString($identityHash.ComputeHash($identityBytes)) -replace '-', '').ToLowerInvariant()).Substring(0, 16)
@@ -165,20 +284,40 @@ function Install-TeremoqStableChannelCore {
 
     if (-not (Test-Path -LiteralPath $channelRoot)) {
         $staging = Join-Path $clientRootFull ('.channel-core-next-' + [Guid]::NewGuid().ToString('N'))
-        [void][IO.Directory]::CreateDirectory($staging)
-        [IO.File]::Copy($sourceLauncher, (Join-Path $staging 'Start-LanInteractiveClient.ps1'), $false)
-        [IO.File]::Copy($sourceAgent, (Join-Path $staging 'Lan-Interactive-Agent.mjs'), $false)
-        if ((Get-FileHash -LiteralPath (Join-Path $staging 'Start-LanInteractiveClient.ps1') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $launcherSha256 -or
-            (Get-FileHash -LiteralPath (Join-Path $staging 'Lan-Interactive-Agent.mjs') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $agentSha256) {
-            throw 'Stable channel core copy failed verification'
+        try {
+            [void][IO.Directory]::CreateDirectory($staging)
+            Assert-TeremoqBootstrapNonReparsePath -Path $staging
+            foreach ($source in $sources) {
+                $target = Join-Path $staging $source.Name
+                $output = New-Object IO.FileStream($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                try {
+                    $output.Write($source.Bytes, 0, $source.Bytes.Length)
+                    $output.Flush($true)
+                } finally { $output.Dispose() }
+            }
+            [IO.Directory]::Move($staging, $channelRoot)
+        } finally {
+            if (Test-Path -LiteralPath $staging) {
+                if (-not $staging.StartsWith($clientRootFull + '\.channel-core-next-',
+                    [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Stable channel staging cleanup escaped its managed prefix'
+                }
+                [IO.Directory]::Delete($staging, $true)
+            }
         }
-        [IO.Directory]::Move($staging, $channelRoot)
     }
+    Assert-TeremoqBootstrapNonReparsePath -Path $channelRoot
     $channelLauncher = Join-Path $channelRoot 'Start-LanInteractiveClient.ps1'
     $channelAgent = Join-Path $channelRoot 'Lan-Interactive-Agent.mjs'
-    if ((Get-FileHash -LiteralPath $channelLauncher -Algorithm SHA256).Hash.ToLowerInvariant() -cne $launcherSha256 -or
-        (Get-FileHash -LiteralPath $channelAgent -Algorithm SHA256).Hash.ToLowerInvariant() -cne $agentSha256) {
-        throw 'Existing stable channel core differs from the reviewed version'
+    $channelSourcePin = Join-Path $channelRoot 'Pin-LanTaskSources.ps1'
+    $pins = New-Object Collections.Generic.List[IO.FileStream]
+    try {
+        $pins.Add((Open-TeremoqStableCoreFile -Path $channelLauncher -ExpectedSha256 $launcherSha256))
+        $pins.Add((Open-TeremoqStableCoreFile -Path $channelAgent -ExpectedSha256 $agentSha256))
+        $pins.Add((Open-TeremoqStableCoreFile -Path $channelSourcePin -ExpectedSha256 $sourcePinSha256))
+    } catch {
+        for ($index = $pins.Count - 1; $index -ge 0; $index -= 1) { $pins[$index].Dispose() }
+        throw
     }
     return [pscustomobject]@{
         Version = $version
@@ -186,6 +325,8 @@ function Install-TeremoqStableChannelCore {
         Launcher = $channelLauncher
         Agent = $channelAgent
         AgentSha256 = $agentSha256
+        SourcePinSha256 = $sourcePinSha256
+        Pins = $pins
     }
 }
 
@@ -239,5 +380,12 @@ $head = $validation.Head
 
 $channelCore = Install-TeremoqStableChannelCore -ClientRoot $root -CheckoutRoot $checkout
 Write-Host ("4/4 Iniciando canal estable {0} con cliente {1}..." -f $channelCore.Version, $head.Substring(0, 8)) -ForegroundColor Green
-& $channelCore.Launcher -ExpectedCommit $ExpectedCommit -ChannelCommit $ChannelCommit `
-    -WorkCheckout $checkout -ChannelCoreAgentSha256 $channelCore.AgentSha256
+try {
+    & $channelCore.Launcher -ExpectedCommit $ExpectedCommit -ChannelCommit $ChannelCommit `
+        -WorkCheckout $checkout -ChannelCoreAgentSha256 $channelCore.AgentSha256 `
+        -ChannelCoreSourcePinSha256 $channelCore.SourcePinSha256
+} finally {
+    for ($index = $channelCore.Pins.Count - 1; $index -ge 0; $index -= 1) {
+        $channelCore.Pins[$index].Dispose()
+    }
+}

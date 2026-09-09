@@ -14,8 +14,10 @@ fi
 (
 cd -- "$(wslpath -u 'C:\')"
 TEREMOQ_LOCK_LAUNCHER="${ROOT}/client/Start-LanInteractiveClient.ps1" \
+    TEREMOQ_LOCK_REPAIR="${ROOT}/client/Repair-LanUpdaterSlots.ps1" \
+    TEREMOQ_LOCK_SOURCE_PIN="${ROOT}/client/Pin-LanTaskSources.ps1" \
     TEREMOQ_LOCK_TEST="${TEST_DIR}/interactive-client-lock-test.ps1" \
-    WSLENV="TEREMOQ_LOCK_LAUNCHER/p:TEREMOQ_LOCK_TEST/p" \
+    WSLENV="TEREMOQ_LOCK_LAUNCHER/p:TEREMOQ_LOCK_REPAIR/p:TEREMOQ_LOCK_SOURCE_PIN/p:TEREMOQ_LOCK_TEST/p" \
     powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command '
     $ErrorActionPreference = "Stop"
     $local = Join-Path $env:TEMP ("teremoq-lock-policy-" + [Guid]::NewGuid().ToString("N"))
@@ -24,6 +26,8 @@ TEREMOQ_LOCK_LAUNCHER="${ROOT}/client/Start-LanInteractiveClient.ps1" \
     New-Item -ItemType Directory -Path $client,$tests | Out-Null
     try {
         Copy-Item -LiteralPath $env:TEREMOQ_LOCK_LAUNCHER -Destination (Join-Path $client "Start-LanInteractiveClient.ps1")
+        Copy-Item -LiteralPath $env:TEREMOQ_LOCK_REPAIR -Destination (Join-Path $client "Repair-LanUpdaterSlots.ps1")
+        Copy-Item -LiteralPath $env:TEREMOQ_LOCK_SOURCE_PIN -Destination (Join-Path $client "Pin-LanTaskSources.ps1")
         Copy-Item -LiteralPath $env:TEREMOQ_LOCK_TEST -Destination (Join-Path $tests "interactive-client-lock-test.ps1")
         Set-Location -LiteralPath $local
         & (Join-Path $tests "interactive-client-lock-test.ps1") | Out-Null

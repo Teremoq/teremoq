@@ -121,11 +121,12 @@ const agentArgv = [
   "--evidence-root", "C:\\evidence", "--git-sha256", "3".repeat(64),
   "--node-sha256", "4".repeat(64), "--npm-cli-sha256", "5".repeat(64),
   "--powershell-sha256", "6".repeat(64), "--taskkill-sha256", "7".repeat(64),
-  "--channel-mode", "stable",
+  "--channel-mode", "stable", "--source-pin-sha256", "8".repeat(64),
 ];
 const parsedArgv = parseArguments(agentArgv);
-expect(agentArgv.length === 30 && Object.keys(parsedArgv).length === 15, "closed agent argv cardinality drifted");
+expect(agentArgv.length === 32 && Object.keys(parsedArgv).length === 16, "closed agent argv cardinality drifted");
 expect(parsedArgv["--taskkill-sha256"] === "7".repeat(64), "taskkill session hash was not parsed");
+expect(parsedArgv["--source-pin-sha256"] === "8".repeat(64), "source pin hash was not parsed");
 expect(parsedArgv["--credential-mode"] === "pair", "credential mode was not parsed");
 expect(parsedArgv["--channel-mode"] === "stable", "stable channel mode was not parsed");
 const originalProgramFiles = process.env.ProgramFiles;
@@ -510,6 +511,24 @@ if (process.platform === "win32") {
   );
   expect(killed.code === -1 && killed.signal === "termination-requested", "successful taskkill was not observed");
   expect(killed.residualPid === null && killed.output.includes("taskkill_exit=0"), "successful termination evidence is incomplete");
+  const sourcePinLost = await runProcess(
+    process.execPath,
+    ["-e", "setInterval(() => {}, 1000)"],
+    process.cwd(),
+    async () => ({}),
+    {
+      actionTimeoutMs: 5_000,
+      heartbeatMs: 10_000,
+      terminationTimeoutMs: 2_000,
+      expectedFileSha256: nodeSha256,
+      taskkillSha256,
+      sourceGuard: new Promise((resolve) => setTimeout(() => resolve({ code: 9, signal: "pin-lost" }), 25)),
+    },
+  );
+  expect(sourcePinLost.code === -1 && sourcePinLost.signal === "termination-requested",
+    "loss of the task source pin did not terminate its workload");
+  expect(sourcePinLost.output.includes("source_pin_exit=9") && sourcePinLost.output.includes("termination_reason=source-pin-lost"),
+    "loss of the task source pin was not preserved in bounded evidence");
 } else {
   process.kill(survived.residualPid, "SIGKILL");
 }

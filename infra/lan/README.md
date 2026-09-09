@@ -232,6 +232,13 @@ absent from argv, environment, disk and logs. The server channel commit remains
 immutable for authorization and rollback while the separately recorded client
 commit advances after a successful update.
 
+The stable core is verified from exact Git blobs and remains pinned for the
+session. The mutable checkout is pinned only for the duration of each task:
+every tracked `infra/lan` and `supervisor-web` file is checked against the
+approved Git object and held read-only until the workload exits. A build,
+checkout, cleanup or source-pin failure becomes a terminal task result; it does
+not stop the authenticated polling loop.
+
 The channel cannot listen until the native server preflight passes and the
 exact Defender and Hyper-V rules for UDP/14433 and TCP/18443 have been applied
 and verified. Include `-CoordinationTlsPort 18443` in the separately authorized
@@ -281,9 +288,10 @@ The launcher remains a one-command entrypoint. It validates a non-elevated
 token, protected installed-executable ACLs, non-reparse paths and final handle
 paths, then records local SHA-256 values as session invariants. The agent checks
 each invariant immediately before `spawn` with `shell:false`. In stable mode,
-only the content-addressed launcher, agent and npm-cli.js remain locked for the
-session. The mutable workload checkout is revalidated before every task and can
-therefore be advanced or quarantined without closing the channel.
+the content-addressed launcher, agent, source-pin helper and npm-cli.js remain
+locked for the session. The mutable workload checkout is revalidated before
+every task and its reviewed sources are locked only while that workload runs;
+it can therefore advance between tasks without closing the channel.
 
 The server operator enqueues one action at a time with `enqueue` and reads
 bounded progress with `status`. A `stop` request can cancel a running child

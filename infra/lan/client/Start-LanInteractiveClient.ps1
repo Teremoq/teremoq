@@ -6,6 +6,7 @@ param(
     [string]$ChannelCommit = '',
     [string]$WorkCheckout = '',
     [string]$ChannelCoreAgentSha256 = '',
+    [string]$ChannelCoreSourcePinSha256 = '',
     [switch]$ResumeSessionStdin,
     [string]$HandoffAckPath = ''
 )
@@ -287,7 +288,7 @@ function Invoke-TeremoqPinnedNodeProcess {
         [string]$HandoffAckPath = '',
         [string]$HandoffAckValue = ''
     )
-    if ($Arguments.Count -lt 1 -or $Arguments.Count -gt 32 -or
+    if ($Arguments.Count -lt 1 -or $Arguments.Count -gt 33 -or
         @($Arguments | Where-Object { $null -eq $_ -or $_.Length -gt 8192 }).Count -ne 0) {
         throw 'Pinned Node arguments are outside contract'
     }
@@ -367,7 +368,8 @@ function New-TeremoqAgentArguments {
         [Parameter(Mandatory = $true)][string]$EvidenceRoot,
         [Parameter(Mandatory = $true)][hashtable]$SessionHashes,
         [Parameter(Mandatory = $true)][ValidateSet('pair','session')][string]$CredentialMode,
-        [Parameter(Mandatory = $true)][ValidateSet('stable','worktree')][string]$ChannelMode
+        [Parameter(Mandatory = $true)][ValidateSet('stable','worktree')][string]$ChannelMode,
+        [Parameter(Mandatory = $true)][string]$SourcePinSha256
     )
     return @(
         $AgentPath,
@@ -379,7 +381,8 @@ function New-TeremoqAgentArguments {
         '--npm-cli-sha256',$SessionHashes.NpmCli,
         '--powershell-sha256',$SessionHashes.PowerShell,
         '--taskkill-sha256',$SessionHashes.Taskkill,
-        '--channel-mode',$ChannelMode
+        '--channel-mode',$ChannelMode,
+        '--source-pin-sha256',$SourcePinSha256
     )
 }
 
@@ -398,10 +401,12 @@ if ([string]::IsNullOrEmpty($ChannelCommit)) { $ChannelCommit = $ExpectedCommit 
 if ($ChannelCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'ChannelCommit must identify the exact paired server channel' }
 
 $stableChannel = -not [string]::IsNullOrEmpty($WorkCheckout) -or
-    -not [string]::IsNullOrEmpty($ChannelCoreAgentSha256)
+    -not [string]::IsNullOrEmpty($ChannelCoreAgentSha256) -or
+    -not [string]::IsNullOrEmpty($ChannelCoreSourcePinSha256)
 if ($stableChannel -and ([string]::IsNullOrEmpty($WorkCheckout) -or
-    $ChannelCoreAgentSha256 -cnotmatch '^[0-9a-f]{64}$')) {
-    throw 'Stable channel checkout and agent digest must be supplied together'
+    $ChannelCoreAgentSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+    $ChannelCoreSourcePinSha256 -cnotmatch '^[0-9a-f]{64}$')) {
+    throw 'Stable channel checkout and core digests must be supplied together'
 }
 $checkout = if ($stableChannel) {
     [IO.Path]::GetFullPath($WorkCheckout).TrimEnd('\', '/')
@@ -411,6 +416,7 @@ $checkout = if ($stableChannel) {
 $channelMode = if ($stableChannel) { 'stable' } else { 'worktree' }
 $launcherPath = [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
 $agentPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'Lan-Interactive-Agent.mjs'))
+$sourcePinPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'Pin-LanTaskSources.ps1'))
 $gitPath = 'C:\Program Files\Git\cmd\git.exe'
 $nodePath = 'C:\Program Files\nodejs\node.exe'
 $npmCliPath = 'C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js'
@@ -430,6 +436,8 @@ try {
         }
         $agentPin = Open-TeremoqPinnedFile -Path $agentPath -ExpectedSha256 $ChannelCoreAgentSha256
         $locks.Add($agentPin.Stream)
+        $sourcePin = Open-TeremoqPinnedFile -Path $sourcePinPath -ExpectedSha256 $ChannelCoreSourcePinSha256
+        $locks.Add($sourcePin.Stream)
     }
     $npmCliPin = Open-TeremoqPinnedFile -Path $npmCliPath
     $locks.Add($npmCliPin.Stream)
@@ -532,7 +540,8 @@ try {
     }
     $agentArguments = New-TeremoqAgentArguments -AgentPath $agentPath `
         -RunId $runId -ChannelCommit $ChannelCommit -ClientCommit $head -Checkout $checkout -StateRoot $stateRoot `
-        -EvidenceRoot $evidenceRoot -SessionHashes $sessionHashes -CredentialMode $credentialMode -ChannelMode $channelMode
+        -EvidenceRoot $evidenceRoot -SessionHashes $sessionHashes -CredentialMode $credentialMode -ChannelMode $channelMode `
+        -SourcePinSha256 $(if ($stableChannel) { $ChannelCoreSourcePinSha256 } else { '0' * 64 })
     $sessionRestart = 0
     while ($true) {
         $agentExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -WorkingDirectory $checkout `

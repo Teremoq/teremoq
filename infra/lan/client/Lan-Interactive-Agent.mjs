@@ -8,7 +8,7 @@ import fs from "node:fs";
 import https from "node:https";
 import path from "node:path";
 import tls from "node:tls";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ACTIONS = new Set(["update-client", "prepare-client", "preflight", "player-1", "load-5", "load-10", "load-25", "wifi-observe", "collect", "stop"]);
 const MAX_RESPONSE = 32768;
@@ -53,6 +53,13 @@ const LOCAL_STAGE_LABELS = Object.freeze({
 
 function fail(message) { throw new Error(message); }
 function sleep(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
+function writeLocalStatus(message) {
+  try {
+    if (!process.stdout.destroyed) process.stdout.write(message);
+  } catch {
+    // Console output is informational and must never become channel state.
+  }
+}
 
 class ChannelRequestError extends Error {
   constructor(kind, message, statusCode = 0) {
@@ -120,12 +127,13 @@ function parseArguments(argv) {
     "--server", "--fingerprint", "--run-id", "--source-commit", "--client-commit", "--credential-mode",
     "--checkout", "--state-root", "--evidence-root", "--git-sha256", "--node-sha256",
     "--npm-cli-sha256", "--powershell-sha256", "--taskkill-sha256", "--channel-mode",
+    "--source-pin-sha256",
   ];
   if (Object.keys(values).length !== required.length || required.some((key) => !values[key])) fail("agent arguments differ from the closed contract");
   if (values["--server"] !== "https://192.168.1.130:18443") fail("server URL differs from the exact LAN endpoint");
   if (!/^[0-9a-f]{64}$/.test(values["--fingerprint"]) || !/^[0-9a-f]{40}$/.test(values["--source-commit"]) ||
       !/^[0-9a-f]{40}$/.test(values["--client-commit"])) fail("invalid fingerprint or commit");
-  for (const key of ["--git-sha256", "--node-sha256", "--npm-cli-sha256", "--powershell-sha256", "--taskkill-sha256"]) {
+  for (const key of ["--git-sha256", "--node-sha256", "--npm-cli-sha256", "--powershell-sha256", "--taskkill-sha256", "--source-pin-sha256"]) {
     if (!/^[0-9a-f]{64}$/.test(values[key])) fail("invalid executable approval hash");
   }
   if (!/^lan-[a-z0-9][a-z0-9-]{0,31}$/.test(values["--run-id"]) || !["pair", "session"].includes(values["--credential-mode"])) fail("invalid run or credential input policy");
@@ -430,6 +438,105 @@ function approvedGitBlobId(context, relativePath) {
   return blob;
 }
 
+function approvedTaskSourceInventory(context) {
+  verifyApprovedFile(context.git, context.gitSha256);
+  const result = spawnSync(context.git, ["--no-replace-objects", "-c", "core.hooksPath=NUL", "-c", "core.fsmonitor=false",
+    "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.safecrlf=true", "-c", "protocol.file.allow=never",
+    "-C", context.checkout, "ls-tree", "-r", "--full-tree", context.commit, "--", "infra/lan", "supervisor-web"], {
+    encoding: "utf8", windowsHide: true, shell: false, env: restrictedEnvironment(), timeout: 30_000,
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (result.status !== 0 || result.error) fail("approved task source inventory could not be resolved");
+  const lines = result.stdout.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 1 || lines.length > 4096) fail("approved task source inventory is outside limits");
+  const entries = lines.map((line) => {
+    const match = /^100(?:644|755) blob ([0-9a-f]{40})\t([A-Za-z0-9._/-]{1,512})$/.exec(line);
+    if (!match || (!match[2].startsWith("infra/lan/") && !match[2].startsWith("supervisor-web/")) ||
+        match[2].split("/").some((part) => !part || part === "." || part === "..")) {
+           fail("approved task source inventory contains an unsupported entry");
+    }
+    return { blob: match[1], relativePath: match[2] };
+  });
+  if (new Set(entries.map((entry) => entry.relativePath)).size !== entries.length) {
+    fail("approved task source inventory contains duplicate paths");
+  }
+  return entries;
+}
+
+async function pinTaskSources(context, options = {}) {
+  if (context.channelMode !== "stable") return { lost: new Promise(() => {}), release: async () => {} };
+  const powershell = `${WINDOWS_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+  const helper = path.join(path.dirname(fileURLToPath(import.meta.url)), "Pin-LanTaskSources.ps1");
+  verifyApprovedFile(powershell, context.powershellSha256);
+  verifyApprovedFile(helper, context.sourcePinSha256);
+  const inventory = approvedTaskSourceInventory(context);
+  const manifest = `${inventory.map((entry) => `${entry.blob}\t${entry.relativePath}`).join("\n")}\nEND\n`;
+  const spawnProcess = options.spawnProcess ?? spawn;
+  const child = spawnProcess(powershell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper,
+    "-CheckoutRoot", context.checkout], {
+    cwd: context.checkout, windowsHide: true, shell: false, env: restrictedEnvironment(), stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  let ready = false;
+  let releasing = false;
+  let settleReady;
+  let rejectReady;
+  const readyPromise = new Promise((resolve, reject) => { settleReady = resolve; rejectReady = reject; });
+  let settleExit;
+  const exitPromise = new Promise((resolve) => { settleExit = resolve; });
+  const readyTimer = setTimeout(() => {
+    child.kill();
+    rejectReady(new Error("task source pin timed out"));
+  }, options.readyTimeoutMs ?? 30_000);
+  const completeExit = (code, signal, error = null) => {
+    clearTimeout(readyTimer);
+    settleExit({ code: code ?? -1, signal: signal ?? "", error, releasing });
+    if (!ready) rejectReady(error || new Error(`task source pin exited before readiness (${code ?? -1})`));
+  };
+  child.once("error", (error) => completeExit(-1, "spawn-error", error));
+  child.once("exit", (code, signal) => completeExit(code, signal));
+  child.stdout.on("data", (chunk) => {
+    if (ready) return;
+    stdout += chunk.toString("utf8");
+    if (stdout.length > 128) {
+      child.kill();
+      rejectReady(new Error("task source pin output exceeded contract"));
+      return;
+    }
+    if (/\r?\n/.test(stdout)) {
+      if (!/^PINNED\r?\n$/.test(stdout)) {
+        child.kill();
+        rejectReady(new Error("task source pin readiness differed from contract"));
+        return;
+      }
+      ready = true;
+      clearTimeout(readyTimer);
+      settleReady();
+    }
+  });
+  child.stderr.on("data", (chunk) => { stderr = (stderr + chunk.toString("utf8")).slice(-512); });
+  child.stdin.on("error", () => {});
+  child.stdin.write(manifest, "ascii");
+  await readyPromise;
+  return {
+    lost: exitPromise.then((terminal) => ({ ...terminal, detail: scrub(stderr || "source pin exited") })),
+    release: async () => {
+      releasing = true;
+      child.stdin.end("release\n", "ascii");
+      const terminal = await Promise.race([
+        exitPromise,
+        sleep(options.releaseTimeoutMs ?? 5_000).then(() => ({ timeout: true })),
+      ]);
+      if (terminal.timeout) {
+        child.kill();
+        throw new Error("task source pin did not release");
+      }
+      if (terminal.code !== 0) throw new Error(`task source pin release failed (${terminal.code})`);
+    },
+  };
+}
+
 function pinUpdatedLauncher(context, launcher, expectedBlob) {
   const powershell = `${WINDOWS_ROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   verifyApprovedFile(powershell, context.powershellSha256);
@@ -711,21 +818,46 @@ function runProcess(file, args, cwd, onProgress, options = {}) {
       if (terminating) maybeFinishTermination();
       else finish({ ...childTerminal, output: scrub(output), residualPid: null });
     });
+    if (options.sourceGuard) {
+      Promise.resolve(options.sourceGuard).then(
+        (terminal) => {
+          if (settled) return;
+          output = `${output}\nsource_pin_exit=${terminal.code ?? -1}; source_pin_signal=${terminal.signal || "none"}`;
+          terminateTree("source-pin-lost");
+        },
+        (error) => {
+          if (settled) return;
+          output = `${output}\nsource_pin_error=${scrub(error?.message || "unknown")}`;
+          terminateTree("source-pin-lost");
+        },
+      );
+    }
   });
 }
 
 async function execute(action, context, progress) {
   if (!ACTIONS.has(action)) fail("action is not approved");
   verifyCheckout(context);
+  const sourcePin = await pinTaskSources(context);
+  try {
+    return await executeWithPinnedSources(action, context, progress, sourcePin.lost);
+  } finally {
+    await sourcePin.release();
+  }
+}
+
+async function executeWithPinnedSources(action, context, progress, sourceGuard) {
   const powershell = `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   const nodeOptions = {
     expectedFileSha256: context.nodeSha256,
     taskkillSha256: context.taskkillSha256,
+    sourceGuard,
   };
   const powershellOptions = {
     expectedFileSha256: context.powershellSha256,
     taskkillSha256: context.taskkillSha256,
     actionTimeoutMs: actionTimeoutMs(action),
+    sourceGuard,
   };
   if (action === "update-client") {
     const update = context.taskParameters;
@@ -897,6 +1029,7 @@ async function confirmUpdateTransition(channelRequest, identity, task, session, 
 
 async function main() {
   if (process.platform !== "win32" || process.versions.node.split(".")[0] !== "22") fail("agent requires native Windows and Node 22.x");
+  process.stdout.on("error", () => {});
   const values = parseArguments(process.argv.slice(2));
   const credential = fs.readFileSync(0, { encoding: "ascii" }).trim();
   if (values["--credential-mode"] === "pair" && !/^[0-9a-f]{48}$/.test(credential)) fail("invalid one-time pairing code from standard input");
@@ -914,6 +1047,7 @@ async function main() {
     npmCliSha256: values["--npm-cli-sha256"],
     powershellSha256: values["--powershell-sha256"],
     taskkillSha256: values["--taskkill-sha256"],
+    sourcePinSha256: values["--source-pin-sha256"],
     channelMode: values["--channel-mode"],
     activeLevel: 0,
   };
@@ -942,7 +1076,7 @@ async function main() {
   } else {
     prefetchedTask.value = await probeResumedSession(channelRequest, identity, session);
   }
-  process.stdout.write("[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...\n");
+  writeLocalStatus("[Teremoq] Canal seguro conectado. Esperando ordenes del servidor...\n");
   for (;;) {
     const task = validatePolledTask(await receiveNextTask(prefetchedTask,
       () => retryChannelOperation(() => channelRequest("/v1/poll", identity, session))), identity);
@@ -952,7 +1086,7 @@ async function main() {
     }
     context.taskParameters = task.parameters;
     context.taskSequence = task.sequence;
-    process.stdout.write(`${formatLocalStatus(task.action, "received", task.sequence)}\n`);
+    writeLocalStatus(`${formatLocalStatus(task.action, "received", task.sequence)}\n`);
     let event = 1;
     let sendQueue = Promise.resolve();
     const send = (status, message, terminal = false) => {
@@ -967,11 +1101,11 @@ async function main() {
       return sendQueue;
     };
     const started = await send("started", `${task.action} started`);
-    process.stdout.write(`${formatLocalStatus(task.action, "running", task.sequence)}\n`);
+    writeLocalStatus(`${formatLocalStatus(task.action, "running", task.sequence)}\n`);
     const result = started.cancel_requested === true
       ? { code: -1, signal: "cancel-requested", output: "The server cancelled the action before execution." }
       : await executeTaskSafely(task.action, context, (message) => {
-          process.stdout.write(`${formatLocalStatus(task.action, "progress", task.sequence)}\n`);
+          writeLocalStatus(`${formatLocalStatus(task.action, "progress", task.sequence)}\n`);
           return send("progress", message);
         });
     if (result.code === 0 && ["player-1", "load-5", "load-10", "load-25"].includes(task.action)) {
@@ -981,7 +1115,7 @@ async function main() {
     if (task.action === "update-client" && result.code === 0) {
       const terminal = await confirmUpdateTransition(channelRequest, identity, task, session, result.handoff?.commit || "", event++,
         `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`);
-      process.stdout.write(`${formatLocalStatus(task.action, "complete", task.sequence)}\n`);
+      writeLocalStatus(`${formatLocalStatus(task.action, "complete", task.sequence)}\n`);
       if (!result.handoff || terminal.source_commit !== context.channelCommit || terminal.client_commit !== result.handoff.commit) fail("server did not confirm the client commit transition");
       if (context.channelMode === "stable") {
         // The communication core remains loaded from its dedicated directory.
@@ -995,15 +1129,15 @@ async function main() {
         context.pendingPlayerCandidate = false;
         context.activeLevel = 0;
         identity = { ...identity, client_commit: result.handoff.commit };
-        process.stdout.write("[Teremoq] Cliente actualizado; el canal seguro permanece conectado.\n");
+        writeLocalStatus("[Teremoq] Cliente actualizado; el canal seguro permanece conectado.\n");
         continue;
       }
       await restartUpdatedClient(context, result.handoff, session);
-      process.stdout.write("[Teremoq] Cliente actualizado; la sesion segura continua en la nueva version.\n");
+      writeLocalStatus("[Teremoq] Cliente actualizado; la sesion segura continua en la nueva version.\n");
       break;
     }
     await send(result.code === 0 ? "complete" : "failed", `exit=${result.code}; signal=${result.signal || "none"}\n${result.output}`, true);
-    process.stdout.write(`${formatLocalStatus(task.action, result.code === 0 ? "complete" : "failed", task.sequence)}\n`);
+    writeLocalStatus(`${formatLocalStatus(task.action, result.code === 0 ? "complete" : "failed", task.sequence)}\n`);
     if (task.action === "stop") break;
   }
 }

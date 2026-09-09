@@ -7,6 +7,7 @@ Set-StrictMode -Version 3.0
 
 $launcher = Join-Path $PSScriptRoot '..\client\Start-LanInteractiveClient.ps1'
 $repair = Join-Path $PSScriptRoot '..\client\Repair-LanUpdaterSlots.ps1'
+$sourcePinHelper = Join-Path $PSScriptRoot '..\client\Pin-LanTaskSources.ps1'
 $zeroCommit = '0' * 40
 $zeroHash = '0' * 64
 . $launcher -ExpectedCommit $zeroCommit
@@ -22,7 +23,8 @@ try {
         $wrappedMoveFailureObserved = Test-TeremoqDeferrableSlotMoveError -Exception $_.Exception
     }
     if (-not $wrappedMoveFailureObserved -or
-        (Test-TeremoqDeferrableSlotMoveError -Exception (New-Object InvalidOperationException('not an IO failure')))) {
+        (Test-TeremoqDeferrableSlotMoveError -Exception (New-Object InvalidOperationException('not an IO failure'))) -or
+        (Test-TeremoqDeferrableSlotMoveError -Exception (New-Object UnauthorizedAccessException('not deferrable')))) {
         throw 'Updater slot cleanup did not isolate the wrapped directory move failure'
     }
 
@@ -53,6 +55,53 @@ try {
     } finally { $pin.Stream.Dispose() }
     Move-Item -LiteralPath $replacement -Destination $entrypoint -Force
     if ([IO.File]::ReadAllText($entrypoint) -cne 'substituted bytes') { throw 'Canary did not exercise replacement after unlock' }
+
+    $taskCheckout = Join-Path $root 'task-checkout'
+    $taskSourceRoot = Join-Path $taskCheckout 'infra\lan\client'
+    New-Item -ItemType Directory -Path $taskSourceRoot | Out-Null
+    $taskSource = Join-Path $taskSourceRoot 'reviewed.ps1'
+    [IO.File]::WriteAllText($taskSource, 'reviewed task source', (New-Object Text.UTF8Encoding($false)))
+    $taskStream = New-Object IO.FileStream($taskSource, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try { $taskBlob = Get-TeremoqStreamGitBlobId -Stream $taskStream }
+    finally { $taskStream.Dispose() }
+    $pinStart = New-Object Diagnostics.ProcessStartInfo
+    $pinStart.FileName = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+    $pinStart.Arguments = (@(
+        '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$sourcePinHelper,
+        '-CheckoutRoot',$taskCheckout
+    ) | ForEach-Object { ConvertTo-TeremoqWindowsArgument $_ }) -join ' '
+    $pinStart.UseShellExecute = $false
+    $pinStart.CreateNoWindow = $true
+    $pinStart.RedirectStandardInput = $true
+    $pinStart.RedirectStandardOutput = $true
+    $pinStart.RedirectStandardError = $true
+    $pinProcess = New-Object Diagnostics.Process
+    $pinProcess.StartInfo = $pinStart
+    try {
+        if (-not $pinProcess.Start()) { throw 'Task source pin helper did not start' }
+        $pinProcess.StandardInput.WriteLine(($taskBlob + "`tinfra/lan/client/reviewed.ps1"))
+        $pinProcess.StandardInput.WriteLine('END')
+        $pinProcess.StandardInput.Flush()
+        if ($pinProcess.StandardOutput.ReadLine() -cne 'PINNED') {
+            throw 'Task source pin helper did not report readiness'
+        }
+        $taskMutationRejected = $false
+        try { [IO.File]::WriteAllText($taskSource, 'mutated while task runs') }
+        catch { $taskMutationRejected = $true }
+        if (-not $taskMutationRejected) { throw 'Task source remained mutable while its workload could run' }
+        $pinProcess.StandardInput.WriteLine('release')
+        $pinProcess.StandardInput.Dispose()
+        if (-not $pinProcess.WaitForExit(10000) -or $pinProcess.ExitCode -ne 0) {
+            throw 'Task source pin helper did not release cleanly'
+        }
+    } finally {
+        if (-not $pinProcess.HasExited) { $pinProcess.Kill() }
+        $pinProcess.Dispose()
+    }
+    [IO.File]::WriteAllText($taskSource, 'mutable after task')
+    if ([IO.File]::ReadAllText($taskSource) -cne 'mutable after task') {
+        throw 'Task source pin was not released after workload completion'
+    }
     $unprotectedExecutable = Join-Path $root 'user-owned.exe'
     [IO.File]::WriteAllText($unprotectedExecutable, 'not an approved executable')
     $aclRejected = $false
@@ -101,8 +150,8 @@ try {
     $argvCanary = Join-Path $root 'argv-canary.mjs'
     $argvCanarySource = @'
 const argv = process.argv.slice(2);
-const required = new Set(["--server","--fingerprint","--run-id","--source-commit","--client-commit","--credential-mode","--checkout","--state-root","--evidence-root","--git-sha256","--node-sha256","--npm-cli-sha256","--powershell-sha256","--taskkill-sha256","--channel-mode"]);
-if (argv.length !== 30) process.exit(20);
+const required = new Set(["--server","--fingerprint","--run-id","--source-commit","--client-commit","--credential-mode","--checkout","--state-root","--evidence-root","--git-sha256","--node-sha256","--npm-cli-sha256","--powershell-sha256","--taskkill-sha256","--channel-mode","--source-pin-sha256"]);
+if (argv.length !== 32) process.exit(20);
 for (let index = 0; index < argv.length; index += 2) {
   if (!required.delete(argv[index]) || !argv[index + 1]) process.exit(21);
 }
@@ -112,19 +161,20 @@ if (required.size !== 0) process.exit(22);
     $sessionHashes = @{ Git=$zeroHash; Node=$nodeHash; NpmCli=$zeroHash; PowerShell=$zeroHash; Taskkill=$zeroHash }
     $agentArguments = New-TeremoqAgentArguments -AgentPath $argvCanary -RunId 'lan-argv-canary' `
         -ChannelCommit $zeroCommit -ClientCommit $zeroCommit -Checkout $root -StateRoot $root -EvidenceRoot $root `
-        -SessionHashes $sessionHashes -CredentialMode 'pair' -ChannelMode 'stable'
+        -SessionHashes $sessionHashes -CredentialMode 'pair' -ChannelMode 'stable' -SourcePinSha256 $zeroHash
     $argumentMap = @{}
     for ($index = 1; $index -lt $agentArguments.Count; $index += 2) {
         if ($argumentMap.ContainsKey($agentArguments[$index])) { throw 'Real launcher duplicated an agent argument' }
         $argumentMap[$agentArguments[$index]] = $agentArguments[$index + 1]
     }
-    if ($agentArguments.Count -ne 31 -or $argumentMap.Count -ne 15 -or
+    if ($agentArguments.Count -ne 33 -or $argumentMap.Count -ne 16 -or
         $argumentMap['--git-sha256'] -cne $sessionHashes.Git -or
         $argumentMap['--node-sha256'] -cne $sessionHashes.Node -or
         $argumentMap['--npm-cli-sha256'] -cne $sessionHashes.NpmCli -or
         $argumentMap['--powershell-sha256'] -cne $sessionHashes.PowerShell -or
-        $argumentMap['--taskkill-sha256'] -cne $sessionHashes.Taskkill) {
-        throw 'Real launcher agent argv differs from its 15-pair closed contract'
+        $argumentMap['--taskkill-sha256'] -cne $sessionHashes.Taskkill -or
+        $argumentMap['--source-pin-sha256'] -cne $zeroHash) {
+        throw 'Real launcher agent argv differs from its 16-pair closed contract'
     }
     $argvExit = Invoke-TeremoqPinnedNodeProcess -FilePath $nodePath -ExpectedSha256 $nodeHash `
         -Arguments $agentArguments -WorkingDirectory $root
