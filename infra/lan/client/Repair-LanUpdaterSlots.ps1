@@ -182,6 +182,25 @@ function Stop-TeremoqInactiveSlotProcesses {
     throw 'verified inactive Teremoq client processes did not stop before slot cleanup'
 }
 
+function Move-TeremoqInvalidUpdaterSlotToQuarantine {
+    param(
+        [Parameter(Mandatory = $true)][string]$Slot,
+        [Parameter(Mandatory = $true)][string]$SlotName
+    )
+    if ($SlotName -notin @('checkout-updater-a', 'checkout-updater-b') -or
+        [IO.Path]::GetDirectoryName($Slot) -cne $clientRoot) {
+        throw 'invalid updater slot is outside the bounded quarantine policy'
+    }
+    $quarantineName = 'quarantine-' + $SlotName + '-' + [Guid]::NewGuid().ToString('N')
+    $quarantine = [IO.Path]::GetFullPath((Join-Path $clientRoot $quarantineName))
+    if (Test-Path -LiteralPath $quarantine) { throw 'updater quarantine destination already exists' }
+    [IO.Directory]::Move($Slot, $quarantine)
+    if ((Test-Path -LiteralPath $Slot) -or -not (Test-Path -LiteralPath $quarantine -PathType Container)) {
+        throw 'invalid updater slot quarantine could not be confirmed'
+    }
+    return $quarantineName
+}
+
 $nodePath = 'C:\Program Files\nodejs\node.exe'
 $agents = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
     $_.ExecutablePath -and $_.ExecutablePath.Equals($nodePath, [StringComparison]::OrdinalIgnoreCase) -and
@@ -219,6 +238,7 @@ $activeState = [pscustomobject]@{
 [void](Get-TeremoqGitCheckoutContext -CheckoutRoot $activeCheckout -StateContext $activeState -RequireExactHead)
 
 $removed = New-Object Collections.Generic.List[string]
+$quarantined = New-Object Collections.Generic.List[string]
 foreach ($slotName in @('checkout-updater-a', 'checkout-updater-b')) {
     $slot = [IO.Path]::GetFullPath((Join-Path $clientRoot $slotName)).TrimEnd('\', '/')
     if ($slot.Equals($activeCheckout, [StringComparison]::OrdinalIgnoreCase)) { continue }
@@ -230,16 +250,26 @@ foreach ($slotName in @('checkout-updater-a', 'checkout-updater-b')) {
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw "managed inactive updater slot is a reparse point: $slotName"
     }
-    $topLevel = [IO.Path]::GetFullPath((Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('rev-parse', '--show-toplevel'))).TrimEnd('\', '/')
-    $head = Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('rev-parse', 'HEAD')
-    $branch = Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('symbolic-ref', '--short', 'HEAD')
-    $remote = (Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('remote', 'get-url', 'origin')).TrimEnd('/')
-    $remotes = @((Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('remote')) -split "`n" |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    if ($topLevel -cne $slot -or $head -cnotmatch $commitPattern -or
-        $branch -cne 'codex/lan-e2e-integration' -or $remote -cne $repositoryUrl -or
-        $remotes.Count -ne 1 -or $remotes[0] -cne 'origin') {
-        throw "managed inactive updater slot has unexpected Git identity: $slotName"
+    $validGitSlot = $false
+    if (Test-Path -LiteralPath (Join-Path $slot '.git')) {
+        try {
+            $topLevel = [IO.Path]::GetFullPath((Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('rev-parse', '--show-toplevel'))).TrimEnd('\', '/')
+            $head = Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('rev-parse', 'HEAD')
+            $branch = Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('symbolic-ref', '--short', 'HEAD')
+            $remote = (Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('remote', 'get-url', 'origin')).TrimEnd('/')
+            $remotes = @((Invoke-TeremoqGit -CheckoutRoot $slot -Arguments @('remote')) -split "`n" |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            $validGitSlot = $topLevel -ceq $slot -and $head -cmatch $commitPattern -and
+                $branch -ceq 'codex/lan-e2e-integration' -and $remote -ceq $repositoryUrl -and
+                $remotes.Count -eq 1 -and $remotes[0] -ceq 'origin'
+        } catch {
+            $validGitSlot = $false
+        }
+    }
+    if (-not $validGitSlot) {
+        $quarantineName = Move-TeremoqInvalidUpdaterSlotToQuarantine -Slot $slot -SlotName $slotName
+        $quarantined.Add($quarantineName)
+        continue
     }
     try {
         Invoke-TeremoqGit -CheckoutRoot $checkoutRoot -Arguments @('merge-base', '--is-ancestor', $head, $RecoveryCommit) | Out-Null
@@ -256,5 +286,8 @@ if ($removed.Count -eq 0) {
     Write-Host '[Teremoq] No habia ranuras inactivas que reparar.'
 } else {
     Write-Host ("[Teremoq] Ranuras inactivas reparadas: {0}." -f ($removed -join ', '))
+}
+if ($quarantined.Count -gt 0) {
+    Write-Host ("[Teremoq] Carpetas incompletas conservadas en cuarentena: {0}." -f ($quarantined -join ', '))
 }
 Write-Host '[Teremoq] El servidor ya puede enviar la actualizacion por el canal existente.'
