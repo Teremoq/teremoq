@@ -469,8 +469,9 @@ function Get-TeremoqActiveLanClientSlot {
     param([Parameter(Mandatory = $true)][string]$StateRoot, [switch]$ReadOnly)
     if ($ReadOnly) {
         # Validation must not initialize, repair or clean the updater state.
-        # Open the EXISTING operation lock read-only, with the same exclusive
-        # sharing policy as writers; an absent lock is not initialized here.
+        # Open the EXISTING operation lock read-only with FileShare.Read:
+        # concurrent readers are allowed, writers/deletion are excluded.
+        # An absent lock is not initialized here.
         $layout = Get-TeremoqLanClientLayout -StateRoot $StateRoot
         foreach ($path in @($layout.StateRoot, $layout.ConfigRoot, $layout.PlayersRoot, $layout.VersionsRoot, $layout.ControlRoot)) {
             [void](Get-TeremoqNonReparseDirectoryPath -Path $path)

@@ -21,9 +21,14 @@ Validate does not run `node --version`, launch a child product process, create
 evidence or reserve a port. Read-only Git checks still execute Git; this is not
 a claim of zero OS processes for the entire wrapper.
 
-Managed state selection opens the existing operation lock read-only/exclusively.
+Managed state selection opens the existing operation lock read-only with
+`FileShare.Read`: concurrent readers are allowed; writers and deletion are
+excluded. This is not an exclusive mutex between readers. The shared verified
+reader retries Windows sharing/lock errors 32/33 for at most 20 attempts,
+waiting 250 ms between attempts and revalidating the pathname each time.
 It never creates that lock, initializes directories, repairs control files or
-removes partial state. Missing locks, concurrent operations or recovery-needed
+removes partial state. Missing locks, writer conflicts that exhaust the bounded
+retry policy, or recovery-needed
 control entries reject validation. Explicit update/recovery operations retain
 their existing mutating lock/repair behavior.
 
