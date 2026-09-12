@@ -3,6 +3,21 @@
 
 # Minimal opt-in LAN E2E laboratory
 
+## Current campaign decision — 2026-09-12
+
+[DOC-POC-20260912-01](../../tasks/poc/ACCEPTANCE-AND-DELEGATION.md) governs
+campaign ownership and acceptance. Git distributes the exact authorized code;
+the existing private coordination issue carries assignments, acknowledgements,
+leases and scrubbed results. Platform is the sole lab operator, Task 05 the
+sole technical integrator, and Master coordinates and accepts. CLIENTE-01
+performs only Platform's authorized local assignments under a limited lease.
+First demonstrate the UUID/read/ACK/observed-version/result/confirmation cycle,
+then the real audiovisual run. The existing interactive channel and C1–C10
+remain preserved for a later autonomy milestone; their improvement is frozen
+unless an owner receives a minimal real dependency. They are not prerequisites
+for the first audiovisual milestone. Existing security/preflight gates still
+apply. Cleanup is owner-scoped and occurs after the run stops, never concurrently.
+
 This is a local, reversible preparation for one Windows 11 server and one
 Windows 10 client on the same private Wi-Fi. A 5 GHz link is recommended but
 is not required for the first functional run. It does not alter normal
@@ -206,8 +221,11 @@ planned identities, filters and cardinalities, including Defender
 
 ## 5. Optional interactive test channel
 
-This channel removes manual log copying without sending evidence to GitHub or
-another external service. GitHub distributes only the clean reviewed commit.
+The preserved channel below keeps its raw diagnostics local. Under the current
+campaign decision, Git distributes reviewed code and the existing private issue
+coordinates scrubbed assignments/results; raw logs and secrets stay external.
+These channel procedures describe existing machinery, not a requirement to
+activate it for the audiovisual milestone.
 The Windows 10 agent makes outbound HTTPS requests to the exact server address,
 pins the temporary certificate fingerprint, consumes a one-time pairing code
 and accepts only the fixed progressive actions `update-client`, `prepare-client`, `preflight`,

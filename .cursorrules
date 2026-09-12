@@ -1,5 +1,24 @@
 # VISIÓN Y OBJETIVO DEL PRODUCTO
 
+## Prioridad operativa de cierre (decisión expresa, 2026-09-12)
+
+Leer `tasks/poc/ACCEPTANCE-AND-DELEGATION.md` para el encargo
+DOC-POC-20260912-01. Primero se demuestra encargo de lectura UUID, ACK de
+CLIENTE-01, versión instalada observada, resultado depurado y confirmación del
+RESPONSABLE-PRUEBAS; después vídeo real fuente–Gateway–relay–player del portátil
+durante al menos 30 minutos, con condiciones y umbrales fijados antes del run.
+Git distribuye código a commit exacto autorizado; el issue privado existente
+`Teremoq/teremoq-lan-coordination#1` coordina encargos. No crear otro canal,
+buzón, cliente o launcher, ni distribuir mediante ZIP/USB. El canal propio y
+la autonomía/recuperación C1–C10 quedan como hito posterior: conservarlos y
+congelar mejoras salvo dependencia real mínima asignada al owner.
+CLIENTE-01 ejecuta localmente sólo encargos del RESPONSABLE-PRUEBAS con ACK y
+lease limitada; la asistencia registrada no acredita autonomía. Platform es
+el único responsable del laboratorio y del cierre ordenado, nunca concurrente
+con un ensayo. Task 05 integra técnicamente; el Master sólo coordina y acepta.
+Se conservan seguridad, TLS/identidad/límites, Zero-Transcoding, medición e
+interoperabilidad. No declarar vigilancia GitHub ni resultados sin evidencia.
+
 **Teremoq** es un **Gateway Edge de vídeo de ultra-baja latencia** diseñado para
 revolucionar las transmisiones en directo (broadcast) en entornos hostiles,
 como el automovilismo, los rallies y los recintos deportivos masivos.
@@ -70,12 +89,15 @@ Estas reglas son la fuente de verdad para el desarrollo del microservicio `gatew
 
 El Master trabaja con autonomía y paraleliza todas las actividades que sean
 realmente independientes. Como coordinador, divide el trabajo en paquetes
-concretos, los asigna en paralelo a los perfiles técnicos existentes y conserva
-la responsabilidad de integrar los resultados y tomar las decisiones
-arquitectónicas. Sólo crea una Task o un perfil adicional cuando la función no
+concretos y los asigna a los perfiles técnicos existentes. Fija alcance,
+prioridades, candidata y dependencias, y revisa, acepta o devuelve entregas.
+No desarrolla, depura, integra técnicamente ni ejecuta ensayos. Task 05 es el
+integrador técnico único; RESPONSABLE-PRUEBAS/TP-PLATFORM-CHAOS conduce el
+laboratorio. Las decisiones arquitectónicas respetan los permisos siguientes.
+Sólo crea una Task o un perfil adicional cuando la función no
 esté ya cubierta; no duplica responsabilidades para acelerar el trabajo.
 
-No se requiere aprobación del usuario para decisiones técnicas rutinarias,
+Los propietarios técnicos no requieren aprobación del usuario para decisiones rutinarias,
 lecturas, análisis, edición de archivos locales, ejecución de pruebas,
 corrección de errores, refactorizaciones dentro de la arquitectura aceptada ni
 creación de artefactos locales, reversibles y no publicados. Estas decisiones
@@ -107,8 +129,10 @@ en paralelo.
 
 No abras Tasks duplicadas ni permitas que dos agentes editen simultáneamente
 los mismos archivos. Cada agente debe entregar pruebas ejecutadas y un resumen
-de cambios. El Master revisa e integra todas las entregas antes de declararlas
-completadas y devuelve cada defecto al perfil propietario de ese código.
+de cambios. Task 05 integra técnicamente en staging; el Master revisa las
+entregas antes de declararlas aceptadas y devuelve cada defecto al perfil
+propietario de ese código. La autonomía de los owners no transfiere desarrollo,
+depuración, integración técnica ni ejecución de ensayos al Master.
 
 ## 2. Principios no negociables
 

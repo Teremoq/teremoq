@@ -2,8 +2,26 @@
 
 Este registro evita crear un perfil distinto por cada Task. Un perfil puede ser
 propietario de múltiples Tasks de su dominio. El Master Tech Lead define alcance,
-dependencias y aceptación, integra resultados y devuelve cualquier incidencia a
-la Task propietaria; no implementa el código de esas Tasks salvo petición expresa.
+prioridades, candidata, dependencias y aceptación, y devuelve cualquier incidencia
+a la Task propietaria. Sólo coordina: no desarrolla, depura, integra técnicamente
+ni ejecuta ensayos. Task 05 es el integrador técnico único.
+
+## Delegación vigente del laboratorio (2026-09-12)
+
+El contrato [Cierre de la PoC y delegación de pruebas](poc/ACCEPTANCE-AND-DELEGATION.md)
+registra DOC-POC-20260912-01. El responsable único del laboratorio es
+`15.Platform RC100 Stabilization` / `TP-PLATFORM-CHAOS`
+(`01a053e4-d0b3-74f1-84f8-03768ae84ee5`). Administra encargos y leases de
+CLIENTE-01 en el issue privado existente, ensayos y cleanup ordenado.
+CLIENTE-01 prepara y ejecuta localmente sólo sus encargos con acuse y lease
+limitada, dentro de permisos y procedimientos vigentes. El cleanup nunca
+concurre con un ensayo; una asistencia registrada no demuestra autonomía.
+
+Task 05 (`01a03e47-a0db-7a20-ba4a-290bf8fbd09e`) recibe commits DCO y evidencias
+y realiza la integración técnica. TP-OSS-SC es propietario documental de este
+encargo. Web, Rust y Seguridad conservan sus dominios; no se crea otro perfil.
+El canal propio/C1–C10 queda congelado para un hito posterior, salvo dependencia
+real mínima asignada a su owner; no es prerrequisito del primer hito audiovisual.
 
 Teremoq publica su código original bajo Apache-2.0 y mantiene privados los
 despliegues B2B, las configuraciones de clientes y el trust material. El mirror

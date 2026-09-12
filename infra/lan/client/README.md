@@ -3,7 +3,31 @@
 
 # Remote LAN client checkout
 
-## Interactive laboratory channel
+## Current CLIENTE-01 assignment — 2026-09-12
+
+Follow [DOC-POC-20260912-01](../../../tasks/poc/ACCEPTANCE-AND-DELEGATION.md).
+CLIENTE-01 now prepares and executes local assignments exclusively from
+RESPONSABLE-PRUEBAS/Platform, under existing procedures and permissions, after
+acknowledging the UUID and limited lease. Master coordinates; Task 05 alone
+integrates technically. The existing private coordination issue carries
+assignments and scrubbed results; Git provides the exact authorized commit.
+Observe the installed version and return a result that Platform confirms.
+A greeting, acknowledgement alone or unverified polling claim is insufficient.
+
+Preserve the Git fetch/validation/ff-only, external state, verified player tree
+and lockfile/dependency reuse, A/B and rollback procedures below. Keep the
+measured version fixed; publication is not activation. Use only bounded local
+recovery authorized before the run if Internet is lost. No new launcher,
+client, channel, ZIP or USB delivery is authorized by this decision.
+Assistance must be recorded and does not demonstrate autonomy. Platform closes
+run-owned resources after the run stops; cleanup must not overlap a test.
+
+## Preserved interactive laboratory channel — later autonomy milestone
+
+The following procedures remain available and their evidence must be retained.
+The private channel and C1–C10 are not prerequisites for the first audiovisual
+milestone; improvements are frozen unless assigned as a minimal real dependency
+to the existing owner. These instructions grant no additional permissions.
 
 `Start-LanInteractiveClient.ps1` starts the temporary client agent after a
 reviewed Git update. The agent initiates outbound HTTPS only to
@@ -93,8 +117,9 @@ to be byte-identical. An older server that requests `diagnose-build` is
 rejected before checkout verification or process creation.
 
 Progress and bounded diagnostics are written automatically to the server's
-private run state. GitHub carries reviewed code only; logs, credentials and
-evidence are never uploaded. The channel uses a separate exact TCP/18443
+private run state. Git carries reviewed code; the existing private coordination
+issue carries only scrubbed assignments/results and opaque evidence references.
+Raw logs, credentials and operational evidence are never uploaded. The channel uses a separate exact TCP/18443
 firewall rule and is removed during LAN rollback.
 
 If the server requests `stop` while a test command is running, the agent
