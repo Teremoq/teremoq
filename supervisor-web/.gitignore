@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+# Disposable, generated contract fixtures (not measured LAN evidence).
+/evidence/managed-v2-*/
 
 # next.js
 /.next/

@@ -88,15 +88,15 @@ describe("contrato del paquete LAN", () => {
   it("launcher valida parámetros, hash, fingerprint y rutas antes de actuar", () => {
     const source = platformLauncher.toString("utf8");
     for (const parameter of [
-      "$Action", "$RunId", "$Level", "$VersionPath", "$FingerprintPath", "$EvidenceDirectory",
+      "$Action", "$RunId", "$Level", "$VersionPath", "$FingerprintPath", "$EvidenceDirectory", "$StateRoot", "$ValidateOnly",
     ]) {
       expect(source).toContain(parameter);
     }
     expect(source).toContain('[ValidateSet("start", "status", "stop", "collect")]');
     expect(source).toContain("[ValidateSet(1, 5, 10, 25)]");
-    expect(source).toContain("Get-FileHash");
+    expect(source).toContain("Get-InventoryHash");
     expect(source).toContain('HOSTNAME = "127.0.0.1"');
-    expect(source).toContain("VERSION.tsv canónico exterior al paquete");
+    expect(source).toContain("VersionPath y player deben corresponder al slot activo");
     expect(source).toContain("$Version.player_identity -cne $Package.player_identity");
     expect(source).toContain("$Version.moq_url -cne $LocalConfig.relay_url");
     expect(source).toContain("$Version.player_evidence -cne \"not_measured\"");
