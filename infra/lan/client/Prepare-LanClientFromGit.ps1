@@ -117,6 +117,7 @@ try {
         if ($active.Compatibility.allowed_client_commit -cne $ExpectedCommit) {
             throw 'activated client state does not match the requested updater commit'
         }
+        Assert-TeremoqLanLauncherStartContract -StateContext $active
     } catch {
         if ($activation.Status -ceq 'activated-pending-health') {
             try { [void](Rollback-TeremoqLanClientSlot -StateRoot $state) }

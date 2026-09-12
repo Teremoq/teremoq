@@ -14,7 +14,10 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$FingerprintPath,
   [Parameter(Mandatory = $true)]
-  [string]$EvidenceDirectory
+  [string]$EvidenceDirectory,
+  [Parameter(Mandatory = $true)]
+  [string]$StateRoot,
+  [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,22 +26,97 @@ $PackageContractPath = Join-Path $ScriptRoot "lan-launcher.tsv"
 $ManifestPath = Join-Path $ScriptRoot "MANIFEST.sha256.json"
 $ServerPath = Join-Path $ScriptRoot "server.js"
 $EvidenceValidatorPath = Join-Path $ScriptRoot "validate-lan-evidence.mjs"
-$ExpectedVersionPath = Join-Path ([System.IO.Directory]::GetParent($ScriptRoot).FullName) "VERSION.tsv"
-$ExpectedLanConfigPath = Join-Path ([System.IO.Directory]::GetParent($ScriptRoot).FullName) "LAN-CONFIG.json"
-$ResolvedVersionPath = [System.IO.Path]::GetFullPath($VersionPath)
-if ($ResolvedVersionPath -cne [System.IO.Path]::GetFullPath($ExpectedVersionPath)) {
-  throw "VersionPath debe ser el VERSION.tsv canónico exterior al paquete."
+$PinnedStreams = New-Object 'System.Collections.Generic.List[System.IO.FileStream]'
+if ($ValidateOnly -and $Action -ine "start") {
+  throw "ValidateOnly requiere la accion start."
 }
 
-function Read-ClosedTsv([string]$Path, [string[]]$ExpectedKeys) {
-  $Item = Get-Item -LiteralPath $Path
-  if ($Item.PSIsContainer -or
-      ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or
-      $Item.Length -gt 4096) {
-    throw "TSV contractual ausente o fuera de límite."
+# Managed v2 is an external deployment context, never part of player identity.
+# Check every ancestor, including when the evidence leaf does not exist yet.
+function Assert-CanonicalPath([string]$Path, [switch]$AllowMissing) {
+  if (-not [IO.Path]::IsPathRooted($Path) -or $Path.Length -gt 4096 -or
+      $Path -match '[\x00-\x1f]' -or $Path -match '(^|[\\/])[.][.]?([\\/]|$)') {
+    throw "Ruta contractual no canonica."
   }
+  $Full = [IO.Path]::GetFullPath($Path)
+  if ($Full -cne $Path) { throw "Ruta contractual no canonica." }
+  $Current = $Full
+  while ($Current) {
+    if (Test-Path -LiteralPath $Current) {
+      $Item = Get-Item -LiteralPath $Current -Force
+      if (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Ruta contractual contiene reparse point."
+      }
+      if ($Current -cne $Full -and -not $Item.PSIsContainer) { throw "Ancestro no es directorio." }
+    } elseif (-not $AllowMissing) { throw "Ruta contractual ausente." }
+    $Parent = [IO.Directory]::GetParent($Current)
+    $Current = if ($null -eq $Parent) { $null } else { $Parent.FullName }
+  }
+  return $Full
+}
+
+function Get-BytesHash([byte[]]$Bytes) {
+  $Hash = [Security.Cryptography.SHA256]::Create()
+  try { return ([BitConverter]::ToString($Hash.ComputeHash($Bytes)) -replace '-', '').ToLowerInvariant() }
+  finally { $Hash.Dispose() }
+}
+
+# Bind the Windows handle API in-process: Add-Type on PS 5.1 can spawn a compiler,
+# which is deliberately forbidden on the ValidateOnly path.
+$NativeAssembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
+  (New-Object Reflection.AssemblyName 'TeremoqManagedLauncher'), [Reflection.Emit.AssemblyBuilderAccess]::Run)
+$NativeModule = $NativeAssembly.DefineDynamicModule('Handles')
+$NativeBuilder = $NativeModule.DefineType('ManagedLauncherHandles', [Reflection.TypeAttributes]::Public)
+$NativeMethod = $NativeBuilder.DefinePInvokeMethod('GetFinalPathNameByHandleW', 'kernel32.dll',
+  [Reflection.MethodAttributes]'Public, Static, PinvokeImpl', [Reflection.CallingConventions]::Standard,
+  [uint32], [type[]]@([Microsoft.Win32.SafeHandles.SafeFileHandle], [Text.StringBuilder], [uint32], [uint32]),
+  [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Unicode)
+$NativeMethod.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+$NativeHandleType = $NativeBuilder.CreateType()
+function Assert-OpenedPath([IO.FileStream]$Stream, [string]$Expected) {
+  $Buffer = New-Object Text.StringBuilder 32768
+  $Length = $NativeHandleType::GetFinalPathNameByHandleW(
+    $Stream.SafeFileHandle, $Buffer, [uint32]$Buffer.Capacity, [uint32]0)
+  if ($Length -eq 0 -or $Length -ge $Buffer.Capacity) { throw "No se pudo verificar el descriptor." }
+  $Actual = $Buffer.ToString()
+  if ($Actual.StartsWith('\\?\UNC\')) { $Actual = '\\' + $Actual.Substring(8) }
+  elseif ($Actual.StartsWith('\\?\')) { $Actual = $Actual.Substring(4) }
+  if (-not [string]::Equals($Actual, $Expected, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Descriptor fuera de la ruta verificada."
+  }
+}
+
+# Bounds, bytes and SHA refer to the SAME open descriptor. Windows sharing denies
+# writes/deletion while reading. Never stat a file and then reopen it to hash/parse.
+function Read-BoundedDocument([string]$Path, [int]$Limit) {
+  $Path = [IO.Path]::GetFullPath($Path)
+  [void](Assert-CanonicalPath $Path)
+  $Stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  $Retained = $false
+  try {
+    Assert-OpenedPath $Stream $Path
+    if ($Stream.Length -lt 1 -or $Stream.Length -gt $Limit) { throw "Documento fuera de limite." }
+    $Bytes = New-Object byte[] ([int]$Stream.Length)
+    $Offset = 0
+    while ($Offset -lt $Bytes.Length) {
+      $Read = $Stream.Read($Bytes, $Offset, $Bytes.Length - $Offset)
+      if ($Read -le 0) { throw "Documento incompleto." }
+      $Offset += $Read
+    }
+    if ($Stream.ReadByte() -ne -1) { throw "Documento excede limite abierto." }
+    [void](Assert-CanonicalPath $Path)
+    $Utf8 = New-Object Text.UTF8Encoding($false, $true)
+    $Document = [pscustomobject]@{ Text = $Utf8.GetString($Bytes); Sha256 = Get-BytesHash $Bytes }
+    $PinnedStreams.Add($Stream)
+    $Retained = $true
+    return $Document
+  } finally { if (-not $Retained) { $Stream.Dispose() } }
+}
+
+function Convert-ClosedTsv([string]$Text, [string[]]$ExpectedKeys) {
   $Result = @{}
-  foreach ($Line in [System.IO.File]::ReadAllLines($Item.FullName)) {
+  if (-not $Text.EndsWith("`n")) { throw "TSV contractual no canonico." }
+  foreach ($Line in $Text.TrimEnd("`n").Split("`n")) {
     $Parts = $Line.Split("`t")
     if ($Parts.Count -ne 2 -or [string]::IsNullOrEmpty($Parts[0]) -or
         $Result.ContainsKey($Parts[0]) -or $ExpectedKeys -cnotcontains $Parts[0]) {
@@ -47,23 +125,82 @@ function Read-ClosedTsv([string]$Path, [string[]]$ExpectedKeys) {
     $Result[$Parts[0]] = $Parts[1]
   }
   if ($Result.Count -ne $ExpectedKeys.Count -or
-      ($ExpectedKeys | Where-Object { -not $Result.ContainsKey($_) }).Count -ne 0) {
+      @($ExpectedKeys | Where-Object { -not $Result.ContainsKey($_) }).Count -ne 0) {
     throw "TSV contractual incompleto."
   }
   return $Result
 }
 
 function Test-ExactProperties([object]$Value, [string[]]$ExpectedKeys) {
-  return (($Value.PSObject.Properties.Name | Sort-Object) -join ",") -ceq
-    (($ExpectedKeys | Sort-Object) -join ",")
+  if ($Value -isnot [pscustomobject]) { return $false }
+  $Keys = @($Value.PSObject.Properties.Name)
+  return $Keys.Count -eq $ExpectedKeys.Count -and
+    @($Keys | Where-Object { $ExpectedKeys -cnotcontains $_ }).Count -eq 0
 }
+
+function Convert-CanonicalJson([string]$Text) {
+  # Use the native JSON implementation, then require its canonical token spelling.
+  # This rejects overwritten duplicate keys (including escaped aliases), rather
+  # than accepting ConvertFrom-Json's last-value-wins behaviour on PS 5.1.
+  $Value = ConvertFrom-Json -InputObject $Text
+  $Compact = [regex]::Replace($Text, '("(?:[^"\\]|\\.)*")|\s+', {
+    param($Match)
+    if ($Match.Groups[1].Success) { return $Match.Value }
+    return ''
+  })
+  if ($Compact -cne (ConvertTo-Json -InputObject $Value -Depth 12 -Compress)) {
+    throw "JSON contractual no canonico o duplicado."
+  }
+  return $Value
+}
+
+try {
+$ResolvedStateRoot = Assert-CanonicalPath $StateRoot
+$ActiveDocument = Read-BoundedDocument (Join-Path $ResolvedStateRoot 'control/active.json') 4096
+$Active = Convert-CanonicalJson $ActiveDocument.Text
+$ActiveKeys = @('schema_version','updater_version','updater_protocol','updater_commit',
+  'player_identity','source_tree','package_lock_sha256','player_manifest_sha256',
+  'launcher_contract_sha256','config_schema_version','config_sha256','slot_id',
+  'player_relative_path','version_relative_path')
+if (-not (Test-ExactProperties $Active $ActiveKeys) -or
+    $Active.schema_version -isnot [int] -or $Active.schema_version -ne 1 -or
+    $Active.config_schema_version -isnot [int] -or $Active.config_schema_version -ne 1 -or
+    $Active.updater_version -cne '2.0.0' -or $Active.updater_protocol -cne 'teremoq-lan-updater-v3') {
+  throw "Slot activo fuera de contrato."
+}
+foreach ($Key in $ActiveKeys | Where-Object { $_ -notin @('schema_version','config_schema_version') }) {
+  if ($Active.$Key -isnot [string]) { throw "Tipo de slot activo invalido." }
+}
+foreach ($Key in @('updater_commit','source_tree')) {
+  if ($Active.$Key -cnotmatch '^[0-9a-f]{40}$') { throw "Commit de slot invalido." }
+}
+foreach ($Key in @('package_lock_sha256','player_manifest_sha256','launcher_contract_sha256','config_sha256')) {
+  if ($Active.$Key -cnotmatch '^[0-9a-f]{64}$') { throw "Hash de slot invalido." }
+}
+$IdentityText = "schema_version=1`nsource_tree=$($Active.source_tree)`npackage_lock_sha256=$($Active.package_lock_sha256)`n"
+$IdentityHex = Get-BytesHash ([Text.Encoding]::ASCII.GetBytes($IdentityText))
+$SlotId = "u-$($Active.updater_commit)-p-$IdentityHex"
+if ($Active.player_identity -cne "sha256:$IdentityHex" -or $Active.slot_id -cne $SlotId -or
+    $Active.player_relative_path -cne "players/sha256-$IdentityHex" -or
+    $Active.version_relative_path -cne "versions/$SlotId") { throw "Identidad o rutas de slot invalidas." }
+$ExpectedPlayerRoot = [IO.Path]::GetFullPath((Join-Path $ResolvedStateRoot $Active.player_relative_path))
+$ExpectedVersionRoot = [IO.Path]::GetFullPath((Join-Path $ResolvedStateRoot $Active.version_relative_path))
+$ResolvedVersionPath = Assert-CanonicalPath $VersionPath
+if ($ScriptRoot -cne $ExpectedPlayerRoot -or
+    $ResolvedVersionPath -cne (Join-Path $ExpectedVersionRoot 'VERSION.tsv')) {
+  throw "VersionPath y player deben corresponder al slot activo."
+}
+$ExpectedLanConfigPath = [IO.Path]::GetFullPath((Join-Path $ResolvedStateRoot 'config/LAN-CONFIG.json'))
+$ExpectedFingerprintPath = [IO.Path]::GetFullPath((Join-Path $ResolvedStateRoot 'config/public-identity/relay-cert.sha256'))
+if ((Assert-CanonicalPath $FingerprintPath) -cne $ExpectedFingerprintPath) { throw "FingerprintPath fuera del contexto." }
 
 $PackageKeys = @(
   "schema_version", "launcher_relative_path", "launcher_sha256", "actions",
   "levels", "max_clients", "network_contract", "loopback_http_only", "updater_version",
   "player_identity", "player_version", "config_schema_version"
 )
-$Package = Read-ClosedTsv $PackageContractPath $PackageKeys
+$PackageDocument = Read-BoundedDocument $PackageContractPath 4096
+$Package = Convert-ClosedTsv $PackageDocument.Text $PackageKeys
 if ($Package.schema_version -cne "1" -or
     $Package.launcher_relative_path -cne "teremoq-lan-platform.ps1" -or
     $Package.actions -cne "start,status,stop,collect" -or
@@ -76,36 +213,31 @@ if ($Package.schema_version -cne "1" -or
     $Package.config_schema_version -cne "1") {
   throw "Contrato del launcher fuera de versión."
 }
-$SelfHash = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$SelfHash = (Read-BoundedDocument $PSCommandPath 1048576).Sha256
 if ($SelfHash -cne $Package.launcher_sha256) {
   throw "El hash del launcher no coincide con el contrato."
 }
 
-$LanConfigItem = Get-Item -LiteralPath $ExpectedLanConfigPath
-if ($LanConfigItem.PSIsContainer -or
-    ($LanConfigItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or
-    $LanConfigItem.Length -lt 2 -or $LanConfigItem.Length -gt 512) {
-  throw "LAN-CONFIG.json debe ser un fichero público regular y acotado."
-}
-$LanConfigRaw = [System.IO.File]::ReadAllText($LanConfigItem.FullName)
-try { $LocalConfig = $LanConfigRaw | ConvertFrom-Json }
+$LanConfigDocument = Read-BoundedDocument $ExpectedLanConfigPath 512
+try { $LocalConfig = Convert-CanonicalJson $LanConfigDocument.Text }
 catch { throw "LAN-CONFIG.json no es JSON válido." }
 $ConfigKeys = @(
   "schema_version", "relay_url", "fingerprint_sha256", "prefix_length", "namespace",
-  "run_id", "source_commit"
+  "run_id"
 )
 if (-not (Test-ExactProperties $LocalConfig $ConfigKeys) -or
-    $LocalConfig.schema_version -ne 1 -or
+    $LocalConfig.schema_version -isnot [int] -or $LocalConfig.schema_version -ne 1 -or
+    $LocalConfig.relay_url -isnot [string] -or $LocalConfig.fingerprint_sha256 -isnot [string] -or
     $LocalConfig.fingerprint_sha256 -cnotmatch "^[0-9a-f]{64}$" -or
     (($LocalConfig.prefix_length -isnot [int]) -and ($LocalConfig.prefix_length -isnot [long])) -or
     $LocalConfig.prefix_length -lt 8 -or $LocalConfig.prefix_length -gt 30 -or
     $LocalConfig.namespace -isnot [string] -or [string]::IsNullOrWhiteSpace($LocalConfig.namespace) -or
     [System.Text.Encoding]::UTF8.GetByteCount($LocalConfig.namespace) -gt 256 -or
-    ($LocalConfig.namespace.Split("/") | Where-Object {
+    @($LocalConfig.namespace.Split("/") | Where-Object {
       $_ -cnotmatch "^[A-Za-z0-9._-]+$" -or $_ -in @(".", "..")
     }).Count -ne 0 -or
-    $LocalConfig.run_id -cnotmatch "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" -or
-    $LocalConfig.source_commit -cnotmatch "^[0-9a-f]{40}$") {
+    $LocalConfig.run_id -isnot [string] -or
+    $LocalConfig.run_id -cnotmatch '^lan-[a-z0-9][a-z0-9-]{0,31}$') {
   throw "LAN-CONFIG.json no cumple el contrato cerrado."
 }
 [System.Uri]$MoqUri = $null
@@ -132,37 +264,22 @@ $AddressValue = [uint64]$Octets[0] * 16777216 + [uint64]$Octets[1] * 65536 +
 $HostMask = [uint64]([Math]::Pow(2, 32 - $LocalConfig.prefix_length) - 1)
 $HostPart = $AddressValue -band $HostMask
 if ($HostPart -eq 0 -or $HostPart -eq $HostMask) { throw "relay_url usa red o broadcast." }
-$CanonicalConfig = [ordered]@{
-  schema_version = 1
-  relay_url = $LocalConfig.relay_url
-  fingerprint_sha256 = $LocalConfig.fingerprint_sha256
-  prefix_length = $LocalConfig.prefix_length
-  namespace = $LocalConfig.namespace
-  run_id = $LocalConfig.run_id
-  source_commit = $LocalConfig.source_commit
-} | ConvertTo-Json -Compress
-if (-not [string]::IsNullOrEmpty($env:TEREMOQ_LAN_LAB_CONFIG) -and
-    $env:TEREMOQ_LAN_LAB_CONFIG -cne $CanonicalConfig) {
-  throw "La variable LAN heredada no coincide con LAN-CONFIG.json."
-}
-
 $VersionKeys = @(
   "schema_version", "updater_version", "player_identity", "player_version",
-  "config_schema_version", "package_version", "run_id", "source_commit", "server_ipv4",
+  "config_schema_version", "run_id", "updater_commit", "server_ipv4",
   "moq_url", "player_manifest_sha256", "launcher_contract_sha256",
   "lan_config_sha256", "player_evidence", "load_launcher_status"
 )
-$Version = Read-ClosedTsv $ResolvedVersionPath $VersionKeys
-if ($Version.schema_version -cne "1" -or
+$VersionDocument = Read-BoundedDocument $ResolvedVersionPath 4096
+$Version = Convert-ClosedTsv $VersionDocument.Text $VersionKeys
+if ($Version.schema_version -cne "2" -or
     $Version.updater_version -cne $Package.updater_version -or
     $Version.player_identity -cne $Package.player_identity -or
     $Version.player_version -cne $Package.player_version -or
     $Version.config_schema_version -cne $Package.config_schema_version -or
-    $Version.package_version -cnotmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$" -or
-    $Version.package_version -cne $Package.player_version -or
     $Version.run_id -cne $RunId -or
     $LocalConfig.run_id -cne $Version.run_id -or
-    $LocalConfig.source_commit -cne $Version.source_commit -or
+    $Version.updater_commit -cne $Active.updater_commit -or
     $Version.server_ipv4 -cne $MoqUri.Host -or $Version.moq_url -cne $LocalConfig.relay_url -or
     $Version.player_manifest_sha256 -cnotmatch "^[0-9a-f]{64}$" -or
     $Version.launcher_contract_sha256 -cnotmatch "^[0-9a-f]{64}$" -or
@@ -170,17 +287,69 @@ if ($Version.schema_version -cne "1" -or
     $Version.player_evidence -cne "not_measured" -or $Version.load_launcher_status -cne "ready") {
   throw "VERSION.tsv no coincide con el paquete."
 }
-if ((Get-FileHash -LiteralPath $ManifestPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Version.player_manifest_sha256 -or
-    (Get-FileHash -LiteralPath $PackageContractPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Version.launcher_contract_sha256 -or
-    (Get-FileHash -LiteralPath $ExpectedLanConfigPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Version.lan_config_sha256) {
+$ManifestDocument = Read-BoundedDocument $ManifestPath 1048576
+if ($ManifestDocument.Sha256 -cne $Version.player_manifest_sha256 -or
+    $PackageDocument.Sha256 -cne $Version.launcher_contract_sha256 -or
+    $LanConfigDocument.Sha256 -cne $Version.lan_config_sha256 -or
+    $Version.player_manifest_sha256 -cne $Active.player_manifest_sha256 -or
+    $Version.launcher_contract_sha256 -cne $Active.launcher_contract_sha256 -or
+    $Version.lan_config_sha256 -cne $Active.config_sha256 -or
+    $Version.player_identity -cne $Active.player_identity -or
+    $Version.updater_version -cne $Active.updater_version) {
   throw "Los checksums de VERSION.tsv no corresponden al player."
 }
 
-$ManifestItem = Get-Item -LiteralPath $ManifestPath
-if ($ManifestItem.Length -gt 8MB -or ($ManifestItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
-  throw "Manifest del player fuera de límite."
+$CompatibilityKeys = @('schema_version','repository_url','repository_ref','repository_subdirectory',
+  'allowed_client_commit','updater_version','updater_protocol','player_identity','player_version',
+  'source_tree','package_lock_sha256','player_relative_path','config_schema_version',
+  'player_manifest_sha256','launcher_contract_sha256','lan_config_sha256')
+$CompatibilityDocument = Read-BoundedDocument (Join-Path $ExpectedVersionRoot 'CLIENT-COMPATIBILITY.tsv') 4096
+$Compatibility = Convert-ClosedTsv $CompatibilityDocument.Text $CompatibilityKeys
+if ($Compatibility.schema_version -cne '2' -or $Compatibility.repository_subdirectory -cne 'infra/lan' -or
+    $Compatibility.repository_url -cne 'https://github.com/Teremoq/teremoq' -or
+    $Compatibility.repository_ref -cnotmatch '^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$' -or
+    $Compatibility.repository_ref.Contains('..') -or
+    $Compatibility.allowed_client_commit -cne $Active.updater_commit -or
+    $Compatibility.updater_protocol -cne $Active.updater_protocol -or
+    $Compatibility.player_version -cne $Version.player_version -or
+    $Compatibility.config_schema_version -cne '1' -or
+    $Compatibility.lan_config_sha256 -cne $Active.config_sha256) {
+  throw "Compatibilidad gestionada invalida."
 }
-$Manifest = [System.IO.File]::ReadAllText($ManifestItem.FullName) | ConvertFrom-Json
+foreach ($Key in @('updater_version','player_identity','source_tree','package_lock_sha256',
+    'player_relative_path','player_manifest_sha256','launcher_contract_sha256')) {
+  if ($Compatibility[$Key] -cne $Active.$Key) { throw "Compatibilidad difiere del slot activo." }
+}
+$SumsDocument = Read-BoundedDocument (Join-Path $ExpectedVersionRoot 'SHA256SUMS') 4096
+$Sums = @{}
+foreach ($Line in $SumsDocument.Text.TrimEnd("`n").Split("`n")) {
+  if ($Line -cnotmatch '^([0-9a-f]{64})  (CLIENT-COMPATIBILITY[.]tsv|VERSION[.]tsv)$' -or
+      $Sums.ContainsKey($Matches[2])) { throw "Lista de hashes gestionada invalida." }
+  $Sums[$Matches[2]] = $Matches[1]
+}
+if ($Sums.Count -ne 2 -or $Sums['VERSION.tsv'] -cne $VersionDocument.Sha256 -or
+    $Sums['CLIENT-COMPATIBILITY.tsv'] -cne $CompatibilityDocument.Sha256) {
+  throw "Hashes de metadatos gestionados invalidos."
+}
+
+# Only the child receives the enriched public runtime contract. The six-key file
+# remains byte-identical across updater commits; no sealed player bytes change.
+$CanonicalConfig = [ordered]@{
+  schema_version = 1
+  relay_url = $LocalConfig.relay_url
+  fingerprint_sha256 = $LocalConfig.fingerprint_sha256
+  prefix_length = $LocalConfig.prefix_length
+  namespace = $LocalConfig.namespace
+  run_id = $LocalConfig.run_id
+  source_commit = $Version.updater_commit
+} | ConvertTo-Json -Compress
+if ([Text.Encoding]::UTF8.GetByteCount($CanonicalConfig) -gt 512) { throw "Runtime LAN fuera de limite." }
+if (-not [string]::IsNullOrEmpty($env:TEREMOQ_LAN_LAB_CONFIG) -and
+    $env:TEREMOQ_LAN_LAB_CONFIG -cne $CanonicalConfig) {
+  throw "La variable LAN heredada no coincide con LAN-CONFIG.json."
+}
+
+$Manifest = Convert-CanonicalJson $ManifestDocument.Text
 $ManifestKeys = @(
   "schema_version", "artifact", "entrypoint", "package_version", "updater_version",
   "player_identity", "player_version", "config_schema_version", "files", "total_bytes"
@@ -188,24 +357,45 @@ $ManifestKeys = @(
 if (-not (Test-ExactProperties $Manifest $ManifestKeys) -or
     $Manifest.schema_version -ne 1 -or $Manifest.artifact -cne "teremoq-lan-lab-standalone" -or
     $Manifest.entrypoint -cne "start.mjs" -or
-    $Manifest.package_version -cne $Version.package_version -or
+    $Manifest.package_version -cne $Version.player_version -or
     $Manifest.updater_version -cne $Package.updater_version -or
     $Manifest.player_identity -cne $Package.player_identity -or
     $Manifest.player_version -cne $Package.player_version -or
     $Manifest.config_schema_version -ne 1 -or
-    $Manifest.files.Count -lt 1 -or $Manifest.files.Count -gt 10000 -or
+    $Manifest.schema_version -isnot [int] -or $Manifest.config_schema_version -isnot [int] -or
+    $Manifest.files -isnot [array] -or $Manifest.files.Count -lt 1 -or $Manifest.files.Count -gt 10000 -or
     (($Manifest.total_bytes -isnot [int]) -and ($Manifest.total_bytes -isnot [long])) -or
-    $Manifest.total_bytes -lt 1) {
+    $Manifest.total_bytes -lt 1 -or $Manifest.total_bytes -gt 128MB) {
   throw "Manifest del player inválido."
 }
 $ManifestTotalBytes = 0
 $ManifestPaths = @{}
+function Get-InventoryHash([string]$Path, [long]$ExpectedBytes) {
+  [void](Assert-CanonicalPath $Path)
+  $Stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+  $Hash = [Security.Cryptography.SHA256]::Create()
+  $Retained = $false
+  try {
+    Assert-OpenedPath $Stream $Path
+    if ($ExpectedBytes -lt 0 -or $ExpectedBytes -gt 128MB -or $Stream.Length -ne $ExpectedBytes) {
+      throw "Longitud de fichero sellado invalida."
+    }
+    $Value = ([BitConverter]::ToString($Hash.ComputeHash($Stream)) -replace '-', '').ToLowerInvariant()
+    if ($Stream.Position -ne $ExpectedBytes) { throw "Fichero sellado cambio durante lectura." }
+    [void](Assert-CanonicalPath $Path)
+    $PinnedStreams.Add($Stream)
+    $Retained = $true
+    return $Value
+  } finally { $Hash.Dispose(); if (-not $Retained) { $Stream.Dispose() } }
+}
 foreach ($File in $Manifest.files) {
   if (-not (Test-ExactProperties $File @("bytes", "path", "sha256")) -or
       $File.path -isnot [string] -or $File.path.Length -lt 1 -or $File.path.Length -gt 512 -or
       $File.path.Contains("..") -or $File.path.Contains("\") -or
+      $File.path -match '[:\x00-\x1f]' -or
       ($File.bytes -isnot [long] -and $File.bytes -isnot [int]) -or
-      $File.bytes -lt 0 -or $File.sha256 -cnotmatch "^[0-9a-f]{64}$" -or
+      $File.bytes -lt 0 -or $File.bytes -gt 128MB -or $File.sha256 -isnot [string] -or
+      $File.sha256 -cnotmatch "^[0-9a-f]{64}$" -or
       $ManifestPaths.ContainsKey($File.path)) {
     throw "Entrada de manifest inválida."
   }
@@ -215,13 +405,11 @@ foreach ($File in $Manifest.files) {
       -not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
     throw "Entrada de manifest fuera del paquete."
   }
-  $Item = Get-Item -LiteralPath $FullPath
-  if (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or
-      $Item.Length -ne $File.bytes -or
-      (Get-FileHash -LiteralPath $FullPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $File.sha256) {
+  if ((Get-InventoryHash $FullPath $File.bytes) -cne $File.sha256) {
     throw "Checksum interno del player inválido."
   }
   $ManifestTotalBytes += $File.bytes
+  if ($ManifestTotalBytes -gt 128MB) { throw "Inventario excede limite." }
 }
 if ($ManifestTotalBytes -ne $Manifest.total_bytes -or
     -not $ManifestPaths.ContainsKey("lan-launcher.tsv") -or
@@ -229,27 +417,31 @@ if ($ManifestTotalBytes -ne $Manifest.total_bytes -or
   throw "Manifest del player no enlaza los contratos requeridos."
 }
 $ActualPaths = @{}
-foreach ($Item in Get-ChildItem -LiteralPath $ScriptRoot -Recurse -Force) {
-  if ($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-    throw "El directorio player contiene un enlace no permitido."
+$Directories = New-Object 'System.Collections.Generic.Queue[string]'
+$Directories.Enqueue($ScriptRoot)
+$EntryCount = 0
+while ($Directories.Count -gt 0) {
+  foreach ($Path in [IO.Directory]::EnumerateFileSystemEntries($Directories.Dequeue())) {
+    $EntryCount += 1
+    if ($EntryCount -gt 20000 -or $Path.Length - $ScriptRoot.Length -gt 513) {
+      throw "Inventario excede cardinalidad o longitud."
+    }
+    $Item = Get-Item -LiteralPath $Path -Force
+    if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+      throw "El directorio player contiene un enlace no permitido."
+    }
+    if ($Item.PSIsContainer) { $Directories.Enqueue($Item.FullName); continue }
+    $RelativePath = $Item.FullName.Substring($ScriptRoot.Length + 1).Replace("\", "/")
+    if ($RelativePath -ceq "MANIFEST.sha256.json") { continue }
+    $ActualPaths[$RelativePath] = $true
   }
-  if ($Item.PSIsContainer) { continue }
-  $RelativePath = $Item.FullName.Substring($ScriptRoot.Length + 1).Replace("\", "/")
-  if ($RelativePath -ceq "MANIFEST.sha256.json") { continue }
-  $ActualPaths[$RelativePath] = $true
 }
 if ($ActualPaths.Count -ne $ManifestPaths.Count -or
-    ($ActualPaths.Keys | Where-Object { -not $ManifestPaths.ContainsKey($_) }).Count -ne 0) {
+    @($ActualPaths.Keys | Where-Object { -not $ManifestPaths.ContainsKey($_) }).Count -ne 0) {
   throw "El inventario del player contiene extras o ausencias."
 }
 
-$FingerprintItem = Get-Item -LiteralPath $FingerprintPath
-if ($FingerprintItem.PSIsContainer -or
-    ($FingerprintItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -or
-    $FingerprintItem.Length -gt 128) {
-  throw "FingerprintPath debe ser un fichero regular y acotado."
-}
-$Fingerprint = ([System.IO.File]::ReadAllText($FingerprintItem.FullName)).Trim()
+$Fingerprint = (Read-BoundedDocument $FingerprintPath 128).Text.Trim()
 if ($Fingerprint -cnotmatch "^[0-9a-f]{64}$") {
   throw "FingerprintPath no contiene un SHA-256 canónico."
 }
@@ -257,7 +449,20 @@ if ($Fingerprint -cne $LocalConfig.fingerprint_sha256) {
   throw "El fingerprint verificado no coincide con la configuración local."
 }
 
-$ResolvedEvidence = [System.IO.Path]::GetFullPath($EvidenceDirectory)
+$ResolvedEvidence = Assert-CanonicalPath $EvidenceDirectory -AllowMissing
+if ((Test-Path -LiteralPath $ResolvedEvidence) -and
+    -not (Test-Path -LiteralPath $ResolvedEvidence -PathType Container)) {
+  throw "EvidenceDirectory debe ser directorio o estar ausente."
+}
+# This is the SAME static boundary used by start. No product process, environment
+# assignment, evidence directory, state/log write, port probe or Node --version.
+if ($ValidateOnly) {
+  [pscustomobject]@{
+    schema_version = 1; status = 'validated'; run_id = $RunId; level = $Level
+    updater_commit = $Active.updater_commit; player_identity = $Active.player_identity
+  } | ConvertTo-Json -Compress
+  return
+}
 [System.IO.Directory]::CreateDirectory($ResolvedEvidence) | Out-Null
 $EvidenceItem = Get-Item -LiteralPath $ResolvedEvidence
 if ($EvidenceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
@@ -415,4 +620,10 @@ switch ($Action) {
       evidence_sha256 = $Validation.sha256
     } | ConvertTo-Json -Compress
   }
+}
+} finally {
+  # Retain verified metadata and dependency descriptors across the action. The
+  # caller must separately pin this PS script BEFORE invocation (Platform).
+  foreach ($PinnedStream in $PinnedStreams) { $PinnedStream.Dispose() }
+  $PinnedStreams.Clear()
 }

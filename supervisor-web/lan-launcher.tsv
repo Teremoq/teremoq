@@ -1,6 +1,6 @@
 schema_version	1
 launcher_relative_path	teremoq-lan-platform.ps1
-launcher_sha256	71b1224a13ee77a540122478157012f58b88b48cfe5a03984debf5657bc8ba3d
+launcher_sha256	b85e762b7e639efc8d81805918df607987f9dc476da9e552714aca7343113082
 actions	start,status,stop,collect
 levels	1,5,10,25
 max_clients	25

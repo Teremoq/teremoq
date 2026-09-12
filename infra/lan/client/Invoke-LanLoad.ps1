@@ -21,6 +21,14 @@ if ($state.Version.run_id -cne $RunId) { throw 'RunId differs from the approved 
 $evidenceRootFull = [IO.Path]::GetFullPath($EvidenceRoot)
 if (-not (Test-Path -LiteralPath $evidenceRootFull -PathType Container)) { throw 'EvidenceRoot must exist' }
 if (((Get-Item -LiteralPath $evidenceRootFull -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'EvidenceRoot may not be a reparse point' }
+$evidence = Join-Path (Join-Path $evidenceRootFull $RunId) "level-$Level"
+if ($Action -eq 'Validate' -or $Action -eq 'Start') {
+    Assert-TeremoqLanLauncherStartContract -StateContext $state -Level $Level -EvidenceDirectory $evidence
+}
+if ($Action -eq 'Validate') {
+    Write-Output ("Managed LAN launcher Start parser and Git checkout are valid for commit {0}; no Node/player started and no readiness claimed." -f $checkout.Head)
+    exit 0
+}
 $node = Get-Command node.exe -ErrorAction SilentlyContinue
 if (-not $node) { $node = Get-Command node -ErrorAction SilentlyContinue }
 $fixedNode = Join-Path $env:ProgramFiles 'nodejs\node.exe'
@@ -29,21 +37,13 @@ if (-not $node -and (Test-Path -LiteralPath $fixedNode -PathType Leaf)) {
 }
 $nodeVersion = if ($node) { (& $node.Source --version 2>$null | Out-String).Trim() } else { 'unavailable' }
 if ($nodeVersion -notmatch '^v22\.[0-9]+\.[0-9]+$') { throw 'approved Node 22.x runtime is required; no runtime is embedded or installed' }
-if ($Action -eq 'Validate') {
-    Write-Output ("TP-WEB-REALTIME LAN launcher contract and Git checkout are valid for commit {0}; no player started." -f $checkout.Head)
-    exit 0
-}
 if ($Action -eq 'Start' -and -not $ConfirmStart) { throw 'Start requires -ConfirmStart' }
 if ($Action -eq 'Start' -and @(Get-NetTCPConnection -State Listen -LocalPort 3000 -ErrorAction SilentlyContinue).Count -ne 0) { throw 'reserved player loopback TCP/3000 is occupied' }
-$evidence = Join-Path (Join-Path $evidenceRootFull $RunId) "level-$Level"
 if ($Action -eq 'Start') {
     if (Test-Path -LiteralPath $evidence) { throw 'deterministic player evidence directory already exists' }
     New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 } elseif (-not (Test-Path -LiteralPath $evidence -PathType Container)) {
     throw 'deterministic player evidence directory does not exist for this action'
 }
-& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $state.LauncherPath `
-    -Action $Action -RunId $RunId -Level $Level -VersionPath $state.VersionPath `
-    -FingerprintPath $state.FingerprintPath -EvidenceDirectory $evidence
-if ($LASTEXITCODE -ne 0) { throw "TP-WEB-REALTIME LAN launcher failed: $LASTEXITCODE" }
+Invoke-TeremoqPinnedLanLauncher -StateContext $state -Action $Action -Level $Level -EvidenceDirectory $evidence
 if ($Action -eq 'Collect') { Write-Output 'Import the exact browser JSON with Import-BrowserObservation.ps1; launcher output/hash alone is not composite gate evidence.' }
