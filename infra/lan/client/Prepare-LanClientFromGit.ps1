@@ -18,6 +18,25 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
+# Reject an unselected host BEFORE loading helpers or touching any run state.
+if ($PSVersionTable.PSEdition -cne 'Core' -or
+    $PSVersionTable.PSVersion.ToString() -cne '7.6.6' -or
+    [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
+    [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -cne 'X64') {
+    throw 'LAN preparation requires the selected Windows x64 PowerShell Core 7.6.6 host'
+}
+$hostPath = Join-Path ([IO.Path]::GetFullPath($PSHOME)) 'pwsh.exe'
+$hostProcess = [Diagnostics.Process]::GetCurrentProcess()
+try {
+    if (-not [string]::Equals([IO.Path]::GetFullPath($hostProcess.MainModule.FileName),
+            $hostPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'LAN preparation host executable does not match selected PSHOME'
+    }
+} finally { $hostProcess.Dispose() }
+$hostEntry = Get-Item -LiteralPath $hostPath -Force
+if ($hostEntry.PSIsContainer -or ($hostEntry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'LAN preparation host must be a regular executable'
+}
 . (Join-Path $PSScriptRoot 'Client-Distribution.ps1')
 . (Join-Path $PSScriptRoot 'Client-Slot-State.ps1')
 
@@ -58,7 +77,7 @@ function ConvertFrom-TeremoqWebBuilderReceipt {
     if ($Output.Length -lt 2 -or $Output.Length -gt 131072) { throw 'Web builder output is outside the bounded receipt policy' }
     $jsonLines = @($Output -split "`r?`n" | Where-Object { $_.Length -le 8192 -and $_.StartsWith('{') -and $_.EndsWith('}') })
     if ($jsonLines.Count -ne 1) { throw 'Web Git builder did not emit exactly one closed JSON receipt' }
-    try { $receipt = $jsonLines[0] | ConvertFrom-Json } catch { throw 'Web Git builder receipt is not JSON' }
+    try { $receipt = $jsonLines[0] | ConvertFrom-TeremoqLanJson } catch { throw 'Web Git builder receipt is not JSON' }
     $allowed = @(
         'schema_version','status','updater_version','player_identity','player_version','config_schema_version',
         'build_mode','source_commit','source_tree','package_lock_sha256','node_version','npm_version','platform',
@@ -133,10 +152,6 @@ if ($MaterialOnly) {
     $candidateRecovery = Reset-TeremoqLanUnconfirmedCandidate -StateRoot $state
 }
 $builder = Assert-TeremoqNonReparseFilePath -Path (Join-Path $checkout.CheckoutRoot 'supervisor-web\lan-player\Build-LanPlayerFromGit.ps1')
-$hostPath = (Get-Process -Id $PID).Path
-if (-not $hostPath -or -not $hostPath.EndsWith('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'the Windows PowerShell host is required to execute the reviewed Web builder'
-}
 $arguments = @(
     '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$builder,
     '-CheckoutRoot',$checkout.CheckoutRoot,'-StateRoot',$state,'-RepositoryUrl',$RepositoryUrl,

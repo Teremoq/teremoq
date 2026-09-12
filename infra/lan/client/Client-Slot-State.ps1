@@ -191,7 +191,7 @@ function Read-TeremoqLanSlotPointer {
     }
     $path = Assert-TeremoqNonReparseFilePath -Path $Path
     $text = Read-TeremoqBoundedUtf8File -Path $path -MaxBytes 4096
-    try { $record = $text | ConvertFrom-Json } catch { throw 'LAN client slot pointer is not valid JSON' }
+    try { $record = $text | ConvertFrom-TeremoqLanJson } catch { throw 'LAN client slot pointer is not valid JSON' }
     Assert-TeremoqLanSlotRecord -Record $record
     if ($text -cne (ConvertTo-TeremoqLanSlotJson -Record $record)) {
         throw 'LAN client slot pointer is not canonical JSON'
@@ -557,7 +557,7 @@ function Assert-TeremoqTransitionSlotTypes {
     Assert-TeremoqLanSlotRecord -Record $Record
     foreach ($property in $Record.PSObject.Properties) {
         if ($property.Name -cin @('schema_version','config_schema_version')) {
-            if ($property.Value -isnot [int] -or $property.Value -ne 1) { throw 'transition slot version must be an exact integer' }
+            if (-not (Test-TeremoqClrInteger $property.Value) -or $property.Value -ne 1) { throw 'transition slot version must be an exact integer' }
         } elseif ($property.Value -isnot [string]) { throw 'transition slot fields must have exact string types' }
     }
 }
@@ -567,11 +567,11 @@ function Read-TeremoqTransitionRecord {
     [void](Get-TeremoqNonReparseDirectoryPath -Path $Directory)
     Assert-TeremoqTransitionDirectory -Directory $Directory
     $text = Read-TeremoqBoundedUtf8File -Path (Join-Path $Directory 'binding.json') -MaxBytes 4096
-    $record = $text | ConvertFrom-Json
+    $record = $text | ConvertFrom-TeremoqLanJson
     $keys = @('schema_version','transition_id','source_sha256','target_sha256','target_commit','source_status','rollback_state')
     $actual = @($record.PSObject.Properties | ForEach-Object { $_.Name })
     if ($actual.Count -ne $keys.Count -or @($actual | Where-Object { $keys -cnotcontains $_ }).Count -ne 0 -or
-        $record.schema_version -isnot [int] -or $record.schema_version -ne 1 -or
+        -not (Test-TeremoqClrInteger $record.schema_version) -or $record.schema_version -ne 1 -or
         $record.transition_id -isnot [string] -or $record.transition_id -cnotmatch '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
         $record.source_sha256 -isnot [string] -or $record.source_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         $record.target_sha256 -isnot [string] -or $record.target_sha256 -cnotmatch '^[0-9a-f]{64}$' -or

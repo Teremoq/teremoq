@@ -19,6 +19,25 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
+# Reject an unselected host BEFORE loading helpers or touching any run state.
+if ($PSVersionTable.PSEdition -cne 'Core' -or
+    $PSVersionTable.PSVersion.ToString() -cne '7.6.6' -or
+    [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
+    [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -cne 'X64') {
+    throw 'LAN preparation requires the selected Windows x64 PowerShell Core 7.6.6 host'
+}
+$hostPath = Join-Path ([IO.Path]::GetFullPath($PSHOME)) 'pwsh.exe'
+$hostProcess = [Diagnostics.Process]::GetCurrentProcess()
+try {
+    if (-not [string]::Equals([IO.Path]::GetFullPath($hostProcess.MainModule.FileName),
+            $hostPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'LAN preparation host executable does not match selected PSHOME'
+    }
+} finally { $hostProcess.Dispose() }
+$hostEntry = Get-Item -LiteralPath $hostPath -Force
+if ($hostEntry.PSIsContainer -or ($hostEntry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'LAN preparation host must be a regular executable'
+}
 . (Join-Path $PSScriptRoot 'Client-Distribution.ps1')
 . (Join-Path $PSScriptRoot 'Client-Slot-State.ps1')
 
@@ -42,7 +61,7 @@ if ($BuilderReceiptSha256 -cnotmatch '^[0-9a-f]{64}$' -or
     throw 'Web builder receipt digest is absent or changed'
 }
 $receiptText = Read-TeremoqBoundedUtf8File -Path $receiptPath -MaxBytes 8192
-try { $receipt = $receiptText | ConvertFrom-Json } catch { throw 'Web builder receipt is not JSON' }
+try { $receipt = $receiptText | ConvertFrom-TeremoqLanJson } catch { throw 'Web builder receipt is not JSON' }
 $receiptKeys = @(
     'schema_version','status','updater_version','player_identity','player_version','config_schema_version',
     'build_mode','source_commit','source_tree','package_lock_sha256','node_version','npm_version','platform',
@@ -116,7 +135,7 @@ if ((Get-TeremoqBoundedFileSha256 -Path $manifestPath -MaxBytes 1048576) -cne $r
     (Get-TeremoqBoundedFileSha256 -Path $launcherPath -MaxBytes 4096) -cne $receipt.launcher_contract_sha256) {
     throw 'Web player hashes differ from the sealed builder receipt'
 }
-$manifest = (Read-TeremoqBoundedUtf8File -Path $manifestPath -MaxBytes 1048576) | ConvertFrom-Json
+$manifest = (Read-TeremoqBoundedUtf8File -Path $manifestPath -MaxBytes 1048576) | ConvertFrom-TeremoqLanJson
 $manifestKeys = @($manifest.PSObject.Properties.Name)
 $expectedManifestKeys = @('schema_version','artifact','entrypoint','package_version','updater_version','player_identity','player_version','config_schema_version','files','total_bytes')
 if ($manifestKeys.Count -ne $expectedManifestKeys.Count -or

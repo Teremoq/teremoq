@@ -20,6 +20,26 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
+# Validate the actual host before dot-sourcing, probes or state mutation.
+# Desktop is retained for separate regression only; the selected procedure is Core7.
+$desktopHost = $PSVersionTable.PSEdition -ceq 'Desktop' -and $PSVersionTable.PSVersion.Major -eq 5
+$coreHost = $PSVersionTable.PSEdition -ceq 'Core' -and $PSVersionTable.PSVersion.ToString() -ceq '7.6.6'
+if (-not ($desktopHost -or $coreHost) -or [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
+    -not [Environment]::Is64BitProcess -or ($coreHost -and
+    [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -cne 'X64')) {
+    throw 'LAN procedure requires a validated Windows x64 Desktop5 or selected Core7.6.6 host'
+}
+$hostName = if ($desktopHost) { 'powershell.exe' } else { 'pwsh.exe' }
+$hostPath = Join-Path ([IO.Path]::GetFullPath($PSHOME)) $hostName
+$hostProcess = [Diagnostics.Process]::GetCurrentProcess()
+try {
+    if (-not [string]::Equals([IO.Path]::GetFullPath($hostProcess.MainModule.FileName),
+            $hostPath, [StringComparison]::OrdinalIgnoreCase)) { throw 'LAN host executable differs from PSHOME' }
+} finally { $hostProcess.Dispose() }
+$hostEntry = Get-Item -LiteralPath $hostPath -Force
+if ($hostEntry.PSIsContainer -or ($hostEntry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'LAN host must be a regular executable'
+}
 . (Join-Path $PSScriptRoot 'Preflight-Contract.ps1')
 $checks = New-Object System.Collections.Generic.List[object]
 $script:PreflightBlocked = $false

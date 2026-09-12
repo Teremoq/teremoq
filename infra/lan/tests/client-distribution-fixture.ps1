@@ -1,18 +1,23 @@
 # SPDX-FileCopyrightText: 2026 Teremoq contributors
 # SPDX-License-Identifier: Apache-2.0
 [CmdletBinding()]
-param([Parameter(Mandatory = $true)][string]$ScriptPath)
+param([Parameter(Mandatory = $true)][string]$ScriptPath, [switch]$Core7)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 . $ScriptPath
 
-if ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.Major -ne 5) {
+if (-not $Core7 -and ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.Major -ne 5)) {
     throw 'this fixture must run under Windows PowerShell 5 Desktop'
 }
-if ([bool]([System.Diagnostics.ProcessStartInfo].GetProperty('ArgumentList'))) {
+if (-not $Core7 -and [bool]([System.Diagnostics.ProcessStartInfo].GetProperty('ArgumentList'))) {
     throw 'fixture expected the Windows PowerShell 5 ProcessStartInfo surface without ArgumentList'
 }
 $nativeShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+if ($Core7) {
+    if ($PSVersionTable.PSEdition -cne 'Core' -or $PSVersionTable.PSVersion.ToString() -cne '7.6.6' -or
+        [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -cne 'X64') { throw 'fixture requires selected Core 7.6.6 x64' }
+    $nativeShell = Join-Path $PSHOME 'pwsh.exe'
+}
 if (-not (Test-Path -LiteralPath $nativeShell -PathType Leaf)) { throw 'native Windows PowerShell executable is unavailable' }
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('teremoq-client-distribution-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch -Force | Out-Null

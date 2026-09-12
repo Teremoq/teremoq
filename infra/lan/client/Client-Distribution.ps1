@@ -3,6 +3,30 @@
 
 Set-StrictMode -Version 3.0
 
+function ConvertFrom-TeremoqLanJson {
+    param([Parameter(Mandatory = $true, ValueFromPipeline = $true)][string]$Text)
+    process {
+        # Preserve the authorized JSON strings, not a DateTime reformatted later.
+        # Callers retain their existing raw-byte bounds, hashes and closed schema.
+        if ($PSVersionTable.PSEdition -ceq 'Core') {
+            if ($PSVersionTable.PSVersion.ToString() -cne '7.6.6') { throw 'LAN JSON requires the selected Core 7.6.6 runtime' }
+            return ConvertFrom-Json -InputObject $Text -DateKind String
+        }
+        if ($PSVersionTable.PSEdition -cne 'Desktop' -or $PSVersionTable.PSVersion.Major -ne 5) {
+            throw 'unsupported LAN JSON runtime'
+        }
+        return ConvertFrom-Json -InputObject $Text
+    }
+}
+
+function Test-TeremoqClrInteger {
+    param($Value)
+    # No bool, string, floating point or decimal coercion, even for value 1.
+    return $Value -is [byte] -or $Value -is [sbyte] -or $Value -is [int16] -or
+        $Value -is [uint16] -or $Value -is [int32] -or $Value -is [uint32] -or
+        $Value -is [int64] -or $Value -is [uint64]
+}
+
 if (-not ('TeremoqLanNativeFile' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -483,7 +507,7 @@ function Get-TeremoqLanStateContext {
     if ((Get-TeremoqBoundedFileSha256 -Path $lanConfigPath -MaxBytes 512) -cne $version.lan_config_sha256) {
         throw 'LAN-CONFIG.json hash mismatch'
     }
-    $lanConfig = (Read-TeremoqBoundedUtf8File -Path $lanConfigPath -MaxBytes 512) | ConvertFrom-Json
+    $lanConfig = (Read-TeremoqBoundedUtf8File -Path $lanConfigPath -MaxBytes 512) | ConvertFrom-TeremoqLanJson
     $lanKeys = @($lanConfig.PSObject.Properties.Name)
     if ($lanKeys.Count -ne 7 -or @($lanKeys | Where-Object { @('schema_version', 'run_id', 'source_commit', 'relay_url', 'fingerprint_sha256', 'prefix_length', 'namespace') -notcontains $_ }).Count -ne 0 -or
         $lanConfig.schema_version -ne 1 -or
@@ -516,7 +540,7 @@ function Get-TeremoqLanStateContext {
         (Get-TeremoqBoundedFileSha256 -Path $launcherContract -MaxBytes 4096) -cne $version.launcher_contract_sha256) {
         throw 'player manifest or launcher contract hash mismatch'
     }
-    $manifest = (Read-TeremoqBoundedUtf8File -Path $playerManifest -MaxBytes 1048576) | ConvertFrom-Json
+    $manifest = (Read-TeremoqBoundedUtf8File -Path $playerManifest -MaxBytes 1048576) | ConvertFrom-TeremoqLanJson
     $manifestKeys = @($manifest.PSObject.Properties.Name)
     $expectedManifestKeys = @('schema_version', 'artifact', 'package_version', 'source_commit', 'entrypoint', 'files', 'total_bytes')
     if ($manifestKeys.Count -ne $expectedManifestKeys.Count -or @($manifestKeys | Where-Object { $expectedManifestKeys -notcontains $_ }).Count -ne 0 -or
@@ -676,7 +700,7 @@ function Get-TeremoqManagedLanStateContext {
     if ((Get-TeremoqBoundedFileSha256 -Path $configPath -MaxBytes 512) -cne $record.config_sha256) {
         throw 'managed local LAN configuration hash mismatch'
     }
-    try { $lanConfig = $configText | ConvertFrom-Json } catch { throw 'managed local LAN configuration is not JSON' }
+    try { $lanConfig = $configText | ConvertFrom-TeremoqLanJson } catch { throw 'managed local LAN configuration is not JSON' }
     $lanKeys = @($lanConfig.PSObject.Properties.Name)
     $expectedLanKeys = @('schema_version','run_id','relay_url','fingerprint_sha256','prefix_length','namespace')
     $fingerprintPath = Join-Path $configRoot 'public-identity\relay-cert.sha256'
@@ -699,7 +723,7 @@ function Get-TeremoqManagedLanStateContext {
         (Get-TeremoqBoundedFileSha256 -Path $launcherContractPath -MaxBytes 4096) -cne $record.launcher_contract_sha256) {
         throw 'managed player manifest or launcher contract hash mismatch'
     }
-    $manifest = (Read-TeremoqBoundedUtf8File -Path $manifestPath -MaxBytes 1048576) | ConvertFrom-Json
+    $manifest = (Read-TeremoqBoundedUtf8File -Path $manifestPath -MaxBytes 1048576) | ConvertFrom-TeremoqLanJson
     $manifestKeys = @($manifest.PSObject.Properties.Name)
     $expectedManifestKeys = @('schema_version','artifact','entrypoint','package_version','updater_version','player_identity','player_version','config_schema_version','files','total_bytes')
     if ($manifestKeys.Count -ne $expectedManifestKeys.Count -or @($manifestKeys | Where-Object { $expectedManifestKeys -cnotcontains $_ }).Count -ne 0 -or
@@ -818,17 +842,17 @@ function Open-TeremoqLanPlayerPins {
             $offset += $count
         }
         if ($manifestStream.ReadByte() -ne -1) { throw 'pinned manifest exceeds expected length' }
-        $manifest = (New-Object Text.UTF8Encoding($false, $true)).GetString($bytes) | ConvertFrom-Json
+        $manifest = (New-Object Text.UTF8Encoding($false, $true)).GetString($bytes) | ConvertFrom-TeremoqLanJson
         $keys = @($manifest.PSObject.Properties.Name)
         $allowed = @('schema_version','artifact','entrypoint','package_version','updater_version','player_identity','player_version','config_schema_version','files','total_bytes')
         if ($keys.Count -ne $allowed.Count -or @($keys | Where-Object { $allowed -cnotcontains $_ }).Count -ne 0 -or
-            $manifest.schema_version -isnot [int] -or $manifest.schema_version -ne 1 -or
+            -not (Test-TeremoqClrInteger $manifest.schema_version) -or $manifest.schema_version -ne 1 -or
             $manifest.artifact -cne 'teremoq-lan-lab-standalone' -or $manifest.entrypoint -cne 'start.mjs' -or
             $manifest.player_identity -cne $StateContext.Version.player_identity -or
             $manifest.player_version -cne $StateContext.Version.player_version -or
             $manifest.package_version -cne $StateContext.Version.player_version -or
             $manifest.updater_version -cne $StateContext.Version.updater_version -or
-            $manifest.config_schema_version -isnot [int] -or $manifest.config_schema_version -ne 1 -or
+            -not (Test-TeremoqClrInteger $manifest.config_schema_version) -or $manifest.config_schema_version -ne 1 -or
             $manifest.files -isnot [Array] -or $manifest.files.Count -lt 1 -or $manifest.files.Count -gt 10000 -or
             ($manifest.total_bytes -isnot [int] -and $manifest.total_bytes -isnot [long]) -or
             $manifest.total_bytes -lt 1 -or $manifest.total_bytes -gt 134217728) { throw 'pinned player manifest is outside the managed contract' }

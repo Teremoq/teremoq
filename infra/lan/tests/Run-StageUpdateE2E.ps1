@@ -7,6 +7,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
+# Private bare fixtures only: even a failed URL rewrite must not reach a network.
+$env:GIT_ALLOW_PROTOCOL = 'file'
 $source = [IO.Path]::GetFullPath($SourceRoot)
 . (Join-Path $source 'infra\lan\client\Client-Distribution.ps1')
 

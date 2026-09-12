@@ -493,6 +493,25 @@ class LabRuntimePolicyTest(unittest.TestCase):
                 MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK,
             )
 
+    def test_core7_capture_runtime_pairs_remain_closed(self) -> None:
+        for outcome in ("terminated_parent_pid_nonpositive", "terminated_after_explorer_root_missing"):
+            context = capture_context(parent_process_names=["explorer.exe"], parent_process_count=1,
+                                      traversal_outcome=outcome)
+            context.update(current_process_name="pwsh.exe", powershell_edition="Core", powershell_version_major=7)
+            RUNTIME.validate_capture_context(context, "core7-fixture")
+            for field, value in (("powershell_edition", "Desktop"), ("current_process_name", "powershell.exe"),
+                                 ("powershell_version_major", 5), ("powershell_version_major", 7.0),
+                                 ("powershell_version_major", "7"), ("powershell_version_major", True),
+                                 ("parent_process_names", ["explorer.exe", "wslhost.exe"]),
+                                 ("wsl_environment_keys_present", ["WSL_INTEROP"])):
+                with self.subTest(outcome=outcome, field=field, value=value), self.assertRaises(ValueError):
+                    RUNTIME.validate_capture_context({**context, field: value}, "core7-fixture")
+        # No new node->pwsh interactive exception is authorized or inferred.
+        context.update(traversal_outcome="parent_process_missing",
+                       parent_process_names=["node.exe", "pwsh.exe", "explorer.exe"], parent_process_count=3)
+        with self.assertRaises(ValueError):
+            RUNTIME.validate_capture_context(context, "core7-fixture", allow_interactive_client=True)
+
     def test_capture_context_rejects_wsl_interop_and_incomplete_walks(self) -> None:
         document = windows_preflight("server")
         document["capture_context"] = capture_context(interoperability=True)

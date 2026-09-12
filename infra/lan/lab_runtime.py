@@ -341,7 +341,8 @@ def validate_capture_context(context: object, label: str, allow_interactive_clie
     if len(set(wsl_environment_keys_present)) != len(wsl_environment_keys_present):
         fail(f"{label} WSL environment key evidence contains duplicates")
     if traversal_outcome == "terminated_after_explorer_root_missing":
-        if current_process_name != "powershell.exe" or powershell_edition != "Desktop" or \
+        if (powershell_edition, current_process_name, powershell_version_major) not in {
+                ("Desktop", "powershell.exe", 5), ("Core", "pwsh.exe", 7)} or \
            normalized_parents != ["explorer.exe"] or wsl_environment_keys_present:
             fail(f"{label} capture context does not prove the trusted explorer root termination")
     if traversal_outcome == "parent_process_missing":
@@ -350,6 +351,9 @@ def validate_capture_context(context: object, label: str, allow_interactive_clie
             fail(f"{label} capture context does not prove the bounded interactive client path")
     if any(entry in blocked_ancestors for entry in normalized_parents) or wsl_environment_keys_present:
         fail(f"{label} capture path is not native Windows PowerShell")
+    if (powershell_edition, current_process_name, powershell_version_major) not in {
+            ("Desktop", "powershell.exe", 5), ("Core", "pwsh.exe", 7)}:
+        fail(f"{label} capture context runtime tuple is outside policy")
 
 
 def validate_listener_checks(checks: dict[str, dict[str, str]], label: str, udp_ports: tuple[int, ...], tcp_ports: tuple[int, ...]) -> None:
