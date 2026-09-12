@@ -15,8 +15,30 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
-# Windows PowerShell 5 otherwise formats native diagnostics with the active OEM
-# code page, while the bounded parent process deliberately accepts UTF-8 only.
+# Platform selects and verifies the official runtime before invoking this file.
+# Do not rediscover a host through PATH, relaunch, or fall back to Windows PS5.
+# Reject BEFORE loading helpers, probing Node, changing environment or building.
+if ($PSVersionTable.PSEdition -cne 'Core' -or
+    $PSVersionTable.PSVersion.ToString() -cne '7.6.6' -or
+    [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
+    [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -cne 'X64') {
+    throw 'Web builder requires the selected Windows x64 PowerShell Core 7.6.6 host'
+}
+$powerShellDirectory = [IO.Path]::GetFullPath($PSHOME)
+$powerShell = Join-Path $powerShellDirectory 'pwsh.exe'
+$hostProcess = [Diagnostics.Process]::GetCurrentProcess()
+try {
+    $hostExecutable = [IO.Path]::GetFullPath($hostProcess.MainModule.FileName)
+    if (-not [string]::Equals($hostExecutable, $powerShell, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Web builder host executable does not match the selected PSHOME'
+    }
+} finally { $hostProcess.Dispose() }
+$hostEntry = Get-Item -LiteralPath $powerShell -Force
+if ($hostEntry.PSIsContainer -or ($hostEntry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'Web builder host must be a regular executable'
+}
+
+# The bounded parent process accepts UTF-8 only, independently of console code page.
 $utf8NoBom = New-Object Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $utf8NoBom
 $OutputEncoding = $utf8NoBom
@@ -49,8 +71,6 @@ $node = Join-Path $env:ProgramFiles 'nodejs\node.exe'
 $npmCli = Join-Path $env:ProgramFiles 'nodejs\node_modules\npm\bin\npm-cli.js'
 $gitDirectory = Join-Path $env:ProgramFiles 'Git\cmd'
 $git = Join-Path $gitDirectory 'git.exe'
-$powerShellDirectory = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0'
-$powerShell = Join-Path $powerShellDirectory 'powershell.exe'
 $commandProcessor = Join-Path $env:SystemRoot 'System32\cmd.exe'
 $distributionScript = Join-Path $project 'scripts\distribute-lan-from-git.mjs'
 if (-not (Test-Path -LiteralPath $node -PathType Leaf) -or
