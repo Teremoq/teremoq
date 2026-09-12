@@ -4,6 +4,24 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 . (Join-Path $PSScriptRoot '..\client\Client-Distribution.ps1')
 . (Join-Path $PSScriptRoot '..\client\Client-Slot-State.ps1')
+$preparePath = Join-Path $PSScriptRoot '..\client\Prepare-LanClientFromGit.ps1'
+$parseTokens = $null
+$parseErrors = $null
+$prepareAst = [Management.Automation.Language.Parser]::ParseFile($preparePath, [ref]$parseTokens, [ref]$parseErrors)
+if ($parseErrors.Count -ne 0) { throw 'Prepare does not parse on this PowerShell runtime' }
+$guards = @($prepareAst.FindAll({ param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -ceq 'Assert-TeremoqPreparationPreservesInitialCandidate'
+}, $true))
+if ($guards.Count -ne 1) { throw 'Prepare preservation guard must be unique' }
+# Load only the production guard definition for isolated positive canaries.
+. ([scriptblock]::Create($guards[0].Extent.Text))
+$topLevelCommands = @($prepareAst.EndBlock.Statements | ForEach-Object {
+    if ($_ -is [Management.Automation.Language.PipelineAst]) {
+        $_.PipelineElements | Where-Object { $_ -is [Management.Automation.Language.CommandAst] } | ForEach-Object { $_.GetCommandName() }
+    }
+})
+if ($topLevelCommands -cnotcontains 'Assert-TeremoqPreparationPreservesInitialCandidate') { throw 'Prepare entrypoint does not invoke preservation guard' }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('teremoq-lan-slots-' + [Guid]::NewGuid().ToString('N'))
 $initialRoot = Join-Path ([IO.Path]::GetTempPath()) ('teremoq-lan-initial-' + [Guid]::NewGuid().ToString('N'))
@@ -37,7 +55,19 @@ function New-FixtureSlot {
     return $record
 }
 
+function Get-FixturePreservationSnapshot {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return 'absent' }
+    return (@(Get-ChildItem -LiteralPath $Path -Recurse -Force | Sort-Object FullName | ForEach-Object {
+        $relative = $_.FullName.Substring($Path.Length)
+        if ($_.PSIsContainer) { 'directory:' + $relative }
+        else { 'file:' + $relative + ':' + $_.Length + ':' + $_.LastWriteTimeUtc.Ticks + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
+    }) -join '|')
+}
+
 try {
+    Assert-TeremoqPreparationPreservesInitialCandidate -StateRoot $initialRoot
+    if (Test-Path -LiteralPath $initialRoot) { throw 'guard initialized an absent state root' }
     if ((Get-TeremoqLanPlayerIdentity -SourceTree ('0' * 40) -PackageLockSha256 ('0' * 64)) -cne
         'sha256:56b3f8b327b5f99e3aab0bddef08e467496f298c096eece81448d325978803f3') {
         throw 'PowerShell player identity differs from the canonical cross-language vector'
@@ -48,6 +78,9 @@ try {
     if ((Stage-TeremoqLanClientSlot -StateRoot $root -Record $first).Status -cne 'staged') { throw 'initial stage failed' }
     if ((Activate-TeremoqLanClientSlot -StateRoot $root).Status -cne 'activated-pending-health') { throw 'initial activation failed' }
     if ((Confirm-TeremoqLanClientSlot -StateRoot $root).Status -cne 'confirmed') { throw 'initial confirmation failed' }
+    $healthyBefore = Get-FixturePreservationSnapshot $root
+    Assert-TeremoqPreparationPreservesInitialCandidate -StateRoot $root
+    if ((Get-FixturePreservationSnapshot $root) -cne $healthyBefore) { throw 'guard mutated confirmed state' }
     $control = Join-Path $root 'control'
     $beforeRead = @(Get-ChildItem -LiteralPath $control -File | Sort-Object Name | ForEach-Object {
         $_.Name + ':' + $_.LastWriteTimeUtc.Ticks + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
@@ -75,6 +108,9 @@ try {
     if ((Get-TeremoqActiveLanClientSlot -StateRoot $root).Record.slot_id -cne $first.slot_id) { throw 'failed activation changed the active pointer' }
     Write-TeremoqLanSlotPointer -Path $candidatePath -Record $second
     [void](Activate-TeremoqLanClientSlot -StateRoot $root)
+    $withRollbackBefore = Get-FixturePreservationSnapshot $root
+    Assert-TeremoqPreparationPreservesInitialCandidate -StateRoot $root
+    if ((Get-FixturePreservationSnapshot $root) -cne $withRollbackBefore) { throw 'guard mutated an existing rollback state' }
     $active = Get-TeremoqActiveLanClientSlot -StateRoot $root
     if ($active.Record.slot_id -cne $second.slot_id) { throw 'candidate was not atomically selected' }
     $rolledBack = Rollback-TeremoqLanClientSlot -StateRoot $root
@@ -148,6 +184,51 @@ try {
     $initial = New-FixtureSlot -Commit ('2' * 40) -Tree ('a' * 40) -Lock ('b' * 64) -StateRoot $initialRoot
     [void](Stage-TeremoqLanClientSlot -StateRoot $initialRoot -Record $initial)
     [void](Activate-TeremoqLanClientSlot -StateRoot $initialRoot)
+    [void][IO.Directory]::CreateDirectory((Join-Path $initialRoot 'evidence'))
+    [IO.File]::WriteAllText((Join-Path $initialRoot 'evidence\fixture-observation.txt'), 'synthetic preservation canary, not measured video', $utf8)
+    # Reproduce PLATFORM-PREP-PRESERVE-01 through the ACTUAL entrypoint.
+    # The deliberately nonexistent checkout also proves bootstrap/builder is
+    # never reached: the preservation reason, not a Git/path error, must win.
+    $preservedBefore = Get-FixturePreservationSnapshot $initialRoot
+    foreach ($attempt in @(1,2)) {
+        try {
+            & $preparePath -CheckoutRoot (Join-Path $initialRoot 'must-not-be-created') -StateRoot $initialRoot `
+                -RepositoryUrl 'https://github.com/Teremoq/teremoq' -RepositoryRef 'refs/heads/codex/lan-e2e-integration' `
+                -ExpectedCommit ('f' * 40) -RunId 'lan-fixture' -ServerIPv4 '192.168.254.2' `
+                -PrefixLength 24 -Namespace 'teremoq/live' -FingerprintSha256 ('a' * 64)
+            throw 'Prepare accepted an unconfirmed initial candidate'
+        } catch {
+            if ($_.Exception.Message -cne 'LAN preparation blocked: initial candidate is unconfirmed and has no rollback; existing state and material must be preserved') { throw }
+        }
+        if ((Get-FixturePreservationSnapshot $initialRoot) -cne $preservedBefore) { throw 'blocked Prepare mutated state, config, material or evidence' }
+        if (Test-Path -LiteralPath (Join-Path $initialRoot 'control\rollback.json')) { throw 'guard invented a rollback' }
+    }
+    # All read pins must be released even after the guard throws.
+    foreach ($file in @(Get-ChildItem -LiteralPath $initialRoot -Recurse -File)) {
+        $probe = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $probe.Dispose()
+    }
+    # Missing operation lock is not initialized by the refusal path.
+    $initialLock = Join-Path $initialRoot 'control\update.lock'
+    $savedInitialLock = Join-Path $initialRoot 'fixture-existing-lock'
+    [IO.File]::Move($initialLock, $savedInitialLock)
+    try {
+        $withoutLockBefore = Get-FixturePreservationSnapshot $initialRoot
+        try { Assert-TeremoqPreparationPreservesInitialCandidate -StateRoot $initialRoot; throw 'missing lock bypassed preservation guard' }
+        catch { if ($_.Exception.Message -notmatch '^LAN preparation blocked:') { throw } }
+        if ((Get-FixturePreservationSnapshot $initialRoot) -cne $withoutLockBefore) { throw 'guard initialized or changed state without a lock' }
+    } finally { [IO.File]::Move($savedInitialLock, $initialLock) }
+    $candidateForMalformed = Join-Path $initialRoot 'control\candidate.json'
+    $savedCandidateBytes = [IO.File]::ReadAllBytes($candidateForMalformed)
+    try {
+        [IO.File]::WriteAllText($candidateForMalformed, '{"unexpected":true}' + "`n", $utf8)
+        $malformedBefore = Get-FixturePreservationSnapshot $initialRoot
+        try { Assert-TeremoqPreparationPreservesInitialCandidate -StateRoot $initialRoot; throw 'guard accepted malformed candidate' }
+        catch { if ($_.Exception.Message -cne 'LAN client slot record is not a closed object') { throw } }
+        if ((Get-FixturePreservationSnapshot $initialRoot) -cne $malformedBefore) { throw 'guard repaired malformed metadata' }
+    } finally { [IO.File]::WriteAllBytes($candidateForMalformed, $savedCandidateBytes) }
+    # The low-level historical recovery remains deliberately unchanged. It is
+    # not an approved preparation/supersession command for preserved state.
     $recovered = Reset-TeremoqLanUnconfirmedCandidate -StateRoot $initialRoot
     if ($recovered.Status -cne 'initial-candidate-deactivated' -or
         (Test-Path -LiteralPath (Join-Path $initialRoot 'control\active.json')) -or
@@ -186,7 +267,7 @@ try {
     try { Stage-TeremoqLanClientSlot -StateRoot $root -Record $tampered | Out-Null; throw 'tampered config was accepted' }
     catch { if ($_.Exception.Message -match 'tampered config was accepted') { throw } }
 
-    Write-Output 'client slot state tests passed: reuse, update, atomic activation, rollback, stale candidate recovery, updater cleanup, verified cache retention, config preservation, locking, interruption recovery, tamper rejection'
+    Write-Output 'client slot state tests passed: pre-mutation Prepare refusal, no-state/builder effects, repeat refusal, missing lock, malformed candidate, pin release, reuse, update, atomic activation, rollback, stale candidate recovery, updater cleanup, verified cache retention, config preservation, locking, interruption recovery, tamper rejection'
 } finally {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $initialRoot) { Remove-Item -LiteralPath $initialRoot -Recurse -Force -ErrorAction SilentlyContinue }

@@ -273,6 +273,24 @@ reused: configuration is immutable, an unchanged player is reused without a
 build, and a changed player becomes the candidate. The active pointer changes
 atomically; the previous version remains available until health confirmation.
 
+Preparation refuses an unconfirmed initial state whose active and candidate
+refer to the same slot and which has no rollback record. This read-only guard
+runs before Git bootstrap, layout initialization, recovery and the builder;
+it preserves the pointers, version material, configuration and evidence. It
+does not manufacture a healthy previous version or a rollback record. Do not
+invoke `Reset-TeremoqLanUnconfirmedCandidate`, `Confirm-TeremoqLanClientSlot`,
+repair or rollback manually to bypass this refusal: historical low-level
+recovery can delete the initial pointers/version. The guard prevents damage;
+it does not authorize or enable superseding/activating that unconfirmed state.
+
+Keep the existing exclusive operator lease: this precondition is a pinned
+read-only observation, not a transaction covering concurrent preparation by
+another operator. Source download and a direct reviewed Web build in `node`
+mode may be planned separately only when they preserve existing slots and
+state; downloaded/built is not activated, healthy or ready for a live session.
+Any explicit preservation/restoration transition needs its own reviewed
+procedure before use. Do not reinstall or erase state to pass this gate.
+
 ```powershell
 & "$CheckoutRoot\infra\lan\client\Update-LanClient.ps1" `
   -StateRoot $StateRoot -CheckoutRoot $CheckoutRoot `
