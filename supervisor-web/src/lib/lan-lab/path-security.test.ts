@@ -15,6 +15,7 @@ import {
   pinSecureRegularFile,
   revalidateSecureDirectoryPin,
   revalidateSecureRegularFilePin,
+  parseWindowsHostSelection,
 } from "../../../scripts/path-security.mjs";
 
 const roots: string[] = [];
@@ -29,7 +30,7 @@ afterEach(() => {
 });
 
 describe("paths externos fijados y sin reparse ancestral", () => {
-  it("el canario PS5 obtiene ExitCode del proceso y verifica el reparse real", () => {
+  it("el canario nativo obtiene ExitCode del proceso y verifica el reparse real", () => {
     const script = readFileSync(join(
       process.cwd(),
       "scripts",
@@ -42,6 +43,21 @@ describe("paths externos fijados y sin reparse ancestral", () => {
     expect(script).toContain("$process.WaitForExit(10000)");
     expect(script).toContain("Assert-MklinkFailureCaptured $parentJunction $checkout");
   }, 15_000);
+
+  it("selección Core7 cerrada, sin PATH, UNC, dispositivo, traversal o PS5", () => {
+    expect(parseWindowsHostSelection("C:\\selected\\pwsh.exe")).toBe("C:\\selected\\pwsh.exe");
+    for (const value of [undefined, null, "", "pwsh.exe", "C:pwsh.exe", "\\\\host\\share\\pwsh.exe",
+      "\\\\?\\C:\\pwsh.exe", "C:\\dir\\..\\pwsh.exe", "C:\\dir\\powershell.exe", "C:\\bad\n\\pwsh.exe"]) {
+      expect(() => parseWindowsHostSelection(value)).toThrow();
+    }
+    const source = readFileSync("scripts/path-security.mjs", "utf8");
+    expect(source).not.toContain('execFileSync("powershell.exe"');
+    expect(source).toContain("execFileSync(host, args");
+    expect(source).toContain("timeout: 30_000");
+    expect(source).toContain("maxBuffer: 16_384");
+    expect(source).toContain("await handle.close()");
+    expect(source).toContain("MAX_WINDOWS_HOST_BYTES");
+  });
 
   it("acepta y revalida una cadena real estable", async () => {
     const root = tempRoot();

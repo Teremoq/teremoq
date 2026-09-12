@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "kind": "owner-transcription-of-tool-results-not-independent-attestation",
+  "base_commit": "8ef8325d15a6b1ad061186993d379656e9368575",
+  "result": "INCOMPLETE_CHANGES_REQUIRED",
+  "window": {
+    "authorized_start_utc": "2026-09-12T17:04:15Z",
+    "authorized_end_utc": "2026-09-12T17:16:15Z",
+    "observed_start_utc": "2026-09-12T17:04:49Z",
+    "last_scoped_query_utc": "2026-09-12T17:09:33.6632700Z"
+  },
+  "hashes": {
+    "wrapper": "1e7da53991fda14bcaf31545b4243de659a593e3d96ea49833114de03f91888a",
+    "harness": "9a121f74ffcc7b18101dbed07e9a1b84d8e488d5889c7225a8e61b9e8fb75f2e",
+    "consumer": "8999325643c8e4255cd11efad5c46cb869d72e1ae2b4c6ae6707d13299635672",
+    "policy": "d04f31c24083961215738f53c2a5962ea6d3c90690611f44197056f2e01cada1",
+    "npm_isolation": "cc4920bd5c1390a691f9b27efcd76f789733d4271a8fdd40ddf3df7ba0afcfa3",
+    "node_fixture": "811650e3e422c607491b961b16a220939b0d151507cd011f7f6421cbe59d7442",
+    "host": "bfb46af89433268872ddb43d1ca7a3f433452ee91ed356a9786940f90118e285",
+    "platform_helper": "414cefd46784728b3b19966e080c2c27438b8962b87cdb21746b94210820d8cb"
+  },
+  "results": {
+    "harness": {
+      "exit_code": 1,
+      "message": "inherited Web PowerShell selection differs from the validated host",
+      "location": "lan-player/Build-LanPlayerFromGit.ps1:43"
+    },
+    "node": {
+      "exit_code": 0,
+      "checks": [
+        "real-direct-node-core7-pin-unicode",
+        "real-node-after-npm-isolation-core7-pin",
+        "missing-and-malformed-selection-fail-before-exec",
+        "altered-executable-fingerprint-and-size-rejected",
+        "runtime-junction-and-target-junction-rejected",
+        "real-core7-consumer-empty-stdout",
+        "real-core7-consumer-wrong-stdout",
+        "real-core7-consumer-child-error",
+        "real-core7-consumer-bounded-output",
+        "real-core7-consumer-timeout-30000"
+      ],
+      "stderr": "",
+      "runtime": "v22.23.2/win32/x64"
+    },
+    "vitest": {
+      "exit_code": 0,
+      "files": 3,
+      "tests_passed": 36,
+      "counts": {
+        "path-security.test.ts": 6,
+        "npm-isolation.test.ts": 7,
+        "distribution-contract.test.ts": 23
+      },
+      "stderr": ""
+    },
+    "tsc": {
+      "exit_code": 2,
+      "stdout": "src/app/layout.tsx(9,50): error TS2304: Cannot find name 'LayoutProps'.",
+      "stderr": ""
+    },
+    "lint": {
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  },
+  "diagnostic": {
+    "payload": "$ErrorActionPreference='Stop'; $key='TEREMOQ_FOCAL_ENV_NULL_CANARY'; $rows=@(); foreach($kind in @('null','empty')) { if($kind -ceq 'null') { [Environment]::SetEnvironmentVariable($key,$null,'Process') } else { [Environment]::SetEnvironmentVariable($key,[string]::Empty,'Process') }; $v=[Environment]::GetEnvironmentVariable($key,'Process'); $rows += [pscustomobject]@{case=$kind;exists=(Test-Path -LiteralPath ('Env:'+$key));is_null=($null -eq $v);type=$(if($null -eq $v){'null'}else{$v.GetType().FullName});length=$(if($null -eq $v){$null}else{$v.Length})} }; ConvertTo-Json -InputObject $rows -Compress",
+    "payload_hash_encoding": "UTF-8 without terminal newline",
+    "payload_sha256": "1dbe4dd3d1030119e4a5a5adb2c28c4c06a30324ef4cbe5b10386c2c279226e0",
+    "exit_code": 0,
+    "ended_utc": "2026-09-12T17:08:59.7326294Z",
+    "stderr": "",
+    "observations": [
+      {
+        "case": "null",
+        "exists": true,
+        "is_null": false,
+        "type": "System.String",
+        "length": 0
+      },
+      {
+        "case": "empty",
+        "exists": true,
+        "is_null": false,
+        "type": "System.String",
+        "length": 0
+      }
+    ]
+  },
+  "closure": {
+    "all_tool_sessions_eof": true,
+    "scoped_process_count": 0,
+    "scope": "own-focal-markers-only-not-tree-containment",
+    "builds": 0,
+    "npm_ci": 0,
+    "lan_runs": 0,
+    "source_hashes_unchanged_during_execution": true
+  },
+  "flags": {
+    "outer_bypass": false,
+    "child_policy": "existing-Bypass-flag-explicitly-authorized-for-focal",
+    "global_policy_changed": false
+  }
+}

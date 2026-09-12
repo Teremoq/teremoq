@@ -1,9 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { parseWindowsHostSelection, WINDOWS_HOST_ENV } from "./path-security.mjs";
 
 export function buildIsolatedNpmEnvironment(processEnvironment, isolation) {
   const env = Object.create(null);
+  if (processEnvironment[WINDOWS_HOST_ENV] !== undefined) {
+    env[WINDOWS_HOST_ENV] = parseWindowsHostSelection(processEnvironment[WINDOWS_HOST_ENV]);
+  }
   const executablePath = processEnvironment.PATH ?? processEnvironment.Path;
   if (typeof executablePath === "string") env.PATH = executablePath;
   const windowsSharedRoots = [

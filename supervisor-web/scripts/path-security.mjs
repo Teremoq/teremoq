@@ -1,12 +1,26 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, parse, resolve } from "node:path";
+import { dirname, isAbsolute, join, parse, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const WINDOWS_POLICY = fileURLToPath(
   new URL("./assert-windows-path-policy.ps1", import.meta.url),
 );
+export const WINDOWS_HOST_ENV = "TEREMOQ_WEB_POWERSHELL_HOST";
+// Reviewed official Windows x64 Core 7.6.6 executable, NOT an observed/env digest.
+const WINDOWS_HOST_SHA256 = "bfb46af89433268872ddb43d1ca7a3f433452ee91ed356a9786940f90118e285";
+const MAX_WINDOWS_HOST_BYTES = 1_048_576;
+
+export function parseWindowsHostSelection(value) {
+  if (typeof value !== "string" || value.length > 4_096 ||
+      !/^[A-Za-z]:\\/.test(value) || /[\u0000-\u001f\u007f]/.test(value) ||
+      win32.normalize(value) !== value || win32.basename(value).toLowerCase() !== "pwsh.exe") {
+    throw new Error("selected Core7 host path is missing or outside the closed policy");
+  }
+  return value;
+}
 
 export async function pinSecureDirectoryPath(path, options = {}) {
   const absolute = resolveAbsolute(path);
@@ -105,6 +119,15 @@ export async function revalidateSecureRegularFilePin(pin) {
 }
 
 async function validateAncestry(absolute, allowMissing) {
+  const missing = await validateFilesystemAncestry(absolute, allowMissing);
+  if (process.platform === "win32") await runNativeWindowsPolicy(absolute, allowMissing);
+  return missing;
+}
+
+// Non-recursive primitive also used BEFORE loading the selected runtime.
+// Full Windows reparse attributes remain checked by the native policy and
+// Platform's prerequisite that the runtime installation is stable/protected.
+async function validateFilesystemAncestry(absolute, allowMissing) {
   const { root } = parse(absolute);
   const relative = absolute.slice(root.length);
   const segments = relative.split(/[\\/]/).filter(Boolean);
@@ -127,23 +150,63 @@ async function validateAncestry(absolute, allowMissing) {
     }
   }
   if (missing && !allowMissing) throw new Error("path seguro no existe");
-  if (process.platform === "win32") runNativeWindowsPolicy(absolute, allowMissing);
   return missing;
 }
 
-function runNativeWindowsPolicy(path, allowMissing) {
+async function runNativeWindowsPolicy(path, allowMissing) {
+  const host = parseWindowsHostSelection(process.env[WINDOWS_HOST_ENV]);
+  await validateFilesystemAncestry(dirname(host), false);
+  const entry = await lstat(host);
+  if (!entry.isFile() || entry.isSymbolicLink() || !samePath(await realpath(host), host)) {
+    throw new Error("selected Core7 host must be a canonical regular file");
+  }
+  const handle = await open(host, constants.O_RDONLY);
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || before.size < 1 || before.size > MAX_WINDOWS_HOST_BYTES ||
+        before.dev !== entry.dev || before.ino !== entry.ino || before.size !== entry.size) {
+      throw new Error("selected Core7 host identity or size is invalid");
+    }
+    const bytes = Buffer.alloc(before.size + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const read = await handle.read(bytes, length, bytes.length - length, length);
+      if (read.bytesRead === 0) break;
+      length += read.bytesRead;
+    }
+    const after = await handle.stat();
+    const current = await lstat(host);
+    if (length !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs ||
+        after.dev !== before.dev || after.ino !== before.ino ||
+        current.dev !== before.dev || current.ino !== before.ino || current.size !== before.size || !current.isFile() ||
+        current.isSymbolicLink() || !samePath(await realpath(host), host) ||
+        createHash("sha256").update(bytes.subarray(0, length)).digest("hex") !== WINDOWS_HOST_SHA256) {
+      throw new Error("selected Core7 host changed or fingerprint does not match");
+    }
+    // Keep the descriptor open through execution. This is NOT an atomic
+    // hash-to-exec pin: Platform must keep the selected runtime/ancestors
+    // protected and stable; pathname replacement remains a residual boundary.
+    return executeWindowsPolicy(host, path, allowMissing);
+  } finally {
+    await handle.close();
+  }
+}
+
+function executeWindowsPolicy(host, path, allowMissing) {
   const args = [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
     "-File", WINDOWS_POLICY, "-Path", path,
   ];
   if (allowMissing) args.push("-AllowMissingLeaf");
-  const output = execFileSync("powershell.exe", args, {
+  const output = execFileSync(host, args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 30_000,
     maxBuffer: 16_384,
   }).trim();
-  if (!samePath(output, path)) throw new Error("policy Windows devolvió otro path final");
+  if (!output || !isAbsolute(output) || /[\r\n\u0000]/.test(output) || !samePath(output, path)) {
+    throw new Error("policy Windows devolvió otro path final");
+  }
 }
 
 function resolveAbsolute(path) {

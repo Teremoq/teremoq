@@ -39,6 +39,19 @@ afterEach(() => {
 });
 
 describe("aislamiento completo de configuración npm", () => {
+  it("conserva únicamente la selección interna Core7 válida y rechaza overrides malformados", () => {
+    const { paths } = isolationFixture();
+    const host = "C:\\selected\\pwsh.exe";
+    const env = buildIsolatedNpmEnvironment({
+      TEREMOQ_WEB_POWERSHELL_HOST: host,
+      TEREMOQ_WEB_POWERSHELL_HOST_SHA256: "untrusted",
+    }, paths);
+    expect(env.TEREMOQ_WEB_POWERSHELL_HOST).toBe(host);
+    expect(Object.hasOwn(env, "TEREMOQ_WEB_POWERSHELL_HOST_SHA256")).toBe(false);
+    for (const invalid of [null, "", "pwsh.exe", "C:\\selected\\powershell.exe", "C:\\a\\..\\pwsh.exe"]) {
+      expect(() => buildIsolatedNpmEnvironment({ TEREMOQ_WEB_POWERSHELL_HOST: invalid }, paths)).toThrow();
+    }
+  });
   it("normaliza PATH sin conservar la variante hostil de Windows", () => {
     const { paths } = isolationFixture();
     const env = buildIsolatedNpmEnvironment({

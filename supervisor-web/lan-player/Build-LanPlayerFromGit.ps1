@@ -37,6 +37,11 @@ $hostEntry = Get-Item -LiteralPath $powerShell -Force
 if ($hostEntry.PSIsContainer -or ($hostEntry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
     throw 'Web builder host must be a regular executable'
 }
+$previousSelectedPowerShell = [Environment]::GetEnvironmentVariable('TEREMOQ_WEB_POWERSHELL_HOST', 'Process')
+if ((Test-Path -LiteralPath 'Env:TEREMOQ_WEB_POWERSHELL_HOST') -and
+    $previousSelectedPowerShell -cne $powerShell) {
+    throw 'inherited Web PowerShell selection differs from the validated host'
+}
 
 # The bounded parent process accepts UTF-8 only, independently of console code page.
 $utf8NoBom = New-Object Text.UTF8Encoding($false)
@@ -119,6 +124,8 @@ $previousComSpec = $env:ComSpec
 $previousGitNoSystem = $env:GIT_CONFIG_NOSYSTEM
 $previousGitGlobal = $env:GIT_CONFIG_GLOBAL
 try {
+    # Internal selection derived from this validated host, not an operator override.
+    $env:TEREMOQ_WEB_POWERSHELL_HOST = $powerShell
     # The orchestrator runs directly under the validated Node executable. npm is
     # still used internally, but no cmd.exe wrapper has to rediscover node.exe.
     $env:PATH = "$(Split-Path -Parent $node);$gitDirectory;$powerShellDirectory;$env:SystemRoot\System32;$env:SystemRoot"
@@ -138,6 +145,15 @@ try {
         throw 'local source build/package failed closed'
     }
 } finally {
+    # In Core7/.NET, passing $null through this overload can leave an empty
+    # variable. Restore absence explicitly; an inherited empty value is invalid.
+    if ($null -eq $previousSelectedPowerShell) {
+        if (Test-Path -LiteralPath 'Env:TEREMOQ_WEB_POWERSHELL_HOST') {
+            Remove-Item -LiteralPath 'Env:TEREMOQ_WEB_POWERSHELL_HOST' -ErrorAction Stop
+        }
+    } else {
+        [Environment]::SetEnvironmentVariable('TEREMOQ_WEB_POWERSHELL_HOST', $previousSelectedPowerShell, 'Process')
+    }
     $env:PATH = $previousPath
     $env:PATHEXT = $previousPathExt
     $env:ComSpec = $previousComSpec

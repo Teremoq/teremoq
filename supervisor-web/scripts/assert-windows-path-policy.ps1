@@ -9,6 +9,30 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
+if ($PSVersionTable.PSEdition -cne 'Core' -or
+    $PSVersionTable.PSVersion.ToString() -cne '7.6.6' -or
+    [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
+    [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -cne 'X64') {
+    throw 'path policy requires the selected Windows x64 Core 7.6.6 runtime'
+}
+$policyProcess = [Diagnostics.Process]::GetCurrentProcess()
+try {
+    $policyHost = [IO.Path]::GetFullPath($policyProcess.MainModule.FileName)
+    if ($policyHost -cne (Join-Path ([IO.Path]::GetFullPath($PSHOME)) 'pwsh.exe') -or
+        $env:TEREMOQ_WEB_POWERSHELL_HOST -cne $policyHost) {
+        throw 'path policy runtime differs from the selected host'
+    }
+} finally { $policyProcess.Dispose() }
+$runtimeAncestor = Get-Item -LiteralPath $policyHost -Force
+while ($null -ne $runtimeAncestor) {
+    if (($runtimeAncestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'path policy runtime has a reparse ancestor or leaf'
+    }
+    if ($runtimeAncestor -is [IO.FileInfo]) { $runtimeAncestor = $runtimeAncestor.Directory }
+    else { $runtimeAncestor = $runtimeAncestor.Parent }
+}
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+
 if (-not [IO.Path]::IsPathRooted($Path) -or $Path -match "[`r`n]") {
     throw 'path policy requires one absolute path'
 }

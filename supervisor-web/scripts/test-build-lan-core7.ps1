@@ -20,7 +20,7 @@ if ($guardStart -lt 0 -or $guardEnd -le $guardStart) { throw 'builder guard boun
 $guard = [scriptblock]::Create($source.Substring($guardStart, $guardEnd - $guardStart))
 
 # Execute the unchanged production guard in this REAL host, before test effects.
-$environmentKeys = @('PATH','PATHEXT','ComSpec','GIT_CONFIG_NOSYSTEM','GIT_CONFIG_GLOBAL')
+$environmentKeys = @('PATH','PATHEXT','ComSpec','GIT_CONFIG_NOSYSTEM','GIT_CONFIG_GLOBAL','TEREMOQ_WEB_POWERSHELL_HOST')
 $beforeEnvironment = @($environmentKeys | ForEach-Object { [Environment]::GetEnvironmentVariable($_) })
 $beforeLocation = (Get-Location).Path
 $beforeEncoding = [Console]::OutputEncoding.CodePage
@@ -151,6 +151,99 @@ if ($failure.ExitCode -eq 0 -or (Test-Path -LiteralPath $absentState) -or
     throw 'invalid-input rejection did not happen before StateRoot effects'
 }
 $results.Add('real-core7-whole-builder-invalid-input-no-state-created')
+
+# This focal must be run on a native, byte-verified source COPY without Git.
+# A valid source checkout could build: reject it before invoking valid arguments.
+$cursor = [IO.DirectoryInfo]::new($repoRoot)
+while ($null -ne $cursor) {
+    if (Test-Path -LiteralPath (Join-Path $cursor.FullName '.git')) {
+        throw 'focal requires a native source fixture without Git ancestry; refusing any build possibility'
+    }
+    $cursor = $cursor.Parent
+}
+$selectionKey = 'TEREMOQ_WEB_POWERSHELL_HOST'
+$originalSelection = [Environment]::GetEnvironmentVariable($selectionKey, 'Process')
+try {
+    # Different/empty ambient selections fail in the actual unchanged guard,
+    # before helper loading, probes or encoding/environment effects.
+    foreach ($invalid in @('', 'pwsh.exe', 'C:\different\pwsh.exe')) {
+        [Environment]::SetEnvironmentVariable($selectionKey, $invalid, 'Process')
+        $rejected = $false
+        try { & $guard } catch {
+            if ($_.Exception.Message -cne 'inherited Web PowerShell selection differs from the validated host') { throw }
+            $rejected = $true
+        }
+        if (-not $rejected -or [Environment]::GetEnvironmentVariable($selectionKey, 'Process') -cne $invalid) {
+            throw 'inherited selection rejection/restoration failed'
+        }
+    }
+    $results.Add('real-core7-inherited-selection-empty-relative-different-rejected-before-effects')
+
+    foreach ($selection in @($null, $selectedHost)) {
+        if ($null -eq $selection) {
+            if (Test-Path -LiteralPath ('Env:' + $selectionKey)) {
+                Remove-Item -LiteralPath ('Env:' + $selectionKey) -ErrorAction Stop
+            }
+        } else { [Environment]::SetEnvironmentVariable($selectionKey, $selection, 'Process') }
+        $saved = @($environmentKeys | ForEach-Object { [Environment]::GetEnvironmentVariable($_) })
+        $location = (Get-Location).Path
+        $stdout = [IO.StringWriter]::new()
+        $stderr = [IO.StringWriter]::new()
+        $oldOut = [Console]::Out
+        $oldError = [Console]::Error
+        $rejected = $false
+        try {
+            [Console]::SetOut($stdout)
+            [Console]::SetError($stderr)
+            & $builder -CheckoutRoot $repoRoot -StateRoot $absentState `
+                -RepositoryUrl 'https://github.com/Teremoq/teremoq' -RepositoryRef 'refs/heads/fixture' `
+                -SourceCommit ('1' * 40) -BuildMode node -Offline
+        } catch {
+            if ($_.Exception.Message -cne 'local source build/package failed closed') { throw }
+            $rejected = $true
+        } finally {
+            [Console]::SetOut($oldOut)
+            [Console]::SetError($oldError)
+        }
+        $diagnostic = $stderr.ToString()
+        $stdout.Dispose()
+        $stderr.Dispose()
+        if (-not $rejected -or -not $diagnostic.Contains('validación Git local falló (exit)') -or
+            (Test-Path -LiteralPath $absentState) -or (Get-Location).Path -cne $location) {
+            throw 'full wrapper did not reach Git rejection after real path policy without state effects'
+        }
+        for ($index = 0; $index -lt $environmentKeys.Count; $index++) {
+            if ([Environment]::GetEnvironmentVariable($environmentKeys[$index]) -cne $saved[$index]) {
+                throw 'whole wrapper error did not restore exact environment'
+            }
+        }
+    }
+    $results.Add('real-whole-wrapper-path-policy-then-no-git-error-restores-absent-and-selected-host')
+
+    $savedPath = $env:PATH
+    try {
+        $env:TEREMOQ_WEB_POWERSHELL_HOST = $selectedHost
+        $env:PATH = "$(Split-Path -Parent $node);$env:ProgramFiles\Git\cmd;$PSHOME;$env:SystemRoot\System32;$env:SystemRoot"
+        $pathCanary = Invoke-TeremoqBoundedNativeProcess -FilePath $node -WorkingDirectory $webRoot `
+            -Arguments @((Join-Path $PSScriptRoot 'test-core7-path-policy.mjs')) `
+            -TimeoutMilliseconds 180000 -StdoutMaxBytes 16384 -StderrMaxBytes 16384
+        if ($pathCanary.ExitCode -ne 0 -or $pathCanary.Stderr -ne '') {
+            throw ('real Node/Core7 policy canary failed: ' + $pathCanary.Stderr)
+        }
+        $pathReport = ConvertFrom-Json -InputObject $pathCanary.Stdout
+        if ($pathReport.result -cne 'PASS' -or $pathReport.checks.Count -ne 10) { throw 'path canary report mismatch' }
+        [IO.File]::WriteAllText((Join-Path $outputRoot 'node-path-result.json'), $pathCanary.Stdout, $utf8)
+        & (Join-Path $PSScriptRoot 'test-windows-path-policy.ps1') | Out-Null
+    } finally { $env:PATH = $savedPath }
+    $results.Add('real-node-policy-direct-and-npm-isolated-ten-checks-exact-wrapper-path-no-ps5')
+    $results.Add('real-core7-existing-native-reparse-canaries')
+} finally {
+    if ($null -eq $originalSelection) {
+        if (Test-Path -LiteralPath ('Env:' + $selectionKey)) {
+            Remove-Item -LiteralPath ('Env:' + $selectionKey) -ErrorAction Stop
+        }
+    } else { [Environment]::SetEnvironmentVariable($selectionKey, $originalSelection, 'Process') }
+}
 
 # Reuse/identity/mode and closed JSON are the existing production JS canaries.
 # This is a contract test, not reuse of a built or measured player artifact.
