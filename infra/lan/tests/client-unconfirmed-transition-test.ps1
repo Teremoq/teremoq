@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Native file/state fixtures only: no player, server, build or network.
 [CmdletBinding()]
-param([string]$CrashStateRoot,[string]$CrashSourceSha256,[string]$CrashTargetSha256,
+param([string]$CrashStateRoot,[string]$CrashSourceSha256,[string]$CrashTargetSha256,[switch]$CrashCopyPartial,
     [ValidateSet('Supersede','Restore')][string]$CrashAction='Supersede')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
@@ -23,6 +23,7 @@ $hash = 'a' * 64
 $realCopy = (Get-Item function:Write-TeremoqTransitionCopy).ScriptBlock
 $realAtomic = (Get-Item function:Write-TeremoqAtomicUtf8File).ScriptBlock
 $realPointer = (Get-Item function:Write-TeremoqTransitionPointer).ScriptBlock
+$realPointerCopy = (Get-Item function:Write-TeremoqRecoverablePointerCopy).ScriptBlock
 $script:armed=$false; $script:writes=0; $script:cut=0
 function Invoke-FixtureCut {
     if ($script:armed) {
@@ -40,6 +41,12 @@ function Write-TeremoqAtomicUtf8File {
     param([string]$Path,[string]$Content)
     & $realAtomic -Path $Path -Content $Content
     Invoke-FixtureCut
+}
+function Write-TeremoqRecoverablePointerCopy {
+    param([string]$Path,[string]$Text)
+    $existed=Test-Path -LiteralPath $Path
+    & $realPointerCopy -Path $Path -Text $Text
+    if (-not $existed) { Invoke-FixtureCut }
 }
 function Write-TeremoqTransitionPointer {
     param($Layout,[string]$Directory,[string]$Name,[string]$Destination,$Record)
@@ -89,6 +96,11 @@ if ($CrashStateRoot) {
             ($CrashAction -ceq 'Restore' -and $Name -ceq 'active')) {
             Stop-Process -Id $PID -Force
         }
+    }
+    if($CrashCopyPartial) {
+        $copyBody=$realPointerCopy.ToString().Replace('$stream.Write($bytes, $length, $bytes.Length - $length)',
+            '$stream.Write($bytes, 0, 1); $stream.Flush($true); Stop-Process -Id $PID -Force')
+        Set-Item function:Write-TeremoqRecoverablePointerCopy ([scriptblock]::Create($copyBody))
     }
     Invoke-TeremoqAssistedUnconfirmedTransition -Action $CrashAction -StateRoot $CrashStateRoot `
         -TransitionId 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' -ExpectedSourceSha256 $CrashSourceSha256 `
@@ -152,6 +164,50 @@ try {
         [void](Invoke-TeremoqAssistedUnconfirmedTransition -Action Restore @arguments)
         Assert-PreservedFixture $fixture 'restored-unconfirmed'
     }
+    foreach($copyCut in @('after-create','partial-write','before-flush','after-flush')) {
+        $fixture=New-TransitionFixture ("inside-copy-$copyCut");$arguments=$fixture.Arguments
+        [void](Invoke-TeremoqAssistedUnconfirmedTransition -Action Supersede @arguments)
+        # Instrument the REAL function body in test memory, not a production
+        # fault hook. Exceptions run its Dispose; no claim of power-loss IO.
+        $copyBody=$realPointerCopy.ToString()
+        $write='$stream.Write($bytes, $length, $bytes.Length - $length)'
+        $flush='$stream.Flush($true)'
+        $fault="throw 'fixture interruption INSIDE pointer copy'"
+        if($copyCut -ceq 'after-create') { $copyBody=$copyBody.Replace('$buffer = New-Object Text.StringBuilder 32768',($fault+'; $buffer = New-Object Text.StringBuilder 32768')) }
+        elseif($copyCut -ceq 'partial-write') { $copyBody=$copyBody.Replace($write,('$stream.Write($bytes, 0, 1); $stream.Flush($true); '+$fault)) }
+        elseif($copyCut -ceq 'before-flush') { $copyBody=$copyBody.Replace($flush,($fault+'; '+$flush)) }
+        else { $copyBody=$copyBody.Replace($flush,($flush+'; '+$fault)) }
+        if($copyBody -ceq $realPointerCopy.ToString()) { throw 'inside-copy instrumentation did not attach' }
+        Set-Item function:Write-TeremoqRecoverablePointerCopy ([scriptblock]::Create($copyBody))
+        try { Invoke-TeremoqAssistedUnconfirmedTransition -Action Restore @arguments | Out-Null;throw 'internal copy cut not reached' }
+        catch {if($_.Exception.Message -cne 'fixture interruption INSIDE pointer copy'){throw}}
+        finally { Set-Item function:Write-TeremoqRecoverablePointerCopy $realPointerCopy }
+        $scratch=Join-Path $arguments.StateRoot 'unconfirmed-transition\active-source.pointer'
+        $expectedLength=if($copyCut -ceq 'after-create'){0}elseif($copyCut -ceq 'partial-write'){1}else{(New-Object Text.UTF8Encoding($false)).GetByteCount((ConvertTo-TeremoqLanSlotJson $fixture.Source))}
+        if((Get-Item -LiteralPath $scratch).Length -ne $expectedLength){throw 'cut did not leave the expected real scratch bytes'}
+        if((Read-TeremoqTransitionPhase (Join-Path $arguments.StateRoot 'unconfirmed-transition')) -cne 'restoring-active'){throw 'internal cut changed phase unexpectedly'}
+        [void](Invoke-TeremoqAssistedUnconfirmedTransition -Action Restore @arguments)
+        Assert-PreservedFixture $fixture 'restored-unconfirmed'
+        $before=Get-FixturePreservationSnapshot $arguments.StateRoot
+        [void](Invoke-TeremoqAssistedUnconfirmedTransition -Action Restore @arguments)
+        if((Get-FixturePreservationSnapshot $arguments.StateRoot) -cne $before){throw 'internal-cut restore replay mutated state'}
+        if((Get-TeremoqBoundedFileSha256 (Join-Path $arguments.StateRoot 'control\active.json') 4096) -cne $arguments.ExpectedSourceSha256 -or
+           (Get-TeremoqBoundedFileSha256 (Join-Path $arguments.StateRoot 'control\candidate.json') 4096) -cne $arguments.ExpectedSourceSha256){throw 'internal-cut restoration did not recover exact original bytes'}
+    }
+    foreach($badScratch in @('wrong-prefix','oversized')) {
+        $fixture=New-TransitionFixture ("scratch-conflict-$badScratch");$arguments=$fixture.Arguments
+        [void](Invoke-TeremoqAssistedUnconfirmedTransition -Action Supersede @arguments)
+        $directory=Join-Path $arguments.StateRoot 'unconfirmed-transition'
+        & $realAtomic -Path (Join-Path $directory 'phase.txt') -Content "restoring-active`n"
+        $bytes=if($badScratch -ceq 'wrong-prefix'){[byte[]]@(33)}else{[byte[]](New-Object byte[] 4097)}
+        [IO.File]::WriteAllBytes((Join-Path $directory 'active-source.pointer'),$bytes)
+        $before=Get-FixturePreservationSnapshot $arguments.StateRoot
+        for($retry=0;$retry -lt 2;$retry++) {
+            try {Invoke-TeremoqAssistedUnconfirmedTransition -Action Restore @arguments | Out-Null;throw 'true scratch conflict accepted'}
+            catch {if($_.Exception.Message -notmatch '^replacement scratch (prefix|identity or length) conflict'){throw}}
+        }
+        if((Get-FixturePreservationSnapshot $arguments.StateRoot) -cne $before){throw 'true scratch conflict was overwritten'}
+    }
     $fixture=New-TransitionFixture 'conflict';$arguments=$fixture.Arguments
     [void](Invoke-TeremoqAssistedUnconfirmedTransition -Action Supersede @arguments)
     $overrides=$arguments.Clone();$overrides.TransitionId='00000000-0000-0000-0000-000000000000'
@@ -185,24 +241,30 @@ try {
         catch { if($_.Exception.Message -ceq 'concurrent writer accepted') { throw } }
     } finally {$lock.Dispose()}
     if((Get-FixturePreservationSnapshot $arguments.StateRoot) -cne $before) { throw 'concurrent refusal mutated state' }
-    foreach($crashAction in @('Supersede','Restore')) {
-        $fixture=New-TransitionFixture ("crash-$crashAction");$arguments=$fixture.Arguments
+    foreach($crashMode in @('Supersede','Restore','RestorePartial')) {
+        $crashAction=if($crashMode -ceq 'Supersede'){'Supersede'}else{'Restore'}
+        $fixture=New-TransitionFixture ("crash-$crashMode");$arguments=$fixture.Arguments
         if($crashAction -ceq 'Restore') { [void](Invoke-TeremoqAssistedUnconfirmedTransition -Action Supersede @arguments) }
+        $childArguments=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$PSCommandPath,
+            '-CrashStateRoot',$arguments.StateRoot,'-CrashSourceSha256',$arguments.ExpectedSourceSha256,
+            '-CrashTargetSha256',$arguments.ExpectedTargetSha256,'-CrashAction',$crashAction)
+        if($crashMode -ceq 'RestorePartial'){$childArguments+='-CrashCopyPartial'}
         $native=Invoke-TeremoqBoundedNativeProcess -FilePath (Get-Process -Id $PID).Path -WorkingDirectory $testRoot `
-            -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$PSCommandPath,
-                '-CrashStateRoot',$arguments.StateRoot,'-CrashSourceSha256',$arguments.ExpectedSourceSha256,
-                '-CrashTargetSha256',$arguments.ExpectedTargetSha256,'-CrashAction',$crashAction) `
+            -Arguments $childArguments `
             -TimeoutMilliseconds 30000 -StdoutMaxBytes 4096 -StderrMaxBytes 4096
         if($native.ExitCode -eq 0) { throw 'crash child incorrectly completed' }
         $phase=Read-TeremoqTransitionPhase -Directory (Join-Path $arguments.StateRoot 'unconfirmed-transition')
         $expectedPhase=if($crashAction -ceq 'Supersede'){'applying-candidate'}else{'restoring-active'}
         if($phase -cne $expectedPhase) { throw 'child failed before expected real replacement cut' }
+        if($crashMode -ceq 'RestorePartial' -and (Get-Item -LiteralPath (Join-Path $arguments.StateRoot 'unconfirmed-transition\active-source.pointer')).Length -ne 1){throw 'native partial child did not leave one byte'}
         try { Get-TeremoqActiveLanClientSlot -StateRoot $arguments.StateRoot -ReadOnly | Out-Null;throw 'partial transition allowed selection' }
         catch { if($_.Exception.Message -notmatch '^assisted transition is incomplete') { throw } }
         [void](Invoke-TeremoqAssistedUnconfirmedTransition -Action Restore @arguments)
         Assert-PreservedFixture $fixture 'restored-unconfirmed'
+        [void](Invoke-TeremoqAssistedUnconfirmedTransition -Action Restore @arguments)
+        Assert-PreservedFixture $fixture 'restored-unconfirmed'
     }
-    Write-Output "assisted transition native PASS: apply write cuts=$applyWrites; restore write cuts=$restoreWrites; two terminated native children; preservation/replay/conflict/legacy guards/concurrency; no AV"
+    Write-Output "assisted transition native PASS: apply write cuts=$applyWrites; restore write cuts=$restoreWrites; four INSIDE-copy cuts with exact restore/replay; true scratch conflicts preserved; three terminated native children (one partial copy); preservation/replay/conflict/legacy guards/concurrency; no AV"
 } finally {
     $script:armed=$false
     # Only this test's newly created synthetic tree, never real client state.

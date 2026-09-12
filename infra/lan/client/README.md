@@ -347,6 +347,15 @@ only the current operator, SYSTEM and Administrators. Unexpected files, types,
 identity changes, oversized records or snapshot conflicts fail closed while
 preserving both sides.
 
+Replacement scratch (`active-source.pointer`, etc.) is distinct from the
+immutable snapshots. Under the same lock and sealed destination hash, an empty
+or partially written scratch file can resume only if every existing byte is
+an exact prefix of the expected pointer. Recovery appends the missing bytes,
+flushes and verifies before atomic replacement; it never truncates conflicting
+data or repairs original snapshots. Wrong prefixes, excess bytes and identity
+changes remain preserved conflicts. Native tests cover interruption inside
+creation/copy/flush boundaries, including a terminated child leaving one byte.
+
 The finite forward phases are `sealed`, `applying-candidate`,
 `applying-active`, `pending-health`. Resume the same action with the same UUID
 and expected hashes after reconciling a cut; a completed replay writes nothing.

@@ -630,6 +630,44 @@ function New-TeremoqPrivateTransitionDirectory {
     Assert-TeremoqPrivateTransitionAcl -Path $Path
 }
 
+function Write-TeremoqRecoverablePointerCopy {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Text)
+    # Only replacement scratch uses prefix recovery. Immutable snapshots keep
+    # Write-TeremoqTransitionCopy's conflict policy. Caller holds update.lock
+    # and binds these exact bytes to the sealed transition destination hash.
+    $bytes = (New-Object Text.UTF8Encoding($false, $true)).GetBytes($Text)
+    if ($bytes.Length -gt 4096) { throw 'replacement pointer exceeds its bound' }
+    $expected = [IO.Path]::GetFullPath($Path)
+    [void](Get-TeremoqNonReparseDirectoryPath -Path (Split-Path -Parent $expected))
+    $mode = [IO.FileMode]::CreateNew
+    if (Test-Path -LiteralPath $expected) {
+        [void](Assert-TeremoqNonReparseFilePath -Path $expected)
+        Assert-TeremoqPrivateTransitionAcl -Path $expected
+        $mode = [IO.FileMode]::Open
+    }
+    $stream = [IO.File]::Open($expected, $mode, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $buffer = New-Object Text.StringBuilder 32768
+        $n = [TeremoqLanNativeFile]::GetFinalPathNameByHandle($stream.SafeFileHandle, $buffer, [uint32]$buffer.Capacity, 0)
+        if ($n -eq 0 -or $n -ge $buffer.Capacity) { throw 'replacement handle path unavailable' }
+        $final = $buffer.ToString()
+        if ($final.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { $final = '\\' + $final.Substring(8) }
+        elseif ($final.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) { $final = $final.Substring(4) }
+        if (-not $final.Equals($expected, [StringComparison]::OrdinalIgnoreCase) -or $stream.SafeFileHandle.IsInvalid -or $stream.Length -gt $bytes.Length) {
+            throw 'replacement scratch identity or length conflict'
+        }
+        $length = [int]$stream.Length
+        for ($i = 0; $i -lt $length; $i++) {
+            if ($stream.ReadByte() -ne $bytes[$i]) { throw 'replacement scratch prefix conflict; preserve without overwrite' }
+        }
+        # A cut after CreateNew, during Write, or before Flush leaves only a
+        # bounded exact prefix. Resume by appending, never truncate/overwrite.
+        $stream.Write($bytes, $length, $bytes.Length - $length)
+        $stream.Flush($true)
+    } finally { $stream.Dispose() }
+    if ((Read-TeremoqBoundedUtf8File -Path $expected -MaxBytes 4096) -cne $Text) { throw 'replacement scratch did not verify' }
+}
+
 function Write-TeremoqTransitionPointer {
     param([Parameter(Mandatory = $true)]$Layout, [Parameter(Mandatory = $true)][string]$Directory,
         [Parameter(Mandatory = $true)][ValidateSet('active','candidate')][string]$Name,
@@ -641,7 +679,11 @@ function Write-TeremoqTransitionPointer {
     $temporary = Join-Path $Directory ("$Name-$Destination.pointer")
     $path = if ($Name -ceq 'active') { $Layout.ActivePointer } else { $Layout.CandidatePointer }
     [void](Assert-TeremoqNonReparseFilePath -Path $path)
-    Write-TeremoqTransitionCopy -Path $temporary -Text (ConvertTo-TeremoqLanSlotJson -Record $Record)
+    $binding = Read-TeremoqTransitionRecord -Directory $Directory
+    $text = ConvertTo-TeremoqLanSlotJson -Record $Record
+    $destinationHash = if ($Destination -ceq 'source') { $binding.source_sha256 } else { $binding.target_sha256 }
+    if ((Get-TeremoqTransitionTextHash -Text $text) -cne $destinationHash) { throw 'replacement differs from sealed transition destination' }
+    Write-TeremoqRecoverablePointerCopy -Path $temporary -Text $text
     [IO.File]::Replace($temporary, $path, [NullString]::Value, $true)
     if ((Read-TeremoqBoundedUtf8File -Path $path -MaxBytes 4096) -cne (ConvertTo-TeremoqLanSlotJson -Record $Record)) {
         throw 'assisted pointer replacement did not verify'
