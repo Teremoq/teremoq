@@ -48,6 +48,23 @@ try {
     if ((Stage-TeremoqLanClientSlot -StateRoot $root -Record $first).Status -cne 'staged') { throw 'initial stage failed' }
     if ((Activate-TeremoqLanClientSlot -StateRoot $root).Status -cne 'activated-pending-health') { throw 'initial activation failed' }
     if ((Confirm-TeremoqLanClientSlot -StateRoot $root).Status -cne 'confirmed') { throw 'initial confirmation failed' }
+    $control = Join-Path $root 'control'
+    $beforeRead = @(Get-ChildItem -LiteralPath $control -File | Sort-Object Name | ForEach-Object {
+        $_.Name + ':' + $_.LastWriteTimeUtc.Ticks + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+    }) -join '|'
+    if ((Get-TeremoqActiveLanClientSlot -StateRoot $root -ReadOnly).Record.slot_id -cne $first.slot_id) { throw 'read-only slot selection differs' }
+    $afterRead = @(Get-ChildItem -LiteralPath $control -File | Sort-Object Name | ForEach-Object {
+        $_.Name + ':' + $_.LastWriteTimeUtc.Ticks + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+    }) -join '|'
+    if ($beforeRead -cne $afterRead) { throw 'read-only validation changed control bytes or write timestamps' }
+    $existingLock = Join-Path $control 'update.lock'
+    $savedLock = Join-Path $root 'fixture-saved-lock'
+    [IO.File]::Move($existingLock, $savedLock)
+    try {
+        try { Get-TeremoqActiveLanClientSlot -StateRoot $root -ReadOnly | Out-Null; throw 'missing read-only lock was accepted' }
+        catch { if ($_.Exception.Message -match 'missing read-only lock was accepted') { throw } }
+        if (Test-Path -LiteralPath $existingLock) { throw 'read-only validation created a missing lock' }
+    } finally { [IO.File]::Move($savedLock, $existingLock) }
 
     $second = New-FixtureSlot -Commit ('5' * 40) -Tree ('7' * 40) -Lock ('8' * 64)
     [void](Stage-TeremoqLanClientSlot -StateRoot $root -Record $second)
@@ -152,6 +169,9 @@ try {
 
     $stale = Join-Path $root 'control\.write-11111111111111111111111111111111.tmp'
     [IO.File]::WriteAllText($stale, 'interrupted', $utf8)
+    try { Get-TeremoqActiveLanClientSlot -StateRoot $root -ReadOnly | Out-Null; throw 'read-only accepted repair-needed state' }
+    catch { if ($_.Exception.Message -match 'read-only accepted repair-needed state') { throw } }
+    if (-not (Test-Path -LiteralPath $stale)) { throw 'read-only validation removed interrupted write residue' }
     [void](Get-TeremoqActiveLanClientSlot -StateRoot $root)
     if (Test-Path -LiteralPath $stale) { throw 'interrupted atomic-write residue was not cleaned' }
 

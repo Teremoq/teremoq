@@ -94,6 +94,8 @@ powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${clien
 client_state_fixture="$(wslpath -w "${TEST_DIR}/client-state-security-fixture.ps1")"
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${client_state_fixture}" -ScriptPath "${client_distribution}" >/dev/null
 client_slot_state_test="$(wslpath -w "${TEST_DIR}/client-slot-state-test.ps1")"
+launcher_composition_fixture="$(wslpath -w "${TEST_DIR}/launcher-composition-fixture.ps1")"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${launcher_composition_fixture}" >/dev/null
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${client_slot_state_test}" >/dev/null
 grep -Fq 'Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex' "${ROOT}/windows/Preflight-Lan.ps1"
 grep -Fq 'Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex' "${ROOT}/windows/Preflight-Client.ps1"

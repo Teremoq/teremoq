@@ -597,7 +597,7 @@ function Get-TeremoqManagedLanStateContext {
     $slotLibrary = Join-Path $PSScriptRoot 'Client-Slot-State.ps1'
     if (-not (Test-Path -LiteralPath $slotLibrary -PathType Leaf)) { throw 'managed LAN client slot library is absent' }
     . $slotLibrary
-    $slot = Get-TeremoqActiveLanClientSlot -StateRoot $StateRoot
+    $slot = Get-TeremoqActiveLanClientSlot -StateRoot $StateRoot -ReadOnly
     $root = $slot.Layout.StateRoot
     $record = $slot.Record
     $versionRoot = $slot.VersionRoot
@@ -776,6 +776,26 @@ function Get-TeremoqManagedLanStateContext {
         RepositorySubdirectory = $compatibility.repository_subdirectory
         SlotRecord = $record
     }
+}
+
+function Assert-TeremoqLanLauncherStartContract {
+    param(
+        [Parameter(Mandatory = $true)]$StateContext,
+        [ValidateSet(1, 5, 10, 25)][int]$Level = 1,
+        [string]$EvidenceDirectory
+    )
+    if ($StateContext.Version.schema_version -cne '2') { throw 'launcher composition requires managed client state v2' }
+    if ([string]::IsNullOrEmpty($EvidenceDirectory)) {
+        $EvidenceDirectory = Join-Path (Join-Path (Join-Path $StateContext.StateRoot 'evidence') $StateContext.Version.run_id) "level-$Level"
+    }
+    # Invoke the verified existing launcher in this PowerShell host. Its
+    # ValidateOnly branch performs the Start parser without child processes,
+    # directory creation, runtime environment changes or readiness claims.
+    $LASTEXITCODE = 0
+    & $StateContext.LauncherPath -Action Start -ValidateOnly -StateRoot $StateContext.StateRoot `
+        -RunId $StateContext.Version.run_id -Level $Level -VersionPath $StateContext.VersionPath `
+        -FingerprintPath $StateContext.FingerprintPath -EvidenceDirectory $EvidenceDirectory | Out-Null
+    if (-not $? -or $LASTEXITCODE -ne 0) { throw 'managed player launcher Start contract validation failed' }
 }
 
 function Get-TeremoqGitCheckoutContext {

@@ -466,7 +466,30 @@ function Remove-TeremoqBoundedRegularTree {
 }
 
 function Get-TeremoqActiveLanClientSlot {
-    param([Parameter(Mandatory = $true)][string]$StateRoot)
+    param([Parameter(Mandatory = $true)][string]$StateRoot, [switch]$ReadOnly)
+    if ($ReadOnly) {
+        # Validation must not initialize, repair or clean the updater state.
+        # Open the EXISTING operation lock read-only, with the same exclusive
+        # sharing policy as writers; an absent lock is not initialized here.
+        $layout = Get-TeremoqLanClientLayout -StateRoot $StateRoot
+        foreach ($path in @($layout.StateRoot, $layout.ConfigRoot, $layout.PlayersRoot, $layout.VersionsRoot, $layout.ControlRoot)) {
+            [void](Get-TeremoqNonReparseDirectoryPath -Path $path)
+        }
+        $lock = Open-TeremoqVerifiedRegularFile -Path (Join-Path $layout.ControlRoot 'update.lock') -MaxBytes 4096
+        try {
+            $entries = @(Get-ChildItem -LiteralPath $layout.ControlRoot -Force | Select-Object -First 5)
+            if ($entries.Count -gt 4) { throw 'LAN client control directory requires explicit recovery' }
+            foreach ($entry in $entries) {
+                if ($entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                    $entry.Name -cnotin @('active.json','candidate.json','rollback.json','update.lock')) {
+                    throw 'LAN client control directory requires explicit recovery'
+                }
+            }
+            $active = Read-TeremoqLanSlotPointer -Path $layout.ActivePointer
+            $material = Assert-TeremoqLanSlotMaterial -Layout $layout -Record $active
+            return [pscustomobject]@{ Layout = $layout; Record = $active; VersionRoot = $material.VersionRoot; PlayerRoot = $material.PlayerRoot }
+        } finally { $lock.Dispose() }
+    }
     return Invoke-TeremoqLanClientStateLocked -StateRoot $StateRoot -Action {
         param($layout)
         $active = Read-TeremoqLanSlotPointer -Path $layout.ActivePointer
