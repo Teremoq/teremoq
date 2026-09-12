@@ -1,10 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-# Real PS 5.1 launcher / real Platform slot producer. Sealed files are TEST
+# Real Core7 launcher / real Platform slot producer. Sealed files are TEST
 # fixtures, not a built player, browser observation or a live Prepare/build run.
 [CmdletBinding()]
 param([string]$OutputRoot)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
+if ($PSVersionTable.PSEdition -cne 'Core' -or
+    $PSVersionTable.PSVersion.ToString() -cne '7.6.6' -or
+    [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
+    [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -cne 'X64') {
+  throw 'managed launcher focal requires selected Windows x64 Core7 7.6.6'
+}
 $WebRoot = Split-Path -Parent $PSScriptRoot
 $RepoRoot = Split-Path -Parent $WebRoot
 if (-not $OutputRoot) { $OutputRoot = Join-Path $WebRoot ('evidence/managed-v2-' + [guid]::NewGuid().ToString('N')) }
@@ -17,6 +23,12 @@ if (-not $OutputRoot.StartsWith((Join-Path $WebRoot 'evidence') + [IO.Path]::Dir
 . (Join-Path $RepoRoot 'infra/lan/client/Client-Slot-State.ps1')
 $Utf8 = New-Object Text.UTF8Encoding($false, $true)
 $Results = New-Object 'System.Collections.Generic.List[string]'
+# Runtime representation probe, not a replacement for the full launcher below.
+$JsonProbe = ConvertFrom-Json -InputObject '{"number":1,"timestamp":"2026-09-12T00:00:00Z"}' -DateKind String
+if ($JsonProbe.number -isnot [long] -or $JsonProbe.timestamp -isnot [string]) {
+  throw 'Core7 JSON representation differs from the reviewed integer/string policy'
+}
+$Results.Add('real-core7-json-int64-and-datekind-string')
 function Put([string]$Path, [string]$Text) { [IO.File]::WriteAllText($Path, $Text, $Utf8) }
 function Hash([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Tsv($Value) { return (($Value.Keys | ForEach-Object { "$_`t$($Value[$_])" }) -join "`n") + "`n" }
@@ -146,6 +158,7 @@ function Reject([string]$Name, [scriptblock]$Mutation) {
 # Any accidental product process or command lookup on the validation path fails.
 function Start-Process { throw 'forbidden product process' }
 function Get-Command { throw 'forbidden command lookup' }
+function Add-Type { throw 'forbidden compiler on ValidateOnly path' }
 $Valid = New-Fixture 'valid'
 foreach ($Level in @(1,5,10,25)) { Validate $Valid $Level; $Results.Add("valid-level-$Level-no-effects") }
 function Test-RetainedPins($Fixture) {
@@ -210,12 +223,44 @@ Reject 'manifest-size-limit' { param($F) Put $F.ManifestPath (' ' * 1048577) }
 Reject 'manifest-nested-unknown' { param($F) $F.Manifest.files[0] | Add-Member -NotePropertyName unknown -NotePropertyValue 1; Seal-Manifest $F }
 Reject 'manifest-bool-bytes' { param($F) $F.Manifest.files[0].bytes=$true; Seal-Manifest $F }
 Reject 'manifest-traversal' { param($F) $F.Manifest.files[0].path='../escape'; Seal-Manifest $F }
+# Core7 deserializes integer JSON tokens as Int64. Accepting those must NOT
+# accept coercible strings, floating point or booleans in any schema field.
+foreach ($DocumentKind in @('active','config','manifest')) {
+  $Fields = if ($DocumentKind -ceq 'config') { @('schema_version') } else { @('schema_version','config_schema_version') }
+  foreach ($Field in $Fields) {
+    foreach ($Case in @(@('string','"1"'), @('float','1.0'), @('bool','true'))) {
+      $Token = $Case[1]
+      Reject ("$DocumentKind-$Field-" + $Case[0]) {
+        param($F)
+        $Needle = '"' + $Field + '":1'
+        $Replacement = '"' + $Field + '":' + $Token
+        if ($DocumentKind -ceq 'active') {
+          Put $F.ActivePath (([IO.File]::ReadAllText($F.ActivePath)).Replace($Needle,$Replacement))
+        } elseif ($DocumentKind -ceq 'config') {
+          Seal-Config $F (([IO.File]::ReadAllText($F.ConfigPath)).Replace($Needle,$Replacement))
+        } else {
+          # Preserve the exact adversarial token, not a serializer's numeric normalization.
+          Put $F.ManifestPath (([IO.File]::ReadAllText($F.ManifestPath)).Replace($Needle,$Replacement))
+          $Digest = Hash $F.ManifestPath
+          $F.Record.player_manifest_sha256 = $Digest
+          $F.Version.player_manifest_sha256 = $Digest
+          $F.Compatibility.player_manifest_sha256 = $Digest
+          Save-Context $F
+        }
+      }
+    }
+  }
+}
 $PriorConfig=$env:TEREMOQ_LAN_LAB_CONFIG
 try {
   $env:TEREMOQ_LAN_LAB_CONFIG='{"untrusted":true}'
   Reject 'inherited-config-mismatch' { param($F) }
 } finally { $env:TEREMOQ_LAN_LAB_CONFIG=$PriorConfig }
-$Summary = [ordered]@{ schema_version=1; kind='offline-ps51-contract-fixtures-not-live-prepare'
+$Summary = [ordered]@{ schema_version=1; kind='offline-core7-contract-fixtures-not-live-prepare'
+  powershell_version=$PSVersionTable.PSVersion.ToString(); edition=$PSVersionTable.PSEdition
+  architecture=[Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+  launcher_sha256=(Hash (Join-Path $PSScriptRoot 'teremoq-lan-platform.ps1'))
+  platform_slot_producer_sha256=(Hash (Join-Path $RepoRoot 'infra/lan/client/Client-Slot-State.ps1'))
   passed=$Results.Count; cases=@($Results); product_processes_started=0; measurement_status='not_measured' }
 Put (Join-Path $OutputRoot 'result.json') (($Summary | ConvertTo-Json -Depth 5) + "`n")
 $Summary | ConvertTo-Json -Depth 5

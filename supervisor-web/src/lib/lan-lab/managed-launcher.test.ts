@@ -45,6 +45,24 @@ describe("frontera managed-v2 (regresiones de estructura, no E2E)", () => {
     expect(source).toContain("Assert-CanonicalPath $EvidenceDirectory -AllowMissing");
   });
 
+  it("usa Reflection.Emit Core7 preservando P/Invoke, firma, handles y tipos JSON estrictos", () => {
+    expect(source).toContain("[Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(");
+    expect(source).not.toContain("[AppDomain]::CurrentDomain.DefineDynamicAssembly");
+    expect(source).toContain("[Reflection.Emit.AssemblyBuilderAccess]::Run");
+    expect(source).toContain("DefinePInvokeMethod('GetFinalPathNameByHandleW', 'kernel32.dll'");
+    expect(source).toContain("[Microsoft.Win32.SafeHandles.SafeFileHandle]");
+    expect(source).toContain("[Runtime.InteropServices.CallingConvention]::Winapi");
+    expect(source).toContain("[Runtime.InteropServices.CharSet]::Unicode");
+    expect(source).toContain("[Reflection.MethodImplAttributes]::PreserveSig");
+    expect(source).toContain("ConvertFrom-Json -InputObject $Text -DateKind String");
+    for (const field of ["$Active.schema_version", "$Active.config_schema_version", "$LocalConfig.schema_version",
+      "$Manifest.schema_version", "$Manifest.config_schema_version"]) {
+      expect(source).toContain(`(${field} -isnot [int] -and ${field} -isnot [long])`);
+    }
+    expect(canary).toContain("real-core7-json-int64-and-datekind-string");
+    expect(canary).toContain("function Add-Type { throw");
+  });
+
   it("no amplia actions ni evidencia player/carga", () => {
     expect(source).toContain('[ValidateSet("start", "status", "stop", "collect")]');
     expect(source).toContain('$Package.actions -cne "start,status,stop,collect"');
@@ -64,7 +82,7 @@ describe("frontera managed-v2 (regresiones de estructura, no E2E)", () => {
   it("canario usa productor Platform real y distingue fixture de build", () => {
     expect(canary).toContain("New-TeremoqLanSlotRecord -UpdaterCommit");
     expect(canary).toContain("ConvertTo-TeremoqLanSlotJson");
-    expect(canary).toContain("offline-ps51-contract-fixtures-not-live-prepare");
+    expect(canary).toContain("offline-core7-contract-fixtures-not-live-prepare");
     expect(canary).toContain("TEST FIXTURE MUST NEVER EXECUTE");
     expect(canary).toContain("validation mutated environment");
     expect(canary).toContain("validation mutated files");

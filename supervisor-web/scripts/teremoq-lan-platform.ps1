@@ -61,9 +61,9 @@ function Get-BytesHash([byte[]]$Bytes) {
   finally { $Hash.Dispose() }
 }
 
-# Bind the Windows handle API in-process: Add-Type on PS 5.1 can spawn a compiler,
-# which is deliberately forbidden on the ValidateOnly path.
-$NativeAssembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
+# Bind the Windows handle API in-process on the selected Core7 runtime. Keep
+# the native signature unchanged; no compiler/process on the ValidateOnly path.
+$NativeAssembly = [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
   (New-Object Reflection.AssemblyName 'TeremoqManagedLauncher'), [Reflection.Emit.AssemblyBuilderAccess]::Run)
 $NativeModule = $NativeAssembly.DefineDynamicModule('Handles')
 $NativeBuilder = $NativeModule.DefineType('ManagedLauncherHandles', [Reflection.TypeAttributes]::Public)
@@ -141,8 +141,9 @@ function Test-ExactProperties([object]$Value, [string[]]$ExpectedKeys) {
 function Convert-CanonicalJson([string]$Text) {
   # Use the native JSON implementation, then require its canonical token spelling.
   # This rejects overwritten duplicate keys (including escaped aliases), rather
-  # than accepting ConvertFrom-Json's last-value-wins behaviour on PS 5.1.
-  $Value = ConvertFrom-Json -InputObject $Text
+  # than accepting last-value-wins behaviour. Keep JSON strings as strings on
+  # Core7, matching the reviewed Platform contract's DateKind String policy.
+  $Value = ConvertFrom-Json -InputObject $Text -DateKind String
   $Compact = [regex]::Replace($Text, '("(?:[^"\\]|\\.)*")|\s+', {
     param($Match)
     if ($Match.Groups[1].Success) { return $Match.Value }
@@ -163,8 +164,8 @@ $ActiveKeys = @('schema_version','updater_version','updater_protocol','updater_c
   'launcher_contract_sha256','config_schema_version','config_sha256','slot_id',
   'player_relative_path','version_relative_path')
 if (-not (Test-ExactProperties $Active $ActiveKeys) -or
-    $Active.schema_version -isnot [int] -or $Active.schema_version -ne 1 -or
-    $Active.config_schema_version -isnot [int] -or $Active.config_schema_version -ne 1 -or
+    ($Active.schema_version -isnot [int] -and $Active.schema_version -isnot [long]) -or $Active.schema_version -ne 1 -or
+    ($Active.config_schema_version -isnot [int] -and $Active.config_schema_version -isnot [long]) -or $Active.config_schema_version -ne 1 -or
     $Active.updater_version -cne '2.0.0' -or $Active.updater_protocol -cne 'teremoq-lan-updater-v3') {
   throw "Slot activo fuera de contrato."
 }
@@ -226,7 +227,7 @@ $ConfigKeys = @(
   "run_id"
 )
 if (-not (Test-ExactProperties $LocalConfig $ConfigKeys) -or
-    $LocalConfig.schema_version -isnot [int] -or $LocalConfig.schema_version -ne 1 -or
+    ($LocalConfig.schema_version -isnot [int] -and $LocalConfig.schema_version -isnot [long]) -or $LocalConfig.schema_version -ne 1 -or
     $LocalConfig.relay_url -isnot [string] -or $LocalConfig.fingerprint_sha256 -isnot [string] -or
     $LocalConfig.fingerprint_sha256 -cnotmatch "^[0-9a-f]{64}$" -or
     (($LocalConfig.prefix_length -isnot [int]) -and ($LocalConfig.prefix_length -isnot [long])) -or
@@ -362,7 +363,8 @@ if (-not (Test-ExactProperties $Manifest $ManifestKeys) -or
     $Manifest.player_identity -cne $Package.player_identity -or
     $Manifest.player_version -cne $Package.player_version -or
     $Manifest.config_schema_version -ne 1 -or
-    $Manifest.schema_version -isnot [int] -or $Manifest.config_schema_version -isnot [int] -or
+    ($Manifest.schema_version -isnot [int] -and $Manifest.schema_version -isnot [long]) -or
+    ($Manifest.config_schema_version -isnot [int] -and $Manifest.config_schema_version -isnot [long]) -or
     $Manifest.files -isnot [array] -or $Manifest.files.Count -lt 1 -or $Manifest.files.Count -gt 10000 -or
     (($Manifest.total_bytes -isnot [int]) -and ($Manifest.total_bytes -isnot [long])) -or
     $Manifest.total_bytes -lt 1 -or $Manifest.total_bytes -gt 128MB) {
