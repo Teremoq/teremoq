@@ -20,6 +20,38 @@ Set-StrictMode -Version 3.0
 . (Join-Path $PSScriptRoot 'Client-Distribution.ps1')
 . (Join-Path $PSScriptRoot 'Client-Slot-State.ps1')
 
+function Assert-TeremoqPreparationPreservesInitialCandidate {
+    param([Parameter(Mandatory = $true)][string]$StateRoot)
+
+    # A read-only precondition, deliberately BEFORE layout initialization,
+    # recovery, Git/bootstrap or the builder. This is not health confirmation.
+    $layout = Get-TeremoqLanClientLayout -StateRoot $StateRoot
+    if (-not (Test-Path -LiteralPath $layout.StateRoot)) { return }
+    [void](Get-TeremoqNonReparseDirectoryPath -Path $layout.StateRoot)
+    if (-not (Test-Path -LiteralPath $layout.ControlRoot)) { return }
+    [void](Get-TeremoqNonReparseDirectoryPath -Path $layout.ControlRoot)
+    $pins = New-Object 'Collections.Generic.List[IO.FileStream]'
+    try {
+        # Never create/open an operation lock for writing during this guard.
+        # Existing files stay pinned while all three records are interpreted.
+        foreach ($path in @((Join-Path $layout.ControlRoot 'update.lock'),
+                $layout.ActivePointer, $layout.CandidatePointer, $layout.RollbackPointer)) {
+            if (Test-Path -LiteralPath $path) {
+                $pins.Add((Open-TeremoqVerifiedRegularFile -Path $path -MaxBytes 4096))
+            }
+        }
+        $active = Read-TeremoqLanSlotPointer -Path $layout.ActivePointer -AllowMissing
+        $candidate = Read-TeremoqLanSlotPointer -Path $layout.CandidatePointer -AllowMissing
+        $rollback = Read-TeremoqLanSlotPointer -Path $layout.RollbackPointer -AllowMissing
+        if ($null -ne $active -and $null -ne $candidate -and $null -eq $rollback -and
+            $active.slot_id -ceq $candidate.slot_id) {
+            throw 'LAN preparation blocked: initial candidate is unconfirmed and has no rollback; existing state and material must be preserved'
+        }
+    } finally {
+        foreach ($pin in $pins) { $pin.Dispose() }
+    }
+}
+
 function ConvertFrom-TeremoqWebBuilderReceipt {
     param([Parameter(Mandatory = $true)][string]$Output, [Parameter(Mandatory = $true)][string]$ExpectedCommit)
     if ($Output.Length -lt 2 -or $Output.Length -gt 131072) { throw 'Web builder output is outside the bounded receipt policy' }
@@ -69,6 +101,7 @@ function ConvertFrom-TeremoqWebBuilderReceipt {
     return [pscustomobject]@{ Receipt = $receipt; CanonicalJson = $jsonLines[0] }
 }
 
+Assert-TeremoqPreparationPreservesInitialCandidate -StateRoot $StateRoot
 $checkout = Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $CheckoutRoot -RepositoryUrl $RepositoryUrl `
     -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory infra/lan
 $state = [IO.Path]::GetFullPath($StateRoot)
