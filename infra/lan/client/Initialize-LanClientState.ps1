@@ -14,7 +14,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Namespace,
     [Parameter(Mandatory = $true)][string]$FingerprintSha256,
     [Parameter(Mandatory = $true)][string]$BuilderReceiptPath,
-    [Parameter(Mandatory = $true)][string]$BuilderReceiptSha256
+    [Parameter(Mandatory = $true)][string]$BuilderReceiptSha256,
+    [switch]$MaterialOnly
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
@@ -184,8 +185,15 @@ try {
             throw 'existing updater/player slot differs and will not be overwritten'
         }
     }
-    $staged = Stage-TeremoqLanClientSlot -StateRoot $layout.StateRoot -Record $record
-    Write-Output ("LAN client slot {0}: updater={1}, player={2}." -f $staged.Status, $ExpectedCommit.Substring(0,8), $receipt.player_identity)
+    if ($MaterialOnly) {
+        # A reviewed direct builder receipt can prepare immutable material
+        # without replacing/staging the existing unconfirmed candidate.
+        [void](Assert-TeremoqLanSlotMaterial -Layout $layout -Record $record)
+        Write-Output (ConvertTo-TeremoqLanSlotJson -Record $record)
+    } else {
+        $staged = Stage-TeremoqLanClientSlot -StateRoot $layout.StateRoot -Record $record
+        Write-Output ("LAN client slot {0}: updater={1}, player={2}." -f $staged.Status, $ExpectedCommit.Substring(0,8), $receipt.player_identity)
+    }
 } finally {
     if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
 }

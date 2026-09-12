@@ -16,11 +16,9 @@ $guards = @($prepareAst.FindAll({ param($node)
 if ($guards.Count -ne 1) { throw 'Prepare preservation guard must be unique' }
 # Load only the production guard definition for isolated positive canaries.
 . ([scriptblock]::Create($guards[0].Extent.Text))
-$topLevelCommands = @($prepareAst.EndBlock.Statements | ForEach-Object {
-    if ($_ -is [Management.Automation.Language.PipelineAst]) {
-        $_.PipelineElements | Where-Object { $_ -is [Management.Automation.Language.CommandAst] } | ForEach-Object { $_.GetCommandName() }
-    }
-})
+$topLevelCommands = @($prepareAst.EndBlock.FindAll({param($node)
+    $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Assert-TeremoqPreparationPreservesInitialCandidate'
+},$true) | ForEach-Object { $_.GetCommandName() })
 if ($topLevelCommands -cnotcontains 'Assert-TeremoqPreparationPreservesInitialCandidate') { throw 'Prepare entrypoint does not invoke preservation guard' }
 
 $root = Join-Path ([IO.Path]::GetTempPath()) ('teremoq-lan-slots-' + [Guid]::NewGuid().ToString('N'))

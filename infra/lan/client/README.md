@@ -291,6 +291,89 @@ state; downloaded/built is not activated, healthy or ready for a live session.
 Any explicit preservation/restoration transition needs its own reviewed
 procedure before use. Do not reinstall or erase state to pass this gate.
 
+### Assisted replacement of the single unconfirmed initial candidate
+
+This is an explicit operator procedure, not automatic recovery or permission
+to run a lab. Use only after the exact candidate, material, source/destination
+hashes and bounded lease have been approved. Never run historical Reset,
+Confirm, repair or cleanup scripts alongside it. Existing A/B directories
+without valid Git checkouts are not empty/recyclable by implication. Use an
+already known, verified checkout that is not in use; no replacement client or
+launcher is created by this procedure.
+
+1. Preserve the existing initial state and verify its active/candidate bytes
+   are identical, schema-valid and bound to the old material; rollback must be
+   absent. Obtain the exact SHA-256 of those bytes by the pinned reader. Do not
+   label that version healthy. Validate the new Git source and the normal
+   Windows Node/cache/native prerequisites before building.
+2. Invoke the existing preparation command with the same approved public run
+   configuration and add `-MaterialOnly` (and `-Offline` when prerequisites
+   support it). It runs the existing Web builder in **node** mode: one build or
+   verified reuse, never the integration double-build mode. It does not Reset,
+   Stage or Activate pointers. It preserves the previous Web `update-state.json`
+   bytes/absence in a new private `material-preparation-evidence/<evidence_id>`
+   directory before invoking the builder, then keeps the receipt and canonical
+   `target-record.json`. Existing configuration must match exactly; it is not
+   replaced. The returned target-record hash identifies material, not health.
+   Cache state is mutable; the archive is durable evidence, not a claim that
+   every byte of StateRoot remains unchanged. A timeout is not proof all child
+   processes ended: reconcile only the run-owned processes/worktrees before
+   retrying and preserve all earlier generations.
+3. Check the target material/receipt and its hash. Assign one exact transition
+   UUID and keep all paths, configuration and evidence local/private. Then use
+   the existing state-management entrypoint, not a new launcher:
+
+   ```powershell
+   $Transition = @{
+     StateRoot = $StateRoot
+     TransitionId = 'EXACT_APPROVED_TRANSITION_UUID'
+     ConfirmTransitionId = 'EXACT_APPROVED_TRANSITION_UUID'
+     ExpectedSourceSha256 = 'EXACT_SOURCE_POINTER_SHA256'
+     ExpectedTargetSha256 = 'EXACT_TARGET_RECORD_SHA256'
+     ExpectedTargetCommit = 'EXACT_APPROVED_TARGET_COMMIT40'
+     TargetRecordPath = $TargetRecordPath
+   }
+   & "$CheckoutRoot\infra\lan\client\Manage-LanClientSlots.ps1" `
+     -Action SupersedeUnconfirmed @Transition
+   ```
+
+The state operation requires the existing exclusive `control/update.lock`;
+it does not initialize or repair control. Before changing either pointer it
+flushes and verifies immutable source/target records and metadata copies in
+`unconfirmed-transition/`, outside the control whitelist. The record declares
+source `unconfirmed` and rollback `absent`; no `rollback.json` is invented.
+Snapshots and material are never automatically deleted. Private ACLs admit
+only the current operator, SYSTEM and Administrators. Unexpected files, types,
+identity changes, oversized records or snapshot conflicts fail closed while
+preserving both sides.
+
+The finite forward phases are `sealed`, `applying-candidate`,
+`applying-active`, `pending-health`. Resume the same action with the same UUID
+and expected hashes after reconciling a cut; a completed replay writes nothing.
+Intermediate phases refuse launcher selection. `pending-health` permits normal
+read-only validation of the selected material, but does not start a player or
+confirm health. Actual use still requires its own lease/preflight/PKI gates.
+
+For an explicitly authorized restoration, use `-Action RestoreUnconfirmed`
+with the same parameters. It records `restoring-active`, then
+`restoring-candidate`, and restores the exact old pointer bytes with rollback
+still absent. The terminal status is `restored-unconfirmed`, **not** healthy.
+Restoration also works after an interrupted snapshot once the original inputs
+can complete/verify that snapshot; corrupt partial files remain conflicts, not
+something to overwrite. `-Action UnconfirmedStatus` inspects a sealed record
+under exclusion; it neither resumes nor starts anything. An action after
+restoration cannot silently restart supersession.
+
+All ordinary preparation, state recovery, confirmation and material-cleanup
+entrypoints refuse while this record exists, including terminal records. This
+single-case procedure deliberately has no automatic finalization, journal
+deletion, repeated-update framework or fabricated health confirmation. A
+future health-confirmation/retention decision requires a separate reviewed
+procedure. Keep older executable checkouts as evidence/restoration sources,
+but do not execute their unaware mutators during or after this transition.
+File flush/readback and native process-kill fixtures are tested; do not claim
+off-device backup, arbitrary power-loss guarantees or recovery autonomy.
+
 ```powershell
 & "$CheckoutRoot\infra\lan\client\Update-LanClient.ps1" `
   -StateRoot $StateRoot -CheckoutRoot $CheckoutRoot `

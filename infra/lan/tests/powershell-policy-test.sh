@@ -49,7 +49,7 @@ for file in "${ROOT}"/windows/*.ps1 "${ROOT}"/client/*.ps1; do
         '$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile($env:TEREMOQ_PS_PARSE_FILE,[ref]$tokens,[ref]$errors) > $null; if($errors.Count -ne 0){$errors | ForEach-Object {Write-Error $_}; exit 1}' \
         >/dev/null
 done
-for file in "${TEST_DIR}"/Run-GitClientE2E.ps1 "${TEST_DIR}"/Run-StageUpdateE2E.ps1 "${TEST_DIR}"/client-distribution-fixture.ps1 "${TEST_DIR}"/client-slot-state-test.ps1 "${TEST_DIR}"/client-state-security-fixture.ps1 "${TEST_DIR}"/launcher-pin-fixture.ps1; do
+for file in "${TEST_DIR}"/Run-GitClientE2E.ps1 "${TEST_DIR}"/Run-StageUpdateE2E.ps1 "${TEST_DIR}"/client-distribution-fixture.ps1 "${TEST_DIR}"/client-slot-state-test.ps1 "${TEST_DIR}"/client-unconfirmed-transition-test.ps1 "${TEST_DIR}"/client-state-security-fixture.ps1 "${TEST_DIR}"/launcher-pin-fixture.ps1; do
     TEREMOQ_PS_PARSE_FILE="${file}" WSLENV="TEREMOQ_PS_PARSE_FILE/p${WSLENV:+:${WSLENV}}" powershell.exe -NoProfile -NonInteractive -Command \
         '$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile($env:TEREMOQ_PS_PARSE_FILE,[ref]$tokens,[ref]$errors) > $null; if($errors.Count -ne 0){$errors | ForEach-Object {Write-Error $_}; exit 1}' \
         >/dev/null
@@ -97,6 +97,10 @@ client_slot_state_test="$(wslpath -w "${TEST_DIR}/client-slot-state-test.ps1")"
 launcher_composition_fixture="$(wslpath -w "${TEST_DIR}/launcher-composition-fixture.ps1")"
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${launcher_composition_fixture}" >/dev/null
 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${client_slot_state_test}" >/dev/null
+assisted_transition_test="$(wslpath -w "${TEST_DIR}/client-unconfirmed-transition-test.ps1")"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${assisted_transition_test}" >/dev/null
+material_only_test="$(wslpath -w "${TEST_DIR}/client-material-only-test.ps1")"
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${material_only_test}" >/dev/null
 grep -Fq 'Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex' "${ROOT}/windows/Preflight-Lan.ps1"
 grep -Fq 'Get-TeremoqExactWifiAdapter -InterfaceIndex $address.InterfaceIndex' "${ROOT}/windows/Preflight-Client.ps1"
 grep -Fq '/query /status /verbose' "${ROOT}/windows/Preflight-Lan.ps1"

@@ -13,7 +13,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Namespace,
     [Parameter(Mandatory = $true)][string]$FingerprintSha256,
     [switch]$RefreshDependencies,
-    [switch]$Offline
+    [switch]$Offline,
+    [switch]$MaterialOnly
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
@@ -101,7 +102,8 @@ function ConvertFrom-TeremoqWebBuilderReceipt {
     return [pscustomobject]@{ Receipt = $receipt; CanonicalJson = $jsonLines[0] }
 }
 
-Assert-TeremoqPreparationPreservesInitialCandidate -StateRoot $StateRoot
+if (-not $MaterialOnly) { Assert-TeremoqPreparationPreservesInitialCandidate -StateRoot $StateRoot }
+Assert-TeremoqNoAssistedTransition -StateRoot $StateRoot
 $checkout = Get-TeremoqGitBootstrapCheckoutContext -CheckoutRoot $CheckoutRoot -RepositoryUrl $RepositoryUrl `
     -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory infra/lan
 $state = [IO.Path]::GetFullPath($StateRoot)
@@ -109,7 +111,27 @@ $stateParent = Split-Path -Parent $state
 [void](Get-TeremoqNonReparseDirectoryPath -Path $stateParent)
 Assert-TeremoqRootsSeparated -CheckoutRoot $checkout.CheckoutRoot -StateRoot $state
 $layout = Initialize-TeremoqLanClientLayout -StateRoot $state
-$candidateRecovery = Reset-TeremoqLanUnconfirmedCandidate -StateRoot $state
+if ($MaterialOnly) {
+    if ($RunId -cnotmatch '^lan-[a-z0-9][a-z0-9-]{0,31}$') { throw 'material-only preparation requires a bounded run ID' }
+    # Preserve the mutable Web build-state provenance before invoking builder.
+    # This archive is never control state and is never automatically cleaned.
+    $archiveParent = Join-Path $state 'material-preparation-evidence'
+    New-TeremoqPrivateTransitionDirectory -Path $archiveParent
+    $materialEvidence = Join-Path $archiveParent ($RunId + '-' + [Guid]::NewGuid().ToString('N'))
+    New-TeremoqPrivateTransitionDirectory -Path $materialEvidence
+    $buildState = Join-Path $state '.teremoq-web-build\update-state.json'
+    if (Test-Path -LiteralPath $buildState) {
+        $heldBuildState = Open-TeremoqVerifiedRegularFile -Path $buildState -MaxBytes 1048576
+        try {
+            Write-TeremoqTransitionCopy -Path (Join-Path $materialEvidence 'previous-build-state.json') `
+                -Text (Read-TeremoqBoundedUtf8File -Path $buildState -MaxBytes 1048576)
+        } finally { $heldBuildState.Dispose() }
+    } else {
+        Write-TeremoqTransitionCopy -Path (Join-Path $materialEvidence 'previous-build-state.absent') -Text "absent`n"
+    }
+} else {
+    $candidateRecovery = Reset-TeremoqLanUnconfirmedCandidate -StateRoot $state
+}
 $builder = Assert-TeremoqNonReparseFilePath -Path (Join-Path $checkout.CheckoutRoot 'supervisor-web\lan-player\Build-LanPlayerFromGit.ps1')
 $hostPath = (Get-Process -Id $PID).Path
 if (-not $hostPath -or -not $hostPath.EndsWith('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) {
@@ -139,11 +161,20 @@ $receiptPath = Join-Path $stateParent ('.teremoq-builder-receipt-' + [Guid]::New
 $receiptStream = New-Object IO.FileStream($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
 try { $receiptStream.Write($receiptBytes, 0, $receiptBytes.Length); $receiptStream.Flush($true) } finally { $receiptStream.Dispose() }
 try {
-    & (Join-Path $PSScriptRoot 'Initialize-LanClientState.ps1') `
-        -CheckoutRoot $checkout.CheckoutRoot -StateRoot $state -RepositoryUrl $RepositoryUrl `
-        -RepositoryRef $RepositoryRef -ExpectedCommit $ExpectedCommit -RepositorySubdirectory infra/lan `
-        -RunId $RunId -ServerIPv4 $ServerIPv4 -PrefixLength $PrefixLength -Namespace $Namespace `
-        -FingerprintSha256 $FingerprintSha256 -BuilderReceiptPath $receiptPath -BuilderReceiptSha256 $receiptDigest
+    $initialization = @{ CheckoutRoot=$checkout.CheckoutRoot; StateRoot=$state; RepositoryUrl=$RepositoryUrl;
+        RepositoryRef=$RepositoryRef; ExpectedCommit=$ExpectedCommit; RepositorySubdirectory='infra/lan';
+        RunId=$RunId; ServerIPv4=$ServerIPv4; PrefixLength=$PrefixLength; Namespace=$Namespace;
+        FingerprintSha256=$FingerprintSha256; BuilderReceiptPath=$receiptPath; BuilderReceiptSha256=$receiptDigest }
+    if ($MaterialOnly) {
+        Write-TeremoqTransitionCopy -Path (Join-Path $materialEvidence 'builder-receipt.json') -Text ($parsed.CanonicalJson + "`n")
+        $recordJson = & (Join-Path $PSScriptRoot 'Initialize-LanClientState.ps1') @initialization -MaterialOnly
+        Write-TeremoqTransitionCopy -Path (Join-Path $materialEvidence 'target-record.json') -Text $recordJson
+        $targetHash = Get-TeremoqTransitionTextHash -Text $recordJson
+        [ordered]@{ status='material-only'; source_commit=$ExpectedCommit; target_record_sha256=$targetHash;
+            evidence_id=(Split-Path -Leaf $materialEvidence); health='not_measured'; activation='not_performed' } | ConvertTo-Json -Compress
+        return
+    }
+    & (Join-Path $PSScriptRoot 'Initialize-LanClientState.ps1') @initialization
     $activation = Activate-TeremoqLanClientSlot -StateRoot $state
     try {
         $active = Get-TeremoqLanStateContext -StateRoot $state
