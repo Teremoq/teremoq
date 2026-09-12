@@ -778,24 +778,140 @@ function Get-TeremoqManagedLanStateContext {
     }
 }
 
-function Assert-TeremoqLanLauncherStartContract {
+function Get-TeremoqPinnedStreamSha256 {
+    param([Parameter(Mandatory = $true)][IO.FileStream]$Stream, [Parameter(Mandatory = $true)][int]$MaxBytes)
+    $Stream.Position = 0
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        $buffer = New-Object byte[] 65536
+        $total = [Int64]0
+        while (($count = $Stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $total += $count
+            if ($total -gt $MaxBytes) { throw 'pinned file exceeds its byte limit' }
+            [void]$hash.TransformBlock($buffer, 0, $count, $buffer, 0)
+        }
+        [void]$hash.TransformFinalBlock((New-Object byte[] 0), 0, 0)
+        if ($total -ne $Stream.Length) { throw 'pinned file length changed' }
+        return ([BitConverter]::ToString($hash.Hash) -replace '-', '').ToLowerInvariant()
+    } finally { $hash.Dispose(); $Stream.Position = 0 }
+}
+
+function Open-TeremoqLanPlayerPins {
+    param([Parameter(Mandatory = $true)]$StateContext)
+    $pins = New-Object 'Collections.Generic.List[IO.FileStream]'
+    try {
+        $root = Get-TeremoqNonReparseDirectoryPath -Path $StateContext.PlayerRoot
+        $expectedManifest = $StateContext.Version.player_manifest_sha256
+        if ($expectedManifest -cnotmatch '^[0-9a-f]{64}$') { throw 'approved player manifest digest is missing' }
+        $manifestStream = Open-TeremoqVerifiedRegularFile -Path (Join-Path $root 'MANIFEST.sha256.json') -MaxBytes 1048576
+        $pins.Add($manifestStream)
+        if ((Get-TeremoqPinnedStreamSha256 -Stream $manifestStream -MaxBytes 1048576) -cne $expectedManifest) {
+            throw 'player manifest changed after context verification'
+        }
+        # Parse the very handle whose digest was checked, retaining it until
+        # after execution. Never reopen a pathname to obtain the inventory.
+        $bytes = New-Object byte[] $manifestStream.Length
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $count = $manifestStream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($count -eq 0) { throw 'pinned manifest ended early' }
+            $offset += $count
+        }
+        if ($manifestStream.ReadByte() -ne -1) { throw 'pinned manifest exceeds expected length' }
+        $manifest = (New-Object Text.UTF8Encoding($false, $true)).GetString($bytes) | ConvertFrom-Json
+        $keys = @($manifest.PSObject.Properties.Name)
+        $allowed = @('schema_version','artifact','entrypoint','package_version','updater_version','player_identity','player_version','config_schema_version','files','total_bytes')
+        if ($keys.Count -ne $allowed.Count -or @($keys | Where-Object { $allowed -cnotcontains $_ }).Count -ne 0 -or
+            $manifest.schema_version -isnot [int] -or $manifest.schema_version -ne 1 -or
+            $manifest.artifact -cne 'teremoq-lan-lab-standalone' -or $manifest.entrypoint -cne 'start.mjs' -or
+            $manifest.player_identity -cne $StateContext.Version.player_identity -or
+            $manifest.player_version -cne $StateContext.Version.player_version -or
+            $manifest.package_version -cne $StateContext.Version.player_version -or
+            $manifest.updater_version -cne $StateContext.Version.updater_version -or
+            $manifest.config_schema_version -isnot [int] -or $manifest.config_schema_version -ne 1 -or
+            $manifest.files -isnot [Array] -or $manifest.files.Count -lt 1 -or $manifest.files.Count -gt 10000 -or
+            ($manifest.total_bytes -isnot [int] -and $manifest.total_bytes -isnot [long]) -or
+            $manifest.total_bytes -lt 1 -or $manifest.total_bytes -gt 134217728) { throw 'pinned player manifest is outside the managed contract' }
+        $listed = @{}
+        $total = [Int64]0
+        $launcherPinned = $false
+        foreach ($entry in $manifest.files) {
+            $entryKeys = @($entry.PSObject.Properties.Name)
+            if ($entryKeys.Count -ne 3 -or @($entryKeys | Where-Object { @('path','bytes','sha256') -cnotcontains $_ }).Count -ne 0 -or
+                $entry.path -isnot [string] -or $entry.path.Length -lt 1 -or $entry.path.Length -gt 260 -or
+                $entry.path -match '[\\:\x00-\x1f<>"|?*]' -or [IO.Path]::IsPathRooted($entry.path) -or
+                @($entry.path.Split('/') | Where-Object { $_ -in @('', '.', '..') -or $_ -cne $_.TrimEnd(' ', '.') }).Count -ne 0 -or
+                ($entry.bytes -isnot [int] -and $entry.bytes -isnot [long]) -or $entry.bytes -lt 0 -or $entry.bytes -gt 104857600 -or
+                $entry.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $listed.ContainsKey($entry.path) -or
+                $entry.path -ceq 'MANIFEST.sha256.json') { throw 'pinned player inventory entry is invalid' }
+            $total += $entry.bytes
+            if ($total -gt 134217728) { throw 'pinned player inventory exceeds total byte limit' }
+            $path = [IO.Path]::GetFullPath((Join-Path $root $entry.path))
+            if (-not $path.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'pinned player entry escapes its root'
+            }
+            $stream = Open-TeremoqVerifiedRegularFile -Path $path -MaxBytes 104857600
+            $pins.Add($stream)
+            if ($stream.Length -ne $entry.bytes -or (Get-TeremoqPinnedStreamSha256 -Stream $stream -MaxBytes 104857600) -cne $entry.sha256) {
+                throw 'player executable or dependency changed after context verification'
+            }
+            if ($path.Equals([IO.Path]::GetFullPath($StateContext.LauncherPath), [StringComparison]::OrdinalIgnoreCase)) { $launcherPinned = $true }
+            if ($entry.path -ceq 'lan-launcher.tsv' -and $entry.sha256 -cne $StateContext.Version.launcher_contract_sha256) {
+                throw 'pinned launcher contract differs from approved context'
+            }
+            $listed[$entry.path] = $true
+        }
+        if (-not $launcherPinned -or -not $listed.ContainsKey('lan-launcher.tsv') -or -not $listed.ContainsKey('start.mjs') -or $total -ne $manifest.total_bytes) {
+            throw 'pinned player inventory is incomplete'
+        }
+        $fileCount = 0
+        foreach ($file in (Get-ChildItem -LiteralPath $root -Recurse -Force -File | Select-Object -First 10002)) {
+            if (++$fileCount -gt 10001) { throw 'pinned player has too many files' }
+            $relative = $file.FullName.Substring($root.Length).TrimStart([char[]]@('\','/')).Replace('\','/')
+            if ($relative -cne 'MANIFEST.sha256.json' -and -not $listed.ContainsKey($relative)) { throw 'pinned player has an unlisted file' }
+        }
+        return ,$pins
+    } catch {
+        for ($index = $pins.Count - 1; $index -ge 0; $index--) { $pins[$index].Dispose() }
+        throw
+    }
+}
+
+function Invoke-TeremoqPinnedLanLauncher {
     param(
         [Parameter(Mandatory = $true)]$StateContext,
+        [Parameter(Mandatory = $true)][ValidateSet('Start','Status','Stop','Collect')][string]$Action,
         [ValidateSet(1, 5, 10, 25)][int]$Level = 1,
-        [string]$EvidenceDirectory
+        [string]$EvidenceDirectory,
+        [switch]$ValidateOnly
     )
     if ($StateContext.Version.schema_version -cne '2') { throw 'launcher composition requires managed client state v2' }
+    if ($ValidateOnly -and $Action -cne 'Start') { throw 'ValidateOnly is a Start parser guard' }
     if ([string]::IsNullOrEmpty($EvidenceDirectory)) {
         $EvidenceDirectory = Join-Path (Join-Path (Join-Path $StateContext.StateRoot 'evidence') $StateContext.Version.run_id) "level-$Level"
     }
     # Invoke the verified existing launcher in this PowerShell host. Its
     # ValidateOnly branch performs the Start parser without child processes,
     # directory creation, runtime environment changes or readiness claims.
-    $LASTEXITCODE = 0
-    & $StateContext.LauncherPath -Action Start -ValidateOnly -StateRoot $StateContext.StateRoot `
-        -RunId $StateContext.Version.run_id -Level $Level -VersionPath $StateContext.VersionPath `
-        -FingerprintPath $StateContext.FingerprintPath -EvidenceDirectory $EvidenceDirectory | Out-Null
-    if (-not $? -or $LASTEXITCODE -ne 0) { throw 'managed player launcher Start contract validation failed' }
+    $pins = Open-TeremoqLanPlayerPins -StateContext $StateContext
+    try {
+        $LASTEXITCODE = 0
+        & $StateContext.LauncherPath -Action $Action -ValidateOnly:$ValidateOnly -StateRoot $StateContext.StateRoot `
+            -RunId $StateContext.Version.run_id -Level $Level -VersionPath $StateContext.VersionPath `
+            -FingerprintPath $StateContext.FingerprintPath -EvidenceDirectory $EvidenceDirectory
+        if (-not $? -or $LASTEXITCODE -ne 0) { throw 'managed player launcher failed' }
+    } finally {
+        for ($index = $pins.Count - 1; $index -ge 0; $index--) { $pins[$index].Dispose() }
+    }
+}
+
+function Assert-TeremoqLanLauncherStartContract {
+    param(
+        [Parameter(Mandatory = $true)]$StateContext,
+        [ValidateSet(1, 5, 10, 25)][int]$Level = 1,
+        [string]$EvidenceDirectory
+    )
+    Invoke-TeremoqPinnedLanLauncher -StateContext $StateContext -Action Start -ValidateOnly -Level $Level -EvidenceDirectory $EvidenceDirectory | Out-Null
 }
 
 function Get-TeremoqGitCheckoutContext {

@@ -45,8 +45,5 @@ if ($Action -eq 'Start') {
 } elseif (-not (Test-Path -LiteralPath $evidence -PathType Container)) {
     throw 'deterministic player evidence directory does not exist for this action'
 }
-& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $state.LauncherPath `
-    -Action $Action -StateRoot $state.StateRoot -RunId $RunId -Level $Level -VersionPath $state.VersionPath `
-    -FingerprintPath $state.FingerprintPath -EvidenceDirectory $evidence
-if ($LASTEXITCODE -ne 0) { throw "TP-WEB-REALTIME LAN launcher failed: $LASTEXITCODE" }
+Invoke-TeremoqPinnedLanLauncher -StateContext $state -Action $Action -Level $Level -EvidenceDirectory $evidence
 if ($Action -eq 'Collect') { Write-Output 'Import the exact browser JSON with Import-BrowserObservation.ps1; launcher output/hash alone is not composite gate evidence.' }

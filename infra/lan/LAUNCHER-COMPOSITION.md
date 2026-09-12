@@ -21,6 +21,18 @@ Validate does not run `node --version`, launch a child product process, create
 evidence or reserve a port. Read-only Git checks still execute Git; this is not
 a claim of zero OS processes for the entire wrapper.
 
+Before loading any launcher code, Platform opens the approved manifest and
+checks its SHA-256 against the already-verified context using the retained
+handle. It parses the inventory from that same handle, opens every inventoried
+file with `FileShare.Read`, and checks size/hash from those retained handles.
+Only after all pins and the exact inventory pass does it call the launcher.
+The pins remain held throughout that invocation and are released in `finally`,
+including partial acquisition, parser errors and nonzero script exit. Both
+ValidateOnly and real action invocations use this protector. A second pathname
+hash followed by an unprotected call, or a launcher self-check after loading,
+is not accepted as protection. These pins cover artifact code/dependencies
+for the invocation; they are not an assertion about an entire later AV session.
+
 Managed state selection opens the existing operation lock read-only with
 `FileShare.Read`: concurrent readers are allowed; writers and deletion are
 excluded. This is not an exclusive mutex between readers. The shared verified
@@ -43,7 +55,10 @@ identity. Nothing is copied beside or written into the immutable player.
 
 `launcher-composition-policy-test.sh` checks wiring without Windows.
 `launcher-composition-fixture.ps1` tests the adapter on native PowerShell 5,
-including unknown parameters, parser rejection and nonzero script exit.
+including launcher/dependency substitution after context selection (rejected
+without executing substituted code), manifest substitution, write/replacement
+denial during invocation, partial pin cleanup, unknown parameters, parser
+rejection and nonzero script exit.
 `client-slot-state-test.ps1` tests non-mutating reads, missing lock rejection,
 concurrency and preserved partial files. These are not the sealed Web E2E:
 composition with the owner's final launcher commit remains an integration gate.
