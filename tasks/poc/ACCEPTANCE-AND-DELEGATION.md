@@ -304,3 +304,46 @@ acuerdo no añade permisos para publicar, gastar, cambiar licencias, exponer
 información, destruir datos ni operar equipos remotos fuera de autorizaciones
 existentes. Los cambios económicos/comerciales del ecosistema no se resuelven
 mediante este contrato de pruebas.
+
+## 8. Preparación referida por los owners — sin aceptación de ensayo
+
+Platform entregó el plan local `PLAN-V1-V5-20260912-01`, SHA-256
+`b051d9ca26b180b6dc1542102fed0452de3b004a1c7d3912ef71dbe58077e676`.
+Sus umbrales numéricos son propuestas pendientes de aceptación previa del
+Master junto con la candidata. Esta sección consolida sus límites declarados;
+no reproduce pruebas de runtime ni convierte el plan en permiso de ejecución.
+
+- La lectura READ-VERSION y el acuse del rol ampliado son evidencias distintas.
+  El encargo de lectura publicado no demuestra por sí solo ACK, versión
+  instalada ni confirmación final. La reserva comunicada era sólo preparación;
+  no existe una lease de ensayo audiovisual concedida por este documento.
+- La fuente disponible es sintética codificada y transmitida realmente,
+  480×270 a 30 fps; no contiene audio ni fija bitrate explícito. El owner debe
+  cerrar configuración reproducible/bitrate antes de aceptar condiciones.
+  Una fuente sintética transmitida puede dar evidencia audiovisual real de
+  laboratorio; no acredita cámara, producción ni soporte de audio. No sustituye
+  vídeo por contadores simulados.
+- El owner informa de percentiles Web sobre una ventana móvil de 512 muestras,
+  snapshots cada 250 ms y exportación JSON sólo de p95. No se promedian esos
+  percentiles para inventar percentiles globales de 30 minutos. La disponibilidad
+  de muestras, p50/p99, stalls, drops y audio requiere cierre por Web; si falta
+  evidencia, V3 o el requisito correspondiente permanece pendiente.
+- PKI informa que la emisión existente también construye el endpoint relay;
+  requiere una futura lease explícita de arranque loopback supervisado. No se
+  autoriza esa operación aquí ni se reutiliza trust material incompatible por
+  su sola vigencia. Seguridad conserva la validación de identidad y procedencia.
+- Task 05/Platform refieren la vía existente Prepare-LanClientFromGit →
+  Verify-Package → Invoke-LanLoad, con estado A/B pending-health y confirmación
+  o rollback mediante Manage-LanClientSlots. El integrador debe vincularla a la
+  candidata y el responsable al procedimiento/lease antes de ejecutarla.
+  Start-LanClientFromGit e INICIAR instalan el canal; su documentación histórica
+  no los convierte en vía obligatoria de este hito.
+- El preflight 5 GHz existente no se cambia por esta decisión documental.
+  Si un gate técnico vigente bloquea la banda disponible, registrar el bloqueo
+  y devolverlo a Platform para una corrección mínima revisada; no saltarlo ni
+  interpretar «recomendación» como permiso para falsificar un PASS.
+
+La candidata, el plan y los umbrales requieren aceptación; las acciones necesitan
+el encargo y la lease del responsable. Se mantienen pendientes separados de
+instrumentación, bitrate, audio, PKI y autonomía. Este paquete documental no
+declara un hito audiovisual aceptado.
