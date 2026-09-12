@@ -607,11 +607,13 @@ function Test-TeremoqTrustedExplorerRootTermination {
     param(
         [Parameter(Mandatory = $true)][string]$CurrentProcessName,
         [Parameter(Mandatory = $true)][string]$PowerShellEdition,
+        [int]$PowerShellMajor = 5,
         [string[]]$ParentProcessNames = @(),
         [string[]]$ObservedEnvKeys = @()
     )
-    return $CurrentProcessName -ceq 'powershell.exe' -and
-        $PowerShellEdition -ceq 'Desktop' -and
+    $nativePair = ($CurrentProcessName -ceq 'powershell.exe' -and $PowerShellEdition -ceq 'Desktop' -and $PowerShellMajor -eq 5) -or
+        ($CurrentProcessName -ceq 'pwsh.exe' -and $PowerShellEdition -ceq 'Core' -and $PowerShellMajor -eq 7)
+    return $nativePair -and
         $ParentProcessNames.Count -eq 1 -and
         $ParentProcessNames[0] -ceq 'explorer.exe' -and
         $ObservedEnvKeys.Count -eq 0
@@ -652,7 +654,7 @@ function New-TeremoqCaptureContext {
             $resolvedParent = Resolve-TeremoqStableProcessIdentity -ProcessId $parentId -InitialResult $parentFirstResult -ResolveProcess $ResolveProcess -MissingOutcome 'parent_process_missing' -UnstableOutcome 'parent_process_unstable'
             if ($resolvedParent.Outcome -ne 'ok') {
                 if ($resolvedParent.Outcome -eq 'parent_process_missing' -and
-                    (Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName $currentProcessName -PowerShellEdition ([string]$PSVersionTable.PSEdition) -ParentProcessNames @($parentNames) -ObservedEnvKeys @($presentEnvKeys))) {
+                    (Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName $currentProcessName -PowerShellEdition ([string]$PSVersionTable.PSEdition) -PowerShellMajor $PSVersionTable.PSVersion.Major -ParentProcessNames @($parentNames) -ObservedEnvKeys @($presentEnvKeys))) {
                     $traversalOutcome = 'terminated_after_explorer_root_missing'
                 } else {
                     $traversalOutcome = [string]$resolvedParent.Outcome
@@ -726,6 +728,8 @@ function Test-TeremoqCaptureContextEvidence {
     }
     $allowedEnvKeys = @('WSLENV', 'WSL_INTEROP', 'WSL_DISTRO_NAME')
     $blockedAncestorNames = @('bash.exe', 'sh.exe', 'dash.exe', 'wsl.exe', 'wslhost.exe', 'ubuntu.exe', 'debian.exe', 'kali.exe', 'arch.exe')
+    if (-not (($Context.current_process_name -ceq 'powershell.exe' -and $Context.powershell_edition -ceq 'Desktop' -and $Context.powershell_version_major -eq 5) -or
+        ($Context.current_process_name -ceq 'pwsh.exe' -and $Context.powershell_edition -ceq 'Core' -and $Context.powershell_version_major -eq 7))) { return $false }
     $normalizedParents = @()
     foreach ($name in $Context.parent_process_names) {
         if ($name -isnot [string] -or $name.Length -gt 128 -or $name.Trim() -cne $name -or $name -cnotmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$') { return $false }
@@ -737,7 +741,7 @@ function Test-TeremoqCaptureContextEvidence {
     }
     if (@($Context.wsl_environment_keys_present | Select-Object -Unique).Count -ne $Context.wsl_environment_keys_present.Count) { return $false }
     if ($Context.traversal_outcome -ceq 'terminated_after_explorer_root_missing' -and
-        -not (Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName $Context.current_process_name -PowerShellEdition $Context.powershell_edition -ParentProcessNames $normalizedParents -ObservedEnvKeys $Context.wsl_environment_keys_present)) {
+        -not (Test-TeremoqTrustedExplorerRootTermination -CurrentProcessName $Context.current_process_name -PowerShellEdition $Context.powershell_edition -PowerShellMajor $Context.powershell_version_major -ParentProcessNames $normalizedParents -ObservedEnvKeys $Context.wsl_environment_keys_present)) {
         return $false
     }
     return @($normalizedParents | Where-Object { $_ -in $blockedAncestorNames }).Count -eq 0 -and $Context.wsl_environment_keys_present.Count -eq 0

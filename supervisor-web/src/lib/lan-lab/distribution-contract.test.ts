@@ -247,4 +247,28 @@ describe("contrato de distribución Git del player LAN", () => {
       expect(`${launcher}\n${orchestrator}`).not.toContain(forbidden);
     }
   });
+
+  it("exige el mismo host Core 7.6.6 antes de helpers, probes o efectos, sin fallback PS5", () => {
+    const launcher = readFileSync("lan-player/Build-LanPlayerFromGit.ps1", "utf8");
+    expect(launcher).toContain("$PSVersionTable.PSEdition -cne 'Core'");
+    expect(launcher).toContain("$PSVersionTable.PSVersion.ToString() -cne '7.6.6'");
+    expect(launcher).toContain("[PlatformID]::Win32NT");
+    expect(launcher).toContain("[Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -cne 'X64'");
+    expect(launcher).toContain("$powerShellDirectory = [IO.Path]::GetFullPath($PSHOME)");
+    expect(launcher).toContain("Join-Path $powerShellDirectory 'pwsh.exe'");
+    expect(launcher).toContain("$hostProcess.MainModule.FileName");
+    expect(launcher).toContain("[string]::Equals($hostExecutable, $powerShell, [StringComparison]::OrdinalIgnoreCase)");
+    expect(launcher).toContain("$hostProcess.Dispose()");
+    expect(launcher).toContain("[IO.FileAttributes]::ReparsePoint");
+    const gateEnd = launcher.indexOf("# The bounded parent process accepts UTF-8");
+    for (const operation of [
+      "[Console]::OutputEncoding =", ". $distributionLibrary",
+      "Invoke-TeremoqBoundedNativeProcess -FilePath $node", "Push-Location -LiteralPath $project",
+      "$env:PATH =",
+    ]) expect(launcher.indexOf(operation)).toBeGreaterThan(gateEnd);
+    expect(launcher).toContain(";$gitDirectory;$powerShellDirectory;$env:SystemRoot\\System32");
+    expect(launcher).not.toContain("'powershell.exe'");
+    expect(launcher).not.toContain("System32\\WindowsPowerShell");
+    expect(launcher).not.toMatch(/Start-Process|Get-Command\s+(?:pwsh|powershell)/);
+  });
 });

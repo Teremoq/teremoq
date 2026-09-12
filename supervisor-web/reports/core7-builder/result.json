@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "kind": "server-contract-fixtures-not-lan-not-build",
+  "powershell_version": "7.6.6",
+  "edition": "Core",
+  "architecture": "X64",
+  "node_version": "v22.23.2",
+  "builder_sha256": "44404a231e4562d735415f59d2d801ddcb5c0a48c69e5b2ba8b28a3a8d164ca5",
+  "process_helper_sha256": "f5ea29cb948103a0476cfdb05378de30c07119d74234a6854dac64e419bfd90b",
+  "tests": [
+    "real-selected-host-guard-no-environment-location-encoding-effects",
+    "host-predicate-Desktop-5.1-Win32NT-X64",
+    "host-predicate-Core-7.6.5-Win32NT-X64",
+    "host-predicate-Core-7.7.0-Win32NT-X64",
+    "host-predicate-Core-7.6.6-Unix-X64",
+    "host-predicate-Core-7.6.6-Win32NT-X86",
+    "host-predicate-Core-7.6.6-Win32NT-Arm64",
+    "host-predicate-Core-7.6.6-Win32NT-X64",
+    "source-order-before-helpers-probes-environment-no-legacy-fallback",
+    "host-predicate-executable-mismatch",
+    "host-predicate-reparse-executable",
+    "real-core7-argv-json-roundtrip",
+    "real-node-argv-json-roundtrip",
+    "empty-argv-rejected-before-child-by-existing-parameter-binding",
+    "real-core7-whole-builder-invalid-input-no-state-created",
+    "real-node-existing-closed-json-identity-reuse-node-one-or-zero-contract-canary"
+  ],
+  "result": "PASS",
+  "builds_executed": 0,
+  "lan_runs_executed": 0
+}

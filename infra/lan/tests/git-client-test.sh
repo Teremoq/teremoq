@@ -8,6 +8,14 @@ runner="${TEST_DIR}/Run-GitClientE2E.ps1"
 stage_runner="${TEST_DIR}/Run-StageUpdateE2E.ps1"
 for path in "${ROOT}/infra/lan/client/Install-LanClient.ps1" "${ROOT}/infra/lan/client/Update-LanClient.ps1" "${runner}"; do test -f "${path}"; done
 
+# Always run the PS5 API regression, including hosts without Git for Windows.
+# This is static evidence only, never a substitute for the native argv test.
+if rg -n '^\s*\$[A-Za-z0-9_]+\.ArgumentList\b' "${ROOT}/infra/lan/client"/*.ps1 >/dev/null; then
+    printf 'lan-git-client-test: incompatible ProcessStartInfo.ArgumentList API\n' >&2
+    exit 1
+fi
+printf 'lan-git-client-test: static PS5 ArgumentList exclusion PASS\n'
+
 git_exe="${TEREMOQ_TEST_GIT_EXE:-}"
 if [[ -z "${git_exe}" ]]; then
     for candidate in "/mnt/c/Program Files/Git/cmd/git.exe" "/mnt/c/Program Files/Git/bin/git.exe" "/mnt/c/Users/${USERNAME:-Lenovo}/AppData/Local/Programs/Git/cmd/git.exe"; do

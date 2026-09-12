@@ -10,6 +10,26 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
+# Validate the actual host before dot-sourcing, probes or state mutation.
+# Desktop is retained for separate regression only; the selected procedure is Core7.
+$desktopHost = $PSVersionTable.PSEdition -ceq 'Desktop' -and $PSVersionTable.PSVersion.Major -eq 5
+$coreHost = $PSVersionTable.PSEdition -ceq 'Core' -and $PSVersionTable.PSVersion.ToString() -ceq '7.6.6'
+if (-not ($desktopHost -or $coreHost) -or [Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or
+    -not [Environment]::Is64BitProcess -or ($coreHost -and
+    [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -cne 'X64')) {
+    throw 'LAN procedure requires a validated Windows x64 Desktop5 or selected Core7.6.6 host'
+}
+$hostName = if ($desktopHost) { 'powershell.exe' } else { 'pwsh.exe' }
+$hostPath = Join-Path ([IO.Path]::GetFullPath($PSHOME)) $hostName
+$hostProcess = [Diagnostics.Process]::GetCurrentProcess()
+try {
+    if (-not [string]::Equals([IO.Path]::GetFullPath($hostProcess.MainModule.FileName),
+            $hostPath, [StringComparison]::OrdinalIgnoreCase)) { throw 'LAN host executable differs from PSHOME' }
+} finally { $hostProcess.Dispose() }
+$hostEntry = Get-Item -LiteralPath $hostPath -Force
+if ($hostEntry.PSIsContainer -or ($hostEntry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'LAN host must be a regular executable'
+}
 . (Join-Path $PSScriptRoot 'Client-Distribution.ps1')
 $exactName = 'local-browser-observation-user-exported.json'
 if ($RunId -notmatch '^lan-[a-z0-9][a-z0-9-]{0,31}$') { throw 'invalid RunId' }
@@ -65,8 +85,8 @@ function Test-FiniteNumber($Value, [double]$Minimum, [double]$Maximum) {
     $number = [double]$Value
     return -not [double]::IsNaN($number) -and -not [double]::IsInfinity($number) -and $number -ge $Minimum -and $number -le $Maximum
 }
-function Parse-CanonicalUtc([string]$Value, [string]$Name) {
-    if ($Value -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.]\d{3}Z$') { throw "$Name is not canonical UTC" }
+function Parse-CanonicalUtc($Value, [string]$Name) {
+    if ($Value -isnot [string] -or $Value -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[.]\d{3}Z$') { throw "$Name is not canonical UTC" }
     $parsed = [DateTimeOffset]::MinValue
     $valid = [DateTimeOffset]::TryParseExact($Value, "yyyy-MM-dd'T'HH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture,
         [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$parsed)
@@ -76,7 +96,7 @@ function Parse-CanonicalUtc([string]$Value, [string]$Name) {
     return $parsed
 }
 
-$document = $sourceText | ConvertFrom-Json
+$document = $sourceText | ConvertFrom-TeremoqLanJson
 $common = @('schema_version', 'export_kind', 'source', 'measurement_status', 'mode', 'level', 'run_id', 'source_commit',
     'started_at_utc', 'ended_at_utc', 'phase', 'requested_sessions', 'active_sessions_peak', 'objects_observed',
     'bytes_observed', 'duration_ms')
@@ -98,8 +118,8 @@ Assert-SafeInteger $document.active_sessions_peak 'active_sessions_peak' $Level 
 Assert-SafeInteger $document.objects_observed 'objects_observed' 1 9007199254740991
 Assert-SafeInteger $document.bytes_observed 'bytes_observed' 1 9007199254740991
 Assert-SafeInteger $document.duration_ms 'duration_ms' 600000 86400000
-$started = Parse-CanonicalUtc ([string]$document.started_at_utc) 'started_at_utc'
-$ended = Parse-CanonicalUtc ([string]$document.ended_at_utc) 'ended_at_utc'
+$started = Parse-CanonicalUtc $document.started_at_utc 'started_at_utc'
+$ended = Parse-CanonicalUtc $document.ended_at_utc 'ended_at_utc'
 if ($ended -lt $started -or [math]::Abs(($ended - $started).TotalMilliseconds - [double]$document.duration_ms) -gt 5000) {
     throw 'browser observation UTC timestamps are incoherent with duration_ms'
 }
