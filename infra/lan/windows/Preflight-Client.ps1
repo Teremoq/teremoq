@@ -180,11 +180,9 @@ Add-Check 'physical_memory_mib' $(if ($computer -and [double]$memory -ge $Minimu
 Add-Check 'free_disk_mib' $(if ($disk -and [double]$diskMiB -ge $MinimumDiskMiB) { 'pass' } else { 'blocked' }) $diskMiB $(if ($disk) { 'real' } else { 'unavailable' })
 
 $pings = @(Test-Connection -ComputerName $ServerIPv4 -Count 4 -ErrorAction SilentlyContinue)
-$rtts = @($pings | ForEach-Object { $_.ResponseTime } | Where-Object { $null -ne $_ })
-$loss = [math]::Round((1.0 - ($rtts.Count / 4.0)) * 100.0, 3)
-$rtt = if ($rtts.Count -gt 0) { [math]::Round(($rtts | Measure-Object -Average).Average, 3) } else { 'unavailable' }
-Add-Check 'icmp_echo_loss_percent_approximation' 'observed' $loss 'real'
-Add-Check 'icmp_echo_rtt_average_ms_approximation' 'observed' $rtt $(if ($rtts.Count -gt 0) { 'real' } else { 'unavailable' })
+$icmp = Get-TeremoqIcmpEchoObservation -Replies $pings -SentCount 4
+Add-Check 'icmp_echo_loss_percent_approximation' 'observed' $icmp.LossPercent $icmp.LossQuality
+Add-Check 'icmp_echo_rtt_average_ms_approximation' 'observed' $icmp.RttAverage $icmp.RttQuality
 Add-Check 'inbound_client_firewall' 'pass' 'not-required;client-initiates-outbound-only' 'configured'
 Add-Check 'preflight_gate' $(if ($script:PreflightBlocked) { 'blocked' } else { 'pass' }) $(if ($script:PreflightBlocked) { 'blocked' } else { 'ready' }) 'real'
 [ordered]@{

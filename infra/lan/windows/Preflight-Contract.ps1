@@ -6,6 +6,53 @@ function Format-TeremoqInvariantDecimal {
     return $Value.ToString('0.###', [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
+function Get-TeremoqIcmpEchoObservation {
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Replies,
+          [ValidateRange(1, 4)][int]$SentCount = 4)
+    # Test-Connection returns Win32_PingStatus on Desktop5 and PingStatus on
+    # Core7. Inspect properties before reading them: StrictMode rejects a
+    # missing property. A successful response and an available RTT are distinct.
+    if ($Replies.Count -gt $SentCount) { throw 'ICMP reply count exceeds the requested probes' }
+    $received = 0
+    $unknownStatus = $false
+    $rtts = New-Object System.Collections.Generic.List[double]
+    foreach ($reply in $Replies) {
+        if ($null -eq $reply) { $unknownStatus = $true; continue }
+        $status = $reply.PSObject.Properties['Status']
+        $statusCode = $reply.PSObject.Properties['StatusCode']
+        $latency = $null
+        if ($null -ne $status -and $null -eq $statusCode -and $status.Value -is [Net.NetworkInformation.IPStatus]) {
+            if ($status.Value -ne [Net.NetworkInformation.IPStatus]::Success) { continue }
+            $latency = $reply.PSObject.Properties['Latency']
+        } elseif ($null -ne $statusCode -and $null -eq $status -and
+            ($statusCode.Value -is [uint32] -or $statusCode.Value -is [int] -or $statusCode.Value -is [long]) -and
+            $statusCode.Value -ge 0 -and $statusCode.Value -le [uint32]::MaxValue) {
+            if ($statusCode.Value -ne 0) { continue }
+            $latency = $reply.PSObject.Properties['ResponseTime']
+        } else { $unknownStatus = $true; continue }
+        $received += 1
+        if ($null -eq $latency -or $null -eq $latency.Value) { continue }
+        $value = $latency.Value
+        if ($value -isnot [byte] -and $value -isnot [uint16] -and $value -isnot [uint32] -and
+            $value -isnot [uint64] -and $value -isnot [int16] -and $value -isnot [int] -and
+            $value -isnot [long] -and $value -isnot [single] -and $value -isnot [double] -and $value -isnot [decimal]) { continue }
+        $milliseconds = [double]$value
+        if ([double]::IsNaN($milliseconds) -or [double]::IsInfinity($milliseconds) -or $milliseconds -lt 0) { continue }
+        $rtts.Add($milliseconds)
+    }
+    $loss = if ($unknownStatus) { 'unavailable' } else {
+        Format-TeremoqInvariantDecimal -Value ([math]::Round((1.0 - ($received / [double]$SentCount)) * 100.0, 3))
+    }
+    $average = if ($rtts.Count -gt 0) { [double](($rtts | Measure-Object -Average).Average) } else { [double]::NaN }
+    $hasRtt = -not [double]::IsNaN($average) -and -not [double]::IsInfinity($average)
+    return [pscustomobject]@{
+        LossPercent = $loss
+        LossQuality = $(if ($unknownStatus) { 'unavailable' } else { 'real' })
+        RttAverage = $(if ($hasRtt) { Format-TeremoqInvariantDecimal -Value ([math]::Round($average, 3)) } else { 'unavailable' })
+        RttQuality = $(if ($hasRtt) { 'real' } else { 'unavailable' })
+    }
+}
+
 function Get-TeremoqExactWifiAdapter {
     param([Parameter(Mandatory = $true)][int]$InterfaceIndex)
     $adapters = @(Get-NetAdapter -InterfaceIndex $InterfaceIndex -ErrorAction SilentlyContinue)
