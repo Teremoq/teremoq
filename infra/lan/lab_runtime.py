@@ -192,7 +192,7 @@ def forbidden_evidence_token(value: str) -> bool:
 
 
 def validate_checks(document: dict[str, object], expected_names: set[str], label: str,
-                    advisory_names: set[str] | None = None) -> dict[str, dict[str, str]]:
+                    advisory_names: set[str] | None = None, *, server_uac_warning: bool = False) -> dict[str, dict[str, str]]:
     advisory_names = advisory_names or set()
     checks = document.get("checks")
     if not isinstance(checks, list) or not 1 <= len(checks) <= 64:
@@ -209,6 +209,11 @@ def validate_checks(document: dict[str, object], expected_names: set[str], label
         if name in parsed:
             fail(f"{label} contains a duplicate check: {name}")
         parsed[name] = record  # type: ignore[assignment]
+        if server_uac_warning and name in {"capture_origin", "preflight_gate"}:
+            expected_value = "wsl_or_ambiguous_capture" if name == "capture_origin" else "blocked"
+            if record != {"check": name, "status": "blocked", "value": expected_value, "evidence_quality": "real"}:
+                fail(f"{label} UAC warning does not match the original blocked observation")
+            continue
         if name in advisory_names:
             if record["status"] not in {"pass", "observed"}:
                 fail(f"{label} advisory check has an invalid status: {name}")
@@ -217,7 +222,7 @@ def validate_checks(document: dict[str, object], expected_names: set[str], label
             fail(f"{label} check is not activation-ready: {name}")
     if set(parsed) != expected_names:
         fail(f"{label} check-name schema is incomplete or unknown")
-    if parsed["preflight_gate"]["status"] != "pass" or parsed["preflight_gate"]["value"] != "ready":
+    if not server_uac_warning and (parsed["preflight_gate"]["status"] != "pass" or parsed["preflight_gate"]["value"] != "ready"):
         fail(f"{label} preflight gate is not pass/ready")
     return parsed
 
@@ -364,12 +369,57 @@ def validate_listener_checks(checks: dict[str, dict[str, str]], label: str, udp_
                 fail(f"{label} listener conflict remains on {protocol.upper()}/{port}")
 
 
+def unwrap_server_uac_decision(document: dict[str, object], role: str) -> tuple[dict[str, object], bool]:
+    """A separate, operator-authorized observation, never a rewritten preflight.
+
+    This is hash-bound evidence, not remote attestation. The existing manual
+    authorization, exact network binding and firewall gates remain mandatory.
+    No generic parent-chain failure becomes acceptable through this contract.
+    """
+    if document.get("report_kind") != "teremoq-server-uac-capture-decision-v1":
+        return document, False
+    if role != "server" or set(document) != {
+        "schema_version", "report_kind", "disposition", "raw_preflight_utf8",
+        "raw_preflight_sha256", "independent_evidence",
+    } or type(document["schema_version"]) is not int or document["schema_version"] != 1 or \
+       document["disposition"] != "warning:verified-elevated-host-parent-unobserved":
+        fail("server UAC decision schema or disposition is invalid")
+    raw = document["raw_preflight_utf8"]
+    if not isinstance(raw, str) or not 1 <= len(raw.encode("utf-8")) <= 24576 or \
+       hashlib.sha256(raw.encode("utf-8")).hexdigest() != document["raw_preflight_sha256"]:
+        fail("server UAC original report hash or size mismatch")
+    original = decode_json_object(raw.encode("utf-8"), "original server UAC preflight")
+    expected_context = {
+        "schema_version": 2, "current_process_name": "powershell.exe",
+        "parent_process_names": [], "parent_process_count": 0, "traversal_depth_limit": 16,
+        "traversal_outcome": "parent_process_missing", "wsl_environment_keys_present": [],
+        "powershell_edition": "Desktop", "powershell_version_major": 5,
+    }
+    context = original.get("capture_context")
+    if context != expected_context or any(type(context[key]) is not int for key in (
+            "schema_version", "parent_process_count", "traversal_depth_limit", "powershell_version_major")):
+        fail("server UAC warning is not the exact missing-parent observation")
+    evidence = document["independent_evidence"]
+    expected_evidence = {
+        "collector": "preflight-lan-same-process-v1", "elevated": True, "architecture": "x64",
+        "host_path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "host_sha256": "3247bcfd60f6dd25f34cb74b5889ab10ef1b3ec72b4d4b3d95b5b25b534560b8",
+        "checkout_kind": "local-clean-git", "source_commit": original.get("source_commit"),
+        "configuration_binding": "original-report-sha256",
+    }
+    if not isinstance(evidence, dict) or evidence != expected_evidence or evidence.get("elevated") is not True:
+        fail("server UAC independent host/source evidence differs from the reviewed binding")
+    return original, True
+
+
 def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commit: str, server_ip: str,
                             client_ip: str, prefix_length: int, network_profile: str,
                             maximum_clock_offset_ms: int, minimum_mtu: int, minimum_cpu_cores: int,
                             minimum_memory_mib: int, minimum_disk_mib: int) -> dict[str, dict[str, str]]:
     label = f"Windows {role} preflight"
-    document = decode_json_object(payload, label)
+    if len(payload) > 65536:
+        fail(f"{label} exceeds the closed report byte budget")
+    document, server_uac_warning = unwrap_server_uac_decision(decode_json_object(payload, label), role)
     if set(document) != WINDOWS_PREFLIGHT_KEYS:
         fail(f"{label} top-level schema is not closed")
     expected_mode = "mirrored" if role == "server" else "nat"
@@ -380,12 +430,14 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
     }
     if any(document.get(key) != value for key, value in expected.items()):
         fail(f"{label} run/IP/profile/WSL/commit binding mismatch")
-    validate_capture_context(document["capture_context"], label, allow_interactive_client=role == "client")
+    if not server_uac_warning:
+        validate_capture_context(document["capture_context"], label, allow_interactive_client=role == "client")
     checks = validate_checks(
         document,
         SERVER_WINDOWS_CHECKS if role == "server" else CLIENT_WINDOWS_CHECKS,
         label,
         SERVER_WINDOWS_ADVISORIES if role == "server" else CLIENT_WINDOWS_ADVISORIES,
+        server_uac_warning=server_uac_warning,
     )
     exact_capture_origin = {
         "check": "capture_origin",
@@ -399,11 +451,15 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
         "value": "warning:indirect-native-powershell",
         "evidence_quality": "real",
     }
-    if checks["capture_origin"] != exact_capture_origin and \
+    if not server_uac_warning and checks["capture_origin"] != exact_capture_origin and \
        (role != "client" or checks["capture_origin"] != interactive_capture_origin):
         fail(f"{label} capture origin check is not exact")
     if checks["network_profile"] != {"check": "network_profile", "status": "pass", "value": network_profile, "evidence_quality": "real"}:
         fail(f"{label} current network profile mismatch")
+    if server_uac_warning and checks["configured_private_ip_present"] != {
+        "check": "configured_private_ip_present", "status": "pass", "value": server_ip, "evidence_quality": "real",
+    }:
+        fail(f"{label} UAC decision requires the exact measured server IP")
     mode_key = "expected_wsl_mode_gate" if role == "server" else "wsl_ipv4_mode"
     client_wsl_warning = {
         "check": "wsl_ipv4_mode", "status": "observed",

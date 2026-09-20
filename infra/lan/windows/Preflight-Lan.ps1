@@ -16,7 +16,9 @@ param(
     [Parameter(Mandatory = $true)][ValidateRange(1, 1073741824)][int]$MinimumMemoryMiB,
     [Parameter(Mandatory = $true)][ValidateRange(1, 1073741824)][int]$MinimumDiskMiB,
     [ValidateRange(1, 65535)][int]$MoqUdpPort = 14433,
-    [ValidateRange(1, 65535)][int]$SrtUdpPort = 19000
+    [ValidateRange(1, 65535)][int]$SrtUdpPort = 19000,
+    [string]$UacRawReportPath,
+    [string]$UacDecisionPath
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
@@ -41,6 +43,9 @@ if ($hostEntry.PSIsContainer -or ($hostEntry.Attributes -band [IO.FileAttributes
     throw 'LAN host must be a regular executable'
 }
 . (Join-Path $PSScriptRoot 'Preflight-Contract.ps1')
+if ([bool]$UacRawReportPath -ne [bool]$UacDecisionPath -or ($UacDecisionPath -and $Role -cne 'Server')) {
+    throw 'Both new UAC evidence paths are required, for Server only'
+}
 $checks = New-Object System.Collections.Generic.List[object]
 $script:PreflightBlocked = $false
 $script:AdvisoryChecks = @('windows_caption', 'windows_version', 'wifi_link_speed', 'wifi_radio', 'wifi_band', 'wsl_mode', 'browser_msedge.exe', 'browser_chrome.exe', 'docker_server')
@@ -182,7 +187,7 @@ foreach ($record in @(Get-TeremoqListenerCheckRecords -Protocol tcp -Ports @(443
 $wslConfigPath = Join-Path $env:USERPROFILE '.wslconfig'
 Add-Check 'wslconfig_present' 'observed' $(if (Test-Path -LiteralPath $wslConfigPath) { 'present' } else { 'absent' }) 'real'
 Add-Check 'preflight_gate' $(if ($script:PreflightBlocked) { 'blocked' } else { 'pass' }) $(if ($script:PreflightBlocked) { 'blocked' } else { 'ready' }) 'real'
-[ordered]@{
+$report = [ordered]@{
     schema_version = 2
     report_kind = 'teremoq-lan-windows-preflight-v2'
     run_id = $RunId
@@ -200,4 +205,19 @@ Add-Check 'preflight_gate' $(if ($script:PreflightBlocked) { 'blocked' } else { 
     minimum_disk_mib = $MinimumDiskMiB
     capture_context = $captureContext
     checks = @($checks | ForEach-Object { $_ })
-} | ConvertTo-Json -Depth 5
+}
+$rawReport = ($report | ConvertTo-Json -Depth 5) + "`n"
+if ($UacDecisionPath) {
+    . (Join-Path $PSScriptRoot 'Server-Uac-Capture.ps1')
+    # Original observation survives every failure; never overwrite attempt evidence.
+    Write-TeremoqNewCaptureFile -Path $UacRawReportPath -Text $rawReport
+    $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
+    $independent = Get-TeremoqServerUacEvidence -CheckoutRoot $root -SourceCommit $SourceCommit
+    $decision = New-TeremoqServerUacDecision -RawReport $rawReport -Evidence $independent
+    $decisionJson = ($decision | ConvertTo-Json -Depth 6) + "`n"
+    Write-TeremoqNewCaptureFile -Path $UacDecisionPath -Text $decisionJson
+    # A procedure may proceed only on this validated return, never by ignoring raw blocked.
+    Write-Output $decisionJson
+} else {
+    Write-Output ($rawReport.TrimEnd("`n"))
+}
