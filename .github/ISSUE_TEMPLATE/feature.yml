@@ -1,0 +1,35 @@
+name: Feature request
+description: Propose a non-security improvement
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Publication does not imply commercial support, an SLA or production compatibility. Vulnerabilities belong only in GitHub Private Vulnerability Reporting.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user or engineering problem, not only a proposed implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Explain scope, alternatives and expected verification.
+    validations:
+      required: true
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Architecture and supply-chain review
+      options:
+        - label: I considered Zero-Transcoding, mTLS/identity, bounded concurrency and MoQT compatibility.
+          required: true
+        - label: I considered maintained upstream alternatives and license compatibility.
+          required: true
+        - label: This request contains no vulnerability details or private deployment data.
+          required: true

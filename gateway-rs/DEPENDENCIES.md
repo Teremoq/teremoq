@@ -99,3 +99,37 @@ La imagen de entrega no debe instalar colecciones completas de plugins por conve
 - Ambas excepciones están acotadas por identificador en `deny.toml`. Deben revisarse en cada actualización de `moq-rs` y eliminarse antes de producción en cuanto upstream publique una ruta de migración.
 - `webpki 0.22.4` omite el campo `license` de su manifiesto. `deny.toml` aclara su licencia ISC y verifica el hash exacto de su fichero `LICENSE`.
 - `webpki-root-certs` distribuye datos de certificados bajo `CDLA-Permissive-2.0`; la licencia se permite exclusivamente por su carácter permisivo y su uso como dataset de raíces de confianza.
+
+## Derivado público controlado `moq-rs` — candidato no activo
+
+El 2026-08-26 se aprobó inicialmente un mirror privado y, mediante una decisión
+posterior del usuario tras la revisión open-source/supply-chain, se convirtió en
+el derivado público independiente
+`https://github.com/Teremoq/moq-rs-teremoq`, gobernado por
+`ADR-0007-CONTROLLED-MOQ-MIRROR.md`. Su baseline es el commit oficial Cloudflare
+`bf87128affd316463e5dcc7599a45001f222b6de`, tree
+`d76319009e815fb8923e21fc8319e17a0aaf8174`, licencia
+`MIT OR Apache-2.0`, con `LICENSES/Apache-2.0.txt`, `LICENSES/MIT.txt` y
+`REUSE.toml` preservados.
+
+La rama de procedencia
+`teremoq/baseline-draft16-bf87128` apunta exactamente a ese commit, pero no es
+una versión consumible ni un pin de build. Las dependencias activas
+`moq-native-ietf`, `moq-transport` y `moq-relay-ietf` continúan resolviendo
+`https://github.com/cloudflare/moq-rs` en la misma revisión completa. No se
+modificaron `Cargo.toml`, `Cargo.lock`, `deny.toml`, features ni el grafo de
+dependencias.
+
+Owner: `TP-RUST-DIST`; revisión de privacidad/procedencia: `TP-SEC-PKI`.
+Cualquier adopción futura exige commits completos revisados, pin atómico de los
+tres crates, matriz de identidad/admisión/wire/licencia, rollback y autorización
+separada del Master. Nunca se consume una rama flotante.
+
+El verificador read-only exige que el repositorio continúe público, independiente
+y no archivado, con una única rama baseline, cero tags, SHA/tree/licencias
+exactos y los controles GitHub aceptados por Task 06. Rulesets, CodeQL Rust y
+Dependency Graph/SBOM permanecen pendientes. El gate Rust 1.93.0 del baseline
+pasó clippy y los tests específicos de `moq-native-ietf`/`moq-relay-ietf`, pero
+falló el test workspace locked por E0308 en un test de `moq-transport` y falló
+fmt por dos diferencias preexistentes. Por tanto el baseline está caracterizado,
+no se declara completamente passing ni se activa como dependencia.

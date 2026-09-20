@@ -1,0 +1,5 @@
+Generated metadata and machine-produced artifacts in this group are not
+relicensed as original Teremoq source code. No copyright claim is made by this
+annotation. Source components and embedded metadata retain their respective
+licenses and notices. Regenerate these files only from the documented, pinned
+toolchain and consult the component inventory before distribution.

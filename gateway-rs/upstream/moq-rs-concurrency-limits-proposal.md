@@ -66,13 +66,17 @@ compatibility. A production-oriented builder should require explicit limits.
 
 The accept algorithm should:
 
-1. call `try_acquire_owned()` before accepting an `Incoming`;
-2. on saturation, call `Incoming::refuse()` (or a documented overload close)
-   immediately and increment an enumerable outcome;
-3. when address validation is required and legal, call `Incoming::retry()`;
-4. wrap the complete QUIC/TLS/H3 CONNECT acceptance in a monotonic timeout;
-5. release the permit on success, error, timeout, future drop and endpoint close;
-6. keep polling completed handshakes even during a receive flood so a valid peer
+1. await `quinn::Endpoint::accept()` to obtain a `quinn::Incoming`;
+2. immediately after that yield, attempt capacity with a non-blocking operation
+   such as `try_acquire_owned()`;
+3. only when a permit exists, call `Incoming::accept()` or `accept_with()`;
+4. when no capacity exists, immediately consume the `Incoming` with `refuse()`,
+   or with `retry()` only when Retry is legal and explicitly configured;
+5. never create an asynchronous permit wait for a remote connection whose
+   `Incoming` has already been received;
+6. wrap the complete QUIC/TLS/H3 CONNECT acceptance in a monotonic timeout;
+7. release the permit on success, error, timeout, future drop and endpoint close;
+8. keep polling completed handshakes even during a receive flood so a valid peer
    cannot be starved by select-branch bias.
 
 The API should expose a bounded/redacted snapshot or callback:
@@ -180,9 +184,10 @@ builders are preferable unless a major release is planned.
 ## Security and operational rationale
 
 Separating handshake and session capacity prevents expensive unauthenticated
-work from consuming all established-session slots. Early `try_acquire` avoids a
-memory queue proportional to attacker input. QUIC Retry validates return
-routability but is not authentication, authorization or a substitute for a
-capacity limit.
+work from consuming all established-session slots. Performing a non-blocking
+`try_acquire` immediately after `Endpoint::accept().await` has yielded the
+`Incoming` avoids a memory queue proportional to attacker input. QUIC Retry
+validates return routability but is not authentication, authorization or a
+substitute for a capacity limit.
 
 No issue or PR has been opened from this document.

@@ -1,0 +1,830 @@
+diff --git a/gateway-rs/Cargo.lock b/gateway-rs/Cargo.lock
+index d51ea63..0bb9f2a 100644
+--- a/gateway-rs/Cargo.lock
++++ b/gateway-rs/Cargo.lock
+@@ -1661,7 +1661,7 @@ dependencies = [
+ [[package]]
+ name = "moq-api"
+ version = "0.2.13"
+-source = "git+https://github.com/cloudflare/moq-rs?rev=bf87128affd316463e5dcc7599a45001f222b6de#bf87128affd316463e5dcc7599a45001f222b6de"
++source = "git+https://github.com/Teremoq/moq-rs-teremoq?rev=89cb1798644c32aef06cc625f097cd9acb203417#89cb1798644c32aef06cc625f097cd9acb203417"
+ dependencies = [
+  "axum 0.7.9",
+  "clap",
+@@ -1680,7 +1680,7 @@ dependencies = [
+ [[package]]
+ name = "moq-native-ietf"
+ version = "0.10.0"
+-source = "git+https://github.com/cloudflare/moq-rs?rev=bf87128affd316463e5dcc7599a45001f222b6de#bf87128affd316463e5dcc7599a45001f222b6de"
++source = "git+https://github.com/Teremoq/moq-rs-teremoq?rev=89cb1798644c32aef06cc625f097cd9acb203417#89cb1798644c32aef06cc625f097cd9acb203417"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -1705,7 +1705,7 @@ dependencies = [
+ [[package]]
+ name = "moq-relay-ietf"
+ version = "0.7.25"
+-source = "git+https://github.com/cloudflare/moq-rs?rev=bf87128affd316463e5dcc7599a45001f222b6de#bf87128affd316463e5dcc7599a45001f222b6de"
++source = "git+https://github.com/Teremoq/moq-rs-teremoq?rev=89cb1798644c32aef06cc625f097cd9acb203417#89cb1798644c32aef06cc625f097cd9acb203417"
+ dependencies = [
+  "anyhow",
+  "async-trait",
+@@ -1734,7 +1734,7 @@ dependencies = [
+ [[package]]
+ name = "moq-transport"
+ version = "0.16.1"
+-source = "git+https://github.com/cloudflare/moq-rs?rev=bf87128affd316463e5dcc7599a45001f222b6de#bf87128affd316463e5dcc7599a45001f222b6de"
++source = "git+https://github.com/Teremoq/moq-rs-teremoq?rev=89cb1798644c32aef06cc625f097cd9acb203417#89cb1798644c32aef06cc625f097cd9acb203417"
+ dependencies = [
+  "bytes",
+  "futures",
+diff --git a/gateway-rs/Cargo.toml b/gateway-rs/Cargo.toml
+index 5dae243..2108a2d 100644
+--- a/gateway-rs/Cargo.toml
++++ b/gateway-rs/Cargo.toml
+@@ -13,8 +13,8 @@ bytes = "1"
+ getrandom = "0.4"
+ gstreamer = { version = "=0.25.3", features = ["v1_22"] }
+ gstreamer-app = { version = "=0.25.2", features = ["v1_22"] }
+-moq-native-ietf = { git = "https://github.com/cloudflare/moq-rs", rev = "bf87128affd316463e5dcc7599a45001f222b6de", version = "=0.10.0" }
+-moq-transport = { git = "https://github.com/cloudflare/moq-rs", rev = "bf87128affd316463e5dcc7599a45001f222b6de", version = "=0.16.1" }
++moq-native-ietf = { git = "https://github.com/Teremoq/moq-rs-teremoq", rev = "89cb1798644c32aef06cc625f097cd9acb203417", version = "=0.10.0" }
++moq-transport = { git = "https://github.com/Teremoq/moq-rs-teremoq", rev = "89cb1798644c32aef06cc625f097cd9acb203417", version = "=0.16.1" }
+ mp4 = "=0.14.0"
+ rfc6381-codec = "=0.2.0"
+ rustls = { version = "=0.23.43", default-features = false, features = ["ring", "std"] }
+@@ -33,7 +33,7 @@ anyhow = "=1.0.104"
+ async-trait = "=0.1.89"
+ hyper = "=1.4.1"
+ hyper-util = "=0.1.3"
+-moq-relay-ietf = { git = "https://github.com/cloudflare/moq-rs", rev = "bf87128affd316463e5dcc7599a45001f222b6de", version = "=0.7.25" }
++moq-relay-ietf = { git = "https://github.com/Teremoq/moq-rs-teremoq", rev = "89cb1798644c32aef06cc625f097cd9acb203417", version = "=0.7.25" }
+ pem = "=3.0.6"
+ rcgen = { version = "=0.14.9", default-features = false, features = ["crypto", "pem", "ring"] }
+ sha2 = "=0.10.9"
+diff --git a/gateway-rs/DEPENDENCIES.md b/gateway-rs/DEPENDENCIES.md
+index d107367..70761ba 100644
+--- a/gateway-rs/DEPENDENCIES.md
++++ b/gateway-rs/DEPENDENCIES.md
+@@ -100,7 +100,7 @@ La imagen de entrega no debe instalar colecciones completas de plugins por conve
+ - `webpki 0.22.4` omite el campo `license` de su manifiesto. `deny.toml` aclara su licencia ISC y verifica el hash exacto de su fichero `LICENSE`.
+ - `webpki-root-certs` distribuye datos de certificados bajo `CDLA-Permissive-2.0`; la licencia se permite exclusivamente por su carácter permisivo y su uso como dataset de raíces de confianza.
+ 
+-## Derivado público controlado `moq-rs` — candidato no activo
++## Derivado público controlado `moq-rs`
+ 
+ El 2026-08-26 se aprobó inicialmente un mirror privado y, mediante una decisión
+ posterior del usuario tras la revisión open-source/supply-chain, se convirtió en
+@@ -112,24 +112,22 @@ el derivado público independiente
+ `MIT OR Apache-2.0`, con `LICENSES/Apache-2.0.txt`, `LICENSES/MIT.txt` y
+ `REUSE.toml` preservados.
+ 
+-La rama de procedencia
+-`teremoq/baseline-draft16-bf87128` apunta exactamente a ese commit, pero no es
+-una versión consumible ni un pin de build. Las dependencias activas
+-`moq-native-ietf`, `moq-transport` y `moq-relay-ietf` continúan resolviendo
+-`https://github.com/cloudflare/moq-rs` en la misma revisión completa. No se
+-modificaron `Cargo.toml`, `Cargo.lock`, `deny.toml`, features ni el grafo de
+-dependencias.
+-
+-Owner: `TP-RUST-DIST`; revisión de privacidad/procedencia: `TP-SEC-PKI`.
+-Cualquier adopción futura exige commits completos revisados, pin atómico de los
+-tres crates, matriz de identidad/admisión/wire/licencia, rollback y autorización
+-separada del Master. Nunca se consume una rama flotante.
+-
+-El verificador read-only exige que el repositorio continúe público, independiente
+-y no archivado, con una única rama baseline, cero tags, SHA/tree/licencias
+-exactos y los controles GitHub aceptados por Task 06. Rulesets, CodeQL Rust y
+-Dependency Graph/SBOM permanecen pendientes. El gate Rust 1.93.0 del baseline
+-pasó clippy y los tests específicos de `moq-native-ietf`/`moq-relay-ietf`, pero
+-falló el test workspace locked por E0308 en un test de `moq-transport` y falló
+-fmt por dos diferencias preexistentes. Por tanto el baseline está caracterizado,
+-no se declara completamente passing ni se activa como dependencia.
++El pin atómico de `moq-native-ietf`, `moq-transport` y `moq-relay-ietf` usa el
++commit completo `89cb1798644c32aef06cc625f097cd9acb203417`, tree
++`cccd0d60c9ebfe191dca9d73e7ab8b27ae4d4ea5`. Nunca se consume una rama
++flotante. El mismo checkout aporta transitivamente `moq-api`; no se mantiene una
++segunda revisión de `moq-rs` en el grafo. Este commit conserva MoQT draft-16,
++ALPN `moqt-16`, WebTransport/raw QUIC, Objects y Zero-Transcoding.
++
++Owner: `TP-RUST-DIST`; revisión de identidad/redacción: `TP-SEC-PKI`; revisión de
++admisión/shutdown: `TP-PLATFORM-CHAOS`; revisión de procedencia/licencias:
++`TP-OSS-SC`. El pin sólo puede resolverse después de publicar exactamente el
++commit anterior en el derivado oficial. Los paths locales usados por el
++preflight no forman parte de la configuración final.
++
++La integración incorpora I1/I2/C1/C2 y la corrección mínima del E0308 heredado;
++no incorpora Batch T. La simulación locked/offline mantiene el mismo conjunto de
++375 paquetes: sólo cambia la procedencia de `moq-api`, `moq-native-ietf`,
++`moq-transport` y `moq-relay-ietf`. Los advisories RustSec residuales siguen
++siendo visibles; este pin no equivale a publication readiness ni a una
++declaración de resistencia DoS, Zero-Trust o disponibilidad comercial.
+diff --git a/gateway-rs/deny.toml b/gateway-rs/deny.toml
+index e43780c..68d4e27 100644
+--- a/gateway-rs/deny.toml
++++ b/gateway-rs/deny.toml
+@@ -43,5 +43,5 @@ unknown-registry = "deny"
+ unknown-git = "deny"
+ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+ allow-git = [
+-  "https://github.com/cloudflare/moq-rs",
++  "https://github.com/Teremoq/moq-rs-teremoq",
+ ]
+diff --git a/gateway-rs/examples/dev_mtls_moq_relay.rs b/gateway-rs/examples/dev_mtls_moq_relay.rs
+index 679c8f3..9f7af44 100644
+--- a/gateway-rs/examples/dev_mtls_moq_relay.rs
++++ b/gateway-rs/examples/dev_mtls_moq_relay.rs
+@@ -1,19 +1,29 @@
+ //! Laboratorio loopback de federación mTLS basado en el relay oficial.
+ 
+-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
++use std::{net::SocketAddr, num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
+ 
+ use async_trait::async_trait;
++use moq_native_ietf::quic::{self, HandshakeCapacityPolicy, ServerAdmissionConfig};
+ use moq_relay_ietf::{
+-    Coordinator, CoordinatorContext, CoordinatorError, CoordinatorResult, NamespaceOrigin,
+-    NamespaceRegistration, RelayConfig, ScopeInfo, ScopePermissions, SessionConfig,
++    AuthenticatedSession, AuthorizationError, Coordinator, CoordinatorContext, CoordinatorError,
++    CoordinatorResult, NamespaceOrigin, NamespaceRegistration, Operation, RelayConfig,
++    RequestedConnectionPath, ScopeInfo, ScopePermissions, SessionAuthorizer, SessionConfig,
+ };
+ use moq_transport::coding::TrackNamespace;
+ use rustls::{ClientConfig, RootCertStore, ServerConfig, server::WebPkiClientVerifier};
+ use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
++use tokio_util::sync::CancellationToken;
+ 
+ const DEFAULT_BIND: &str = "127.0.0.1:4443";
+ const FEDERATED_SCOPE: &str = "teremoq-federated-mtls-lab";
++const FEDERATED_NAMESPACE: &str = "teremoq/live";
+ const UPSTREAM_QUIC_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
++const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
++const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
++const MAX_BUFFERED_INCOMING: usize = 32;
++const MAX_PENDING_HANDSHAKES: usize = 8;
++const MAX_INBOUND_SESSIONS: usize = 16;
++const MAX_OUTBOUND_SESSIONS: usize = 4;
+ 
+ #[tokio::main(flavor = "multi_thread")]
+ async fn main() -> anyhow::Result<()> {
+@@ -31,10 +41,19 @@ async fn main() -> anyhow::Result<()> {
+     let client_ca = required_env_path("TEREMOQ_DEV_MTLS_RELAY_CLIENT_CA")?;
+     let tls = load_mtls_server(cert, key, client_ca).await?;
+ 
++    let admission = ServerAdmissionConfig::new(
++        non_zero(MAX_BUFFERED_INCOMING, "max buffered incoming")?,
++        non_zero(MAX_PENDING_HANDSHAKES, "max pending handshakes")?,
++        HANDSHAKE_TIMEOUT,
++        HandshakeCapacityPolicy::Refuse,
++    )?;
++    let endpoint =
++        quic::Endpoint::new_bounded(quic::Config::new(bind, None, tls.clone())?, admission)?;
+     let coordinator: Arc<dyn Coordinator> = Arc::new(PublishOnlyCoordinator);
++    let authorizer: Arc<dyn SessionAuthorizer> = Arc::new(PublishOnlyAuthorizer);
+     let relay = RelayConfig {
+-        bind: Some(bind),
+-        endpoints: Vec::new(),
++        bind: None,
++        endpoints: vec![endpoint],
+         tls,
+         qlog_dir: None,
+         mlog_dir: None,
+@@ -46,7 +65,12 @@ async fn main() -> anyhow::Result<()> {
+         },
+         connection_tagger: None,
+     }
+-    .build_with_cache_idle_timeout(Duration::from_secs(5))?;
++    .build_required_bounded(
++        authorizer,
++        MAX_INBOUND_SESSIONS,
++        MAX_OUTBOUND_SESSIONS,
++        SHUTDOWN_TIMEOUT,
++    )?;
+ 
+     tracing::info!(
+         schema_version = 1_u8,
+@@ -56,26 +80,34 @@ async fn main() -> anyhow::Result<()> {
+         client_certificate_required = true,
+         tls_protocol = "1.3",
+         quic_idle_timeout_ms = duration_millis(UPSTREAM_QUIC_IDLE_TIMEOUT),
+-        handshake_deadline_enforced = false,
+-        handshake_capacity_enforced = false,
+-        session_capacity_enforced = false,
++        handshake_deadline_enforced = true,
++        handshake_capacity_enforced = true,
++        session_capacity_enforced = true,
++        authenticated_authorization_required = true,
+         "integration laboratory; not the final production federated service"
+     );
+-    tracing::warn!(
+-        schema_version = 1_u8,
+-        event = "federation_capacity_unenforced",
+-        reason = "upstream_api_missing",
+-        "moq-rs does not expose handshake or authenticated-session admission at the pinned revision"
+-    );
++
++    let shutdown = CancellationToken::new();
++    let relay_run = relay.run_until(shutdown.clone());
++    tokio::pin!(relay_run);
+     tokio::select! {
+-        result = relay.run() => result,
++        result = &mut relay_run => {
++            let _report = result?;
++            Ok(())
++        },
+         result = gateway_rs::lifecycle::shutdown_signal() => {
+             result.map_err(|source| anyhow::anyhow!(source.to_string()))?;
++            shutdown.cancel();
++            let _report = relay_run.await?;
+             Ok(())
+         }
+     }
+ }
+ 
++fn non_zero(value: usize, name: &str) -> anyhow::Result<NonZeroUsize> {
++    NonZeroUsize::new(value).ok_or_else(|| anyhow::anyhow!("{name} must be non-zero"))
++}
++
+ async fn load_mtls_server(
+     cert_path: PathBuf,
+     key_path: PathBuf,
+@@ -166,6 +198,68 @@ impl Coordinator for PublishOnlyCoordinator {
+     }
+ }
+ 
++struct PublishOnlyAuthorizer;
++
++struct VerifiedFederatedPublisher;
++
++#[async_trait]
++impl SessionAuthorizer for PublishOnlyAuthorizer {
++    async fn authenticate(
++        &self,
++        peer: &moq_native_ietf::quic::VerifiedPeerEvidence,
++    ) -> Result<AuthenticatedSession, AuthorizationError> {
++        if peer.certificates().is_empty() {
++            return Err(AuthorizationError::AuthenticationRejected);
++        }
++        Ok(AuthenticatedSession::new(VerifiedFederatedPublisher))
++    }
++
++    async fn resolve_scope(
++        &self,
++        session: &AuthenticatedSession,
++        path: &RequestedConnectionPath,
++    ) -> Result<Option<ScopeInfo>, AuthorizationError> {
++        authenticated_publisher(session)?;
++        if path.as_str() != "/publish" {
++            return Err(AuthorizationError::AuthorizationDenied);
++        }
++        Ok(Some(ScopeInfo {
++            scope_id: FEDERATED_SCOPE.to_owned(),
++            permissions: ScopePermissions::ReadWrite,
++        }))
++    }
++
++    async fn authorize(
++        &self,
++        session: &AuthenticatedSession,
++        operation: &Operation,
++    ) -> Result<(), AuthorizationError> {
++        authenticated_publisher(session)?;
++        let allowed = TrackNamespace::from_utf8_path(FEDERATED_NAMESPACE);
++        let permitted = match operation {
++            Operation::Publish { namespace }
++            | Operation::PublishNamespace { namespace }
++            | Operation::DiscoverNamespace { namespace }
++            | Operation::TrackStatus { namespace } => namespace == &allowed,
++            // Subscribe, relay-peer, and future non-exhaustive operations are denied.
++            _ => false,
++        };
++        if permitted {
++            Ok(())
++        } else {
++            Err(AuthorizationError::AuthorizationDenied)
++        }
++    }
++}
++
++fn authenticated_publisher(
++    session: &AuthenticatedSession,
++) -> Result<&VerifiedFederatedPublisher, AuthorizationError> {
++    session
++        .downcast_ref::<VerifiedFederatedPublisher>()
++        .ok_or(AuthorizationError::ContextTypeMismatch)
++}
++
+ fn required_env_path(name: &str) -> anyhow::Result<PathBuf> {
+     let value = std::env::var_os(name).ok_or_else(|| anyhow::anyhow!("{name} is required"))?;
+     anyhow::ensure!(!value.is_empty(), "{name} must not be empty");
+diff --git a/gateway-rs/tests/federation_concurrency.rs b/gateway-rs/tests/federation_concurrency.rs
+index df56d5d..66df289 100644
+--- a/gateway-rs/tests/federation_concurrency.rs
++++ b/gateway-rs/tests/federation_concurrency.rs
+@@ -1,6 +1,7 @@
+ use std::{
+     fs,
+     net::{SocketAddr, UdpSocket},
++    num::NonZeroUsize,
+     path::Path,
+     sync::Arc,
+     time::Duration,
+@@ -28,9 +29,8 @@ use support::pki::TestPki;
+ 
+ const TEST_TIMEOUT: Duration = Duration::from_secs(15);
+ 
+-/// This is a progress/isolation test, not a capacity proof. The pinned
+-/// `moq-native-ietf::quic::Server` does not expose its pending-handshake count
+-/// or a limit, so a finite passing sample must not be interpreted as bounded.
++/// Exercises the explicit C1 bound and the I1 evidence-aware acceptor with real
++/// QUINN/rustls clients. Session admission remains a separate C2 concern.
+ #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+ #[allow(clippy::too_many_lines)]
+ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moqt_setup()
+@@ -38,10 +38,25 @@ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moq
+     tokio::time::timeout(TEST_TIMEOUT, async {
+         let pki = TestPki::generate()?;
+         let relay_addr = available_udp_addr()?;
+-        let endpoint = quic::Endpoint::new(quic::Config::new(relay_addr, None, pki.relay_tls()?)?)?;
+-        let mut server = endpoint
++        let limits = quic::ServerAdmissionConfig::new(
++            NonZeroUsize::new(16)
++                .ok_or_else(|| anyhow::anyhow!("buffered incoming limit must be non-zero"))?,
++            NonZeroUsize::new(8)
++                .ok_or_else(|| anyhow::anyhow!("pending handshake limit must be non-zero"))?,
++            Duration::from_secs(5),
++            quic::HandshakeCapacityPolicy::Refuse,
++        )?;
++        let endpoint = quic::Endpoint::new_bounded(
++            quic::Config::new(relay_addr, None, pki.relay_tls()?)?,
++            limits,
++        )?;
++        let server = endpoint
+             .server
+             .ok_or_else(|| anyhow::anyhow!("test mTLS server is unavailable"))?;
++        let handshake_admission = server
++            .handshake_admission()
++            .ok_or_else(|| anyhow::anyhow!("bounded handshake controller is unavailable"))?;
++        let mut server = server.with_peer_evidence()?;
+         let rss_initial_kib = process_rss_kib()?;
+         let tasks_initial = process_task_count()?;
+         let sockets_initial = process_socket_count()?;
+@@ -49,10 +64,21 @@ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moq
+         let server_task = tokio::spawn(async move {
+             let mut sessions = JoinSet::new();
+             for _accepted in 0..2 {
+-                let (connection, info) = server
++                let accepted = server
+                     .accept()
+                     .await
+-                    .ok_or_else(|| anyhow::anyhow!("mTLS server stopped accepting"))?;
++                    .ok_or_else(|| anyhow::anyhow!("mTLS server stopped accepting"))??;
++                let (connection, info, evidence) = accepted.into_parts();
++                match evidence {
++                    quic::PeerEvidence::Rustls(peer) => anyhow::ensure!(
++                        !peer.certificates().is_empty(),
++                        "verified peer evidence unexpectedly has no certificate"
++                    ),
++                    quic::PeerEvidence::Absent => {
++                        anyhow::bail!("mutually authenticated connection has no peer evidence")
++                    }
++                    _ => anyhow::bail!("unsupported verified peer evidence variant"),
++                }
+                 sessions.spawn(async move {
+                     let (session, _publisher, _subscriber) =
+                         Session::accept(connection, None, info.transport).await?;
+@@ -169,6 +195,23 @@ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moq
+         }
+         rejected.sort_unstable_by_key(|sample| sample.reason);
+         server_task.await??;
++        let handshake = handshake_admission.snapshot();
++        anyhow::ensure!(
++            handshake.pending_handshakes == 0,
++            "handshake capacity was not fully recovered"
++        );
++        anyhow::ensure!(
++            handshake.completed_total == 2,
++            "accepted handshake terminal count is not exact"
++        );
++        anyhow::ensure!(
++            handshake.admitted_total
++                == handshake.completed_total
++                    + handshake.transport_error_total
++                    + handshake.timeout_total
++                    + handshake.cancelled_total,
++            "every admitted handshake must have exactly one terminal"
++        );
+ 
+         let rss_final_kib = process_rss_kib()?;
+         let tasks_final = process_task_count()?;
+@@ -189,7 +232,7 @@ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moq
+             serde_json::json!({
+                 "schema_version": 1,
+                 "event": "federation_concurrency_hermetic_result",
+-                "scope": "finite_progress_characterization_not_capacity_proof",
++                "scope": "bounded_handshake_and_verified_peer_evidence",
+                 "clients_requested": {
+                     "anonymous": 1,
+                     "wrong_ca": 1,
+@@ -223,10 +266,15 @@ async fn valid_peer_progresses_during_invalid_transport_connects_and_delayed_moq
+                 "sockets_initial": sockets_initial,
+                 "sockets_final": sockets_final,
+                 "task_and_socket_cleanup_scope": "test_process_exit_and_harness_container_removal",
+-                "pending_transport_handshake": "untestable_with_pinned_public_api",
+-                "handshake_capacity_limit": "unenforced",
+-                "session_capacity_limit": "unenforced",
+-                "unauthorized_spiffe_peer": "untestable_until_ADR-0005_is_resolved"
++                "pending_transport_handshake": handshake.pending_handshakes,
++                "handshake_capacity_limit": handshake.limit,
++                "handshake_admitted_total": handshake.admitted_total,
++                "handshake_completed_total": handshake.completed_total,
++                "handshake_transport_error_total": handshake.transport_error_total,
++                "handshake_timeout_total": handshake.timeout_total,
++                "handshake_cancelled_total": handshake.cancelled_total,
++                "session_capacity_limit": "covered_by_required_bounded_relay_tests",
++                "authenticated_authorization": "covered_by_required_bounded_relay_tests"
+             })
+         );
+ 
+diff --git b/gateway-rs/tests/moq_derivative_contracts.rs b/gateway-rs/tests/moq_derivative_contracts.rs
+new file mode 100644
+index 0000000..7890fa2
+--- /dev/null
++++ b/gateway-rs/tests/moq_derivative_contracts.rs
+@@ -0,0 +1,376 @@
++use std::{
++    net::{SocketAddr, UdpSocket},
++    num::NonZeroUsize,
++    sync::{
++        Arc,
++        atomic::{AtomicBool, AtomicUsize, Ordering},
++    },
++    time::Duration,
++};
++
++use async_trait::async_trait;
++use gateway_rs::{config::GatewayConfig, security::mtls::prepare_endpoint};
++use moq_native_ietf::quic;
++use moq_relay_ietf::{
++    AuthenticatedSession, AuthorizationError, Coordinator, CoordinatorContext, CoordinatorError,
++    CoordinatorResult, NamespaceOrigin, NamespaceRegistration, Operation, RelayConfig,
++    RelayInboundSessionMonitor, RequestedConnectionPath, ScopeInfo, ScopePermissions,
++    SessionAuthorizer, SessionConfig,
++};
++use moq_transport::{
++    coding::TrackNamespace,
++    serve::Tracks,
++    session::{Session, Transport},
++};
++use tokio::sync::Semaphore;
++use tokio_util::sync::CancellationToken;
++use url::Url;
++
++mod support;
++
++use support::pki::TestPki;
++
++const TEST_TIMEOUT: Duration = Duration::from_secs(15);
++const NAMESPACE: &str = "teremoq/live";
++
++#[derive(Clone, Copy)]
++enum Route {
++    RawQuic,
++    WebTransport,
++}
++
++impl Route {
++    fn url(self, address: SocketAddr) -> anyhow::Result<Url> {
++        let scheme = match self {
++            Self::RawQuic => "moqt",
++            Self::WebTransport => "https",
++        };
++        Ok(Url::parse(&format!(
++            "{scheme}://127.0.0.1:{}/publish",
++            address.port()
++        ))?)
++    }
++
++    const fn transport(self) -> Transport {
++        match self {
++            Self::RawQuic => Transport::RawQuic,
++            Self::WebTransport => Transport::WebTransport,
++        }
++    }
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++async fn required_bounded_relay_composes_identity_authorization_and_capacity() -> anyhow::Result<()>
++{
++    for route in [Route::RawQuic, Route::WebTransport] {
++        exercise_route(route).await?;
++    }
++    Ok(())
++}
++
++async fn exercise_route(route: Route) -> anyhow::Result<()> {
++    let deadline = tokio::time::Instant::now()
++        .checked_add(TEST_TIMEOUT)
++        .ok_or_else(|| anyhow::anyhow!("test watchdog is not representable"))?;
++    let pki = TestPki::generate()?;
++    let address = available_udp_addr()?;
++    let tls = pki.relay_tls()?;
++    let handshake_limits = quic::ServerAdmissionConfig::new(
++        non_zero(4, "buffered incoming")?,
++        non_zero(2, "pending handshakes")?,
++        Duration::from_secs(5),
++        quic::HandshakeCapacityPolicy::Refuse,
++    )?;
++    let endpoint = quic::Endpoint::new_bounded(
++        quic::Config::new(address, None, tls.clone())?,
++        handshake_limits,
++    )?;
++    let handshake = endpoint
++        .server
++        .as_ref()
++        .and_then(quic::Server::handshake_admission)
++        .ok_or_else(|| anyhow::anyhow!("C1 controller is unavailable"))?;
++
++    let state = Arc::new(PolicyState::default());
++    let coordinator: Arc<dyn Coordinator> = Arc::new(ProbeCoordinator {
++        state: state.clone(),
++    });
++    let authorizer: Arc<dyn SessionAuthorizer> = Arc::new(RequiredPolicy {
++        state: state.clone(),
++    });
++    let relay = RelayConfig {
++        bind: None,
++        endpoints: vec![endpoint],
++        tls,
++        qlog_dir: None,
++        mlog_dir: None,
++        announce: None,
++        node: None,
++        coordinator,
++        session: SessionConfig::default(),
++        connection_tagger: None,
++    }
++    .build_required_bounded(authorizer, 1, 1, Duration::from_secs(5))?;
++    let inbound = relay.inbound_session_monitor();
++    let shutdown = CancellationToken::new();
++    let relay_task = tokio::spawn(relay.run_until(shutdown.clone()));
++
++    let client_endpoint = authenticated_client(&pki).await?;
++    let url = route.url(address)?;
++    let (native, _connection_id, transport) = tokio::time::timeout_at(
++        deadline,
++        client_endpoint.client.connect(&url, Some(address)),
++    )
++    .await??;
++    anyhow::ensure!(transport == route.transport(), "transport route changed");
++    let (session, mut publisher, _subscriber) = tokio::time::timeout_at(
++        deadline,
++        Session::connect_with_config(native, None, transport, SessionConfig::default()),
++    )
++    .await??;
++    let session_task = tokio::spawn(session.run());
++
++    let (tracks_writer, _track_requests, tracks_reader) =
++        Tracks::new(TrackNamespace::from_utf8_path(NAMESPACE)).produce();
++    let publish_task =
++        tokio::spawn(async move { publisher.publish_namespace(tracks_reader).await });
++    acquire_before(&state.operation_seen, deadline).await?;
++    acquire_before(&state.effect_seen, deadline).await?;
++
++    assert_required_effect_order(&state, &inbound)?;
++
++    let (extra, _connection_id, extra_transport) = tokio::time::timeout_at(
++        deadline,
++        client_endpoint.client.connect(&url, Some(address)),
++    )
++    .await??;
++    anyhow::ensure!(
++        extra_transport == route.transport(),
++        "N+1 transport route changed"
++    );
++    let _capacity_close = tokio::time::timeout_at(deadline, extra.closed()).await?;
++    anyhow::ensure!(state.authenticate_calls.load(Ordering::Acquire) == 1);
++    let capacity = inbound.snapshot();
++    anyhow::ensure!(capacity.admitted_total == 1);
++    anyhow::ensure!(capacity.rejected_capacity_total == 1);
++    anyhow::ensure!(capacity.active_inbound_sessions == 1);
++
++    drop(tracks_writer);
++    shutdown.cancel();
++    let report = tokio::time::timeout_at(deadline, relay_task).await???;
++    anyhow::ensure!(report.inbound.active_inbound_sessions == 0);
++    anyhow::ensure!(report.inbound.inflight_inbound_futures == 0);
++    anyhow::ensure!(report.outbound.active_outbound_sessions == 0);
++    anyhow::ensure!(report.outbound.inflight_outbound_futures == 0);
++    anyhow::ensure!(handshake.snapshot().pending_handshakes == 0);
++
++    if !publish_task.is_finished() {
++        publish_task.abort();
++    }
++    let _publish_result = publish_task.await;
++    if !session_task.is_finished() {
++        session_task.abort();
++    }
++    let _session_result = session_task.await;
++    Ok(())
++}
++
++fn assert_required_effect_order(
++    state: &PolicyState,
++    inbound: &RelayInboundSessionMonitor,
++) -> anyhow::Result<()> {
++    anyhow::ensure!(state.authenticate_calls.load(Ordering::Acquire) == 1);
++    anyhow::ensure!(state.resolve_calls.load(Ordering::Acquire) == 1);
++    anyhow::ensure!(state.authorize_calls.load(Ordering::Acquire) == 1);
++    anyhow::ensure!(state.register_calls.load(Ordering::Acquire) == 1);
++    anyhow::ensure!(!state.order_violation.load(Ordering::Acquire));
++    anyhow::ensure!(state.legacy_scope_calls.load(Ordering::Acquire) == 0);
++    anyhow::ensure!(inbound.snapshot().active_inbound_sessions == 1);
++    Ok(())
++}
++
++async fn acquire_before(
++    semaphore: &Semaphore,
++    deadline: tokio::time::Instant,
++) -> anyhow::Result<()> {
++    let permit = tokio::time::timeout_at(deadline, semaphore.acquire()).await??;
++    permit.forget();
++    Ok(())
++}
++
++fn non_zero(value: usize, label: &str) -> anyhow::Result<NonZeroUsize> {
++    NonZeroUsize::new(value).ok_or_else(|| anyhow::anyhow!("{label} must be non-zero"))
++}
++
++fn available_udp_addr() -> anyhow::Result<SocketAddr> {
++    let socket = UdpSocket::bind("127.0.0.1:0")?;
++    Ok(socket.local_addr()?)
++}
++
++async fn authenticated_client(pki: &TestPki) -> anyhow::Result<quic::Endpoint> {
++    let mut config = GatewayConfig::new("moq-derivative-contract-test", "info", 1_000)
++        .map_err(|source| anyhow::anyhow!(source.to_string()))?
++        .moq;
++    config.bind_addr = "127.0.0.1:0".parse()?;
++    config.tls_root.clone_from(&pki.root_a);
++    config.tls_client_cert.clone_from(&pki.gateway_cert_a);
++    config.tls_client_key.clone_from(&pki.gateway_key_a);
++    prepare_endpoint(&config).await.map_err(Into::into)
++}
++
++struct PolicyState {
++    sequence: AtomicUsize,
++    authenticate_calls: AtomicUsize,
++    resolve_calls: AtomicUsize,
++    authorize_calls: AtomicUsize,
++    register_calls: AtomicUsize,
++    legacy_scope_calls: AtomicUsize,
++    authorization_complete: AtomicBool,
++    order_violation: AtomicBool,
++    operation_seen: Semaphore,
++    effect_seen: Semaphore,
++}
++
++impl Default for PolicyState {
++    fn default() -> Self {
++        Self {
++            sequence: AtomicUsize::new(0),
++            authenticate_calls: AtomicUsize::new(0),
++            resolve_calls: AtomicUsize::new(0),
++            authorize_calls: AtomicUsize::new(0),
++            register_calls: AtomicUsize::new(0),
++            legacy_scope_calls: AtomicUsize::new(0),
++            authorization_complete: AtomicBool::new(false),
++            order_violation: AtomicBool::new(false),
++            operation_seen: Semaphore::new(0),
++            effect_seen: Semaphore::new(0),
++        }
++    }
++}
++
++impl PolicyState {
++    fn step(&self, expected: usize) {
++        let observed = self.sequence.fetch_add(1, Ordering::AcqRel);
++        if observed != expected {
++            self.order_violation.store(true, Ordering::Release);
++        }
++    }
++}
++
++struct VerifiedGateway;
++
++struct RequiredPolicy {
++    state: Arc<PolicyState>,
++}
++
++#[async_trait]
++impl SessionAuthorizer for RequiredPolicy {
++    async fn authenticate(
++        &self,
++        peer: &quic::VerifiedPeerEvidence,
++    ) -> Result<AuthenticatedSession, AuthorizationError> {
++        if peer.certificates().is_empty() {
++            return Err(AuthorizationError::AuthenticationRejected);
++        }
++        self.state.authenticate_calls.fetch_add(1, Ordering::AcqRel);
++        self.state.step(0);
++        Ok(AuthenticatedSession::new(VerifiedGateway))
++    }
++
++    async fn resolve_scope(
++        &self,
++        session: &AuthenticatedSession,
++        path: &RequestedConnectionPath,
++    ) -> Result<Option<ScopeInfo>, AuthorizationError> {
++        authenticated_gateway(session)?;
++        if path.as_str() != "/publish" {
++            return Err(AuthorizationError::AuthorizationDenied);
++        }
++        self.state.resolve_calls.fetch_add(1, Ordering::AcqRel);
++        self.state.step(1);
++        Ok(Some(ScopeInfo {
++            scope_id: "required-test-scope".to_owned(),
++            permissions: ScopePermissions::ReadWrite,
++        }))
++    }
++
++    async fn authorize(
++        &self,
++        session: &AuthenticatedSession,
++        operation: &Operation,
++    ) -> Result<(), AuthorizationError> {
++        authenticated_gateway(session)?;
++        let allowed = TrackNamespace::from_utf8_path(NAMESPACE);
++        let exact_publish = matches!(
++            operation,
++            Operation::PublishNamespace { namespace } if namespace == &allowed
++        );
++        if !exact_publish {
++            return Err(AuthorizationError::AuthorizationDenied);
++        }
++        self.state.authorize_calls.fetch_add(1, Ordering::AcqRel);
++        self.state.step(2);
++        self.state
++            .authorization_complete
++            .store(true, Ordering::Release);
++        self.state.operation_seen.add_permits(1);
++        Ok(())
++    }
++}
++
++fn authenticated_gateway(
++    session: &AuthenticatedSession,
++) -> Result<&VerifiedGateway, AuthorizationError> {
++    session
++        .downcast_ref::<VerifiedGateway>()
++        .ok_or(AuthorizationError::ContextTypeMismatch)
++}
++
++struct ProbeCoordinator {
++    state: Arc<PolicyState>,
++}
++
++#[async_trait]
++impl Coordinator for ProbeCoordinator {
++    async fn resolve_scope(
++        &self,
++        _connection_path: Option<&str>,
++    ) -> CoordinatorResult<Option<ScopeInfo>> {
++        self.state.legacy_scope_calls.fetch_add(1, Ordering::AcqRel);
++        Err(CoordinatorError::NamespaceNotFound)
++    }
++
++    async fn register_namespace(
++        &self,
++        _scope: Option<&str>,
++        namespace: &TrackNamespace,
++        _context: &CoordinatorContext,
++    ) -> CoordinatorResult<NamespaceRegistration> {
++        if !self.state.authorization_complete.load(Ordering::Acquire)
++            || namespace != &TrackNamespace::from_utf8_path(NAMESPACE)
++        {
++            self.state.order_violation.store(true, Ordering::Release);
++            return Err(CoordinatorError::NamespaceNotFound);
++        }
++        self.state.register_calls.fetch_add(1, Ordering::AcqRel);
++        self.state.step(3);
++        self.state.effect_seen.add_permits(1);
++        Ok(NamespaceRegistration::new(()))
++    }
++
++    async fn unregister_namespace(
++        &self,
++        _scope: Option<&str>,
++        _namespace: &TrackNamespace,
++    ) -> CoordinatorResult<()> {
++        Ok(())
++    }
++
++    async fn lookup(
++        &self,
++        _scope: Option<&str>,
++        _namespace: &TrackNamespace,
++    ) -> CoordinatorResult<(NamespaceOrigin, Option<quic::Client>)> {
++        Err(CoordinatorError::NamespaceNotFound)
++    }
++}

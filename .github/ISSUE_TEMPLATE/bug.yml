@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a reproducible non-security defect
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report vulnerabilities here. Use GitHub Private Vulnerability Reporting as required by SECURITY.md. Remove credentials, customer data and production identifiers.
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: Full commit SHA or tag tested.
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - gateway-rs
+        - supervisor-web
+        - development PKI
+        - resilience or interoperability lab
+        - documentation or governance
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Observed behavior
+      description: Explain what happened and the impact without sensitive data.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide minimal, sanitized steps and configuration.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: This is not a vulnerability report.
+          required: true
+        - label: I removed secrets, certificates, personal data, customer configuration and production identifiers.
+          required: true

@@ -1,0 +1,17 @@
+{
+  "name": "teremoq version tag creation",
+  "target": "tag",
+  "enforcement": "disabled",
+  "bypass_actors": [
+    {"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}
+  ],
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/tags/v*"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {"type": "creation"}
+  ]
+}

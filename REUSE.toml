@@ -1,0 +1,36 @@
+version = 1
+
+[[annotations]]
+path = ["**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Teremoq contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = [
+  "gateway-rs/tests/fixtures/**",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "NONE"
+SPDX-License-Identifier = "CC0-1.0"
+
+[[annotations]]
+path = [
+  "supervisor-web/public/**",
+  "supervisor-web/src/app/favicon.ico",
+  "supervisor-web/AGENTS.md",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "Vercel, Inc. and Next.js contributors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = [
+  "gateway-rs/Cargo.lock",
+  "gateway-rs/tests/preview/__pycache__/**",
+  "supervisor-web/package-lock.json",
+  "supervisor-web/next-env.d.ts",
+]
+precedence = "override"
+SPDX-FileCopyrightText = "NONE"
+SPDX-License-Identifier = "LicenseRef-Generated-Metadata"

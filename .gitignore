@@ -6,3 +6,17 @@ key.pem
 *password*
 *.token
 tokens/
+
+# Local environment, private certificates and generated interpreter state
+.env
+.env.*
+*.env
+*.env.*
+*.pem
+*.der
+*.p12
+*.pfx
+*.jks
+*.keystore
+__pycache__/
+*.py[cod]
