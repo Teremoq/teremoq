@@ -780,7 +780,8 @@ function Test-TeremoqCaptureContextEvidence {
     $normalizedParents = @()
     foreach ($name in $Context.parent_process_names) {
         if ($name -isnot [string] -or $name.Length -gt 128 -or $name.Trim() -cne $name -or $name -cnotmatch '^[a-z0-9][a-z0-9._-]{0,123}\.exe$') { return $false }
-        if ($normalizedParents -contains $name) { return $false }
+        # Names can repeat across distinct processes; New-TeremoqCaptureContext
+        # detects actual cycles/PID reuse and creation-time instability.
         $normalizedParents += $name
     }
     foreach ($key in $Context.wsl_environment_keys_present) {

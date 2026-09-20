@@ -434,6 +434,24 @@ $unstableExplorerContext = New-TeremoqCaptureContext -CurrentProcessId 251 -Curr
 if ($unstableExplorerContext.traversal_outcome -ne 'parent_process_unstable' -or (Test-TeremoqCaptureContextEvidence -Context $unstableExplorerContext)) {
     throw 'unstable explorer root was accepted'
 }
+$repeatedName = if ($PSVersionTable.PSEdition -ceq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+$repeatedRecords = @{
+    291 = (New-TeremoqMockProcess -ProcessId 291 -Name $repeatedName -ParentProcessId 290)
+    290 = (New-TeremoqMockProcess -ProcessId 290 -Name $repeatedName -ParentProcessId 289)
+    289 = (New-TeremoqMockProcess -ProcessId 289 -Name $repeatedName -ParentProcessId 0)
+}
+$repeatedContext = New-TeremoqCaptureContext -CurrentProcessId 291 -CurrentResult ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64]291; Process = $repeatedRecords[291] }) -ResolveProcess ({
+    param($ProcessId)
+    if ($repeatedRecords.ContainsKey([int]$ProcessId)) {
+        return ([ordered]@{ Status = 'ok'; RequestedProcessId = [int64][int]$ProcessId; Process = $repeatedRecords[[int]$ProcessId] })
+    }
+    return ([ordered]@{ Status = 'process_missing'; RequestedProcessId = [int64][int]$ProcessId; Process = $null })
+}.GetNewClosure()) -ObservedEnvKeys @()
+if ($repeatedContext.traversal_outcome -ne 'terminated_parent_pid_nonpositive' -or
+    $repeatedContext.parent_process_count -ne 2 -or
+    -not (Test-TeremoqCaptureContextEvidence -Context $repeatedContext)) {
+    throw 'distinct stable process identities with repeated basenames were rejected'
+}
 $cycleRecords = @{
     301 = (New-TeremoqMockProcess -ProcessId 301 -Name 'powershell.exe' -ParentProcessId 300)
     300 = (New-TeremoqMockProcess -ProcessId 300 -Name 'windowsterminal.exe' -ParentProcessId 299)

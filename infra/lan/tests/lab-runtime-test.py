@@ -512,6 +512,74 @@ class LabRuntimePolicyTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             RUNTIME.validate_capture_context(context, "core7-fixture", allow_interactive_client=True)
 
+    def test_core_client_capture_decision_is_hash_bound_and_warning_only(self) -> None:
+        import copy
+        document = windows_preflight("client")
+        capture_commit = "77a299438039d2b5d7663743a18dca9cf828fef5"
+        document["source_commit"] = capture_commit
+        document["capture_context"] = capture_context(
+            parent_process_names=["pwsh.exe", "pwsh.exe", "codex.exe", "chatgpt.exe", "explorer.exe"],
+            traversal_outcome="parent_process_missing")
+        document["capture_context"].update(current_process_name="pwsh.exe", powershell_edition="Core", powershell_version_major=7)
+        next(item for item in document["checks"] if item["check"] == "capture_origin").update(
+            status="observed", value="warning:indirect-native-powershell", evidence_quality="real")
+        raw = json.dumps(document)
+        evidence = "Synthetic operator observation for this unit test; not operational evidence."
+        envelope = {
+            "schema_version": 1, "report_kind": "teremoq-client-capture-decision-v1",
+            "disposition": "operator-reviewed-parent-observation-warning", "run_id": RUN_ID,
+            "capture_commit": capture_commit, "validation_commit": SOURCE_COMMIT,
+            "raw_preflight_utf8": raw, "raw_preflight_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+            "independent_evidence_utf8": evidence, "independent_evidence_sha256": hashlib.sha256(evidence.encode()).hexdigest(),
+            "host_observation": {"platform": "Windows", "edition": "Core", "version": "7.6.6", "architecture": "X64",
+                                 "executable_sha256": "bfb46af89433268872ddb43d1ca7a3f433452ee91ed356a9786940f90118e285",
+                                 "attempt_binding": "operator-reviewed-independent-evidence"},
+        }
+        def parse(value: dict[str, object], role: str = "client") -> object:
+            return RUNTIME.parse_windows_preflight(json.dumps(value).encode(), role, RUN_ID, SOURCE_COMMIT,
+                SERVER_IP, CLIENT_IP, 24, PROFILE, MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
+        self.assertEqual(parse(envelope)["capture_origin"]["status"], "observed")
+        for field, value in (("validation_commit", "b" * 40), ("capture_commit", "b" * 40),
+                             ("run_id", "lan-other"), ("raw_preflight_sha256", "0" * 64),
+                             ("independent_evidence_sha256", "0" * 64), ("schema_version", True)):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                parse({**envelope, field: value})
+        with self.assertRaises(ValueError):
+            parse(envelope, "server")
+        with self.assertRaises(ValueError):
+            parse(document)  # A raw old report never bypasses the revision binding.
+        def changed_original(value: dict[str, object]) -> dict[str, object]:
+            serialized = json.dumps(value)
+            return {**envelope, "raw_preflight_utf8": serialized,
+                    "raw_preflight_sha256": hashlib.sha256(serialized.encode()).hexdigest()}
+        # Parent names are telemetry, not a per-machine allowlist.
+        for names in (["pwsh.exe"], ["launcher.exe", "pwsh.exe", "pwsh.exe"]):
+            changed = copy.deepcopy(document)
+            changed["capture_context"].update(parent_process_names=names, parent_process_count=len(names))
+            parse(changed_original(changed))
+        for field, value in (("traversal_outcome", "cycle_or_pid_reuse_detected"),
+                             ("traversal_outcome", "parent_process_unstable"),
+                             ("traversal_outcome", "depth_limit_reached"),
+                             ("traversal_outcome", "parent_process_query_failed"),
+                             ("wsl_environment_keys_present", ["WSL_INTEROP"]),
+                             ("parent_process_names", ["wslhost.exe"]),
+                             ("parent_process_count", 6), ("powershell_version_major", True),
+                             ("powershell_edition", "Desktop")):
+            changed = copy.deepcopy(document)
+            changed["capture_context"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                parse(changed_original(changed))
+        changed = copy.deepcopy(document)
+        next(item for item in changed["checks"] if item["check"] == "capture_origin").update(
+            status="pass", value="native_windows_powershell")
+        with self.assertRaises(ValueError):
+            parse(changed_original(changed))
+        for field in ("client_ipv4", "server_ipv4", "network_profile", "prefix_length", "minimum_mtu"):
+            changed = copy.deepcopy(document)
+            changed[field] = "mismatch"
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                parse(changed_original(changed))
+
     def test_capture_context_rejects_wsl_interop_and_incomplete_walks(self) -> None:
         document = windows_preflight("server")
         document["capture_context"] = capture_context(interoperability=True)
@@ -521,10 +589,16 @@ class LabRuntimePolicyTest(unittest.TestCase):
                                             MAX_CLOCK, MIN_MTU, SERVER_MIN_CPU, SERVER_MIN_MEMORY, SERVER_MIN_DISK)
         document = windows_preflight("client")
         document["capture_context"]["parent_process_names"] = ["windowsterminal.exe", "windowsterminal.exe"]  # type: ignore[index]
-        with self.assertRaisesRegex(ValueError, "duplicates"):
-            RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+        RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
                                             SERVER_IP, CLIENT_IP, 24, PROFILE,
                                             MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
+        for outcome in ("cycle_or_pid_reuse_detected", "parent_process_unstable",
+                        "parent_process_newer_than_child", "parent_process_query_failed", "depth_limit_reached"):
+            document["capture_context"]["traversal_outcome"] = outcome
+            with self.subTest(outcome=outcome), self.assertRaises(ValueError):
+                RUNTIME.parse_windows_preflight(json.dumps(document).encode(), "client", RUN_ID, SOURCE_COMMIT,
+                                                SERVER_IP, CLIENT_IP, 24, PROFILE,
+                                                MAX_CLOCK, MIN_MTU, CLIENT_MIN_CPU, CLIENT_MIN_MEMORY, CLIENT_MIN_DISK)
         document = windows_preflight("server")
         document["capture_context"] = capture_context(
             parent_process_names=["windowsterminal.exe"],

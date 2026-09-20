@@ -295,7 +295,8 @@ def parse_check_int_value(value: str, label: str, minimum: int, maximum: int) ->
     return parse_exact_int(int(value), label, minimum, maximum)
 
 
-def validate_capture_context(context: object, label: str, allow_interactive_client: bool = False) -> None:
+def validate_capture_context(context: object, label: str, allow_interactive_client: bool = False,
+                             *, allow_core_client_warning: bool = False) -> None:
     if not isinstance(context, dict) or set(context) != CAPTURE_CONTEXT_KEYS:
         fail(f"{label} capture context schema is not closed")
     if not isinstance(context["schema_version"], int) or isinstance(context["schema_version"], bool) or context["schema_version"] != 2:
@@ -337,8 +338,8 @@ def validate_capture_context(context: object, label: str, allow_interactive_clie
         if not isinstance(entry, str) or not entry or len(entry) > 128 or entry.strip() != entry or \
            PROCESS_BASENAME_RE.fullmatch(entry) is None:
             fail(f"{label} parent process entry is invalid")
-        if entry in normalized_parents:
-            fail(f"{label} parent process chain contains duplicates")
+        # Basenames are not process identities. The producer checks PID reuse
+        # and creation-time stability and reports rejected traversal outcomes.
         normalized_parents.append(entry)
     for entry in wsl_environment_keys_present:
         if not isinstance(entry, str) or entry not in allowed_env_keys:
@@ -351,8 +352,11 @@ def validate_capture_context(context: object, label: str, allow_interactive_clie
            normalized_parents != ["explorer.exe"] or wsl_environment_keys_present:
             fail(f"{label} capture context does not prove the trusted explorer root termination")
     if traversal_outcome == "parent_process_missing":
-        if not allow_interactive_client or current_process_name != "powershell.exe" or powershell_edition != "Desktop" or \
-           normalized_parents != ["node.exe", "powershell.exe", "explorer.exe"] or wsl_environment_keys_present:
+        legacy_interactive = (current_process_name == "powershell.exe" and powershell_edition == "Desktop"
+                              and normalized_parents == ["node.exe", "powershell.exe", "explorer.exe"])
+        core_warning = (allow_core_client_warning and current_process_name == "pwsh.exe"
+                        and powershell_edition == "Core" and powershell_version_major == 7)
+        if not allow_interactive_client or not (legacy_interactive or core_warning) or wsl_environment_keys_present:
             fail(f"{label} capture context does not prove the bounded interactive client path")
     if any(entry in blocked_ancestors for entry in normalized_parents) or wsl_environment_keys_present:
         fail(f"{label} capture path is not native Windows PowerShell")
@@ -412,6 +416,50 @@ def unwrap_server_uac_decision(document: dict[str, object], role: str) -> tuple[
     return original, True
 
 
+def unwrap_client_capture_decision(document: dict[str, object], role: str, run_id: str,
+                                   validation_commit: str) -> tuple[dict[str, object], bool]:
+    """An operator-reviewed evidence decision, not remote attestation.
+
+    The authorization digest covers the complete envelope, including the
+    unchanged original and the independent evidence reviewed by the operator.
+    Only this client capture revision can cross the revision boundary; other
+    server, artifact, configuration and firewall bindings remain unchanged.
+    """
+    if document.get("report_kind") != "teremoq-client-capture-decision-v1":
+        return document, False
+    keys = {"schema_version", "report_kind", "disposition", "run_id", "capture_commit",
+            "validation_commit", "raw_preflight_utf8", "raw_preflight_sha256",
+            "independent_evidence_utf8", "independent_evidence_sha256", "host_observation"}
+    if role != "client" or set(document) != keys or type(document["schema_version"]) is not int or document["schema_version"] != 1:
+        fail("client capture decision schema/role is invalid")
+    capture_commit = "77a299438039d2b5d7663743a18dca9cf828fef5"
+    if document["disposition"] != "operator-reviewed-parent-observation-warning" or \
+       document["run_id"] != run_id or document["capture_commit"] != capture_commit or \
+       document["validation_commit"] != validation_commit or validation_commit == capture_commit:
+        fail("client capture decision binding is invalid")
+    for field, maximum in (("raw_preflight", 24576), ("independent_evidence", 8192)):
+        value = document[f"{field}_utf8"]
+        if not isinstance(value, str) or not 0 < len(value.encode("utf-8")) <= maximum or \
+           hashlib.sha256(value.encode("utf-8")).hexdigest() != document[f"{field}_sha256"]:
+            fail("client capture decision evidence digest/size is invalid")
+    host = document["host_observation"]
+    if not isinstance(host, dict) or set(host) != {"platform", "edition", "version", "architecture",
+                                                "executable_sha256", "attempt_binding"} or host != {
+        "platform": "Windows", "edition": "Core", "version": "7.6.6", "architecture": "X64",
+        "executable_sha256": "bfb46af89433268872ddb43d1ca7a3f433452ee91ed356a9786940f90118e285",
+        "attempt_binding": "operator-reviewed-independent-evidence",
+    }:
+        fail("client capture decision host observation is invalid")
+    original = decode_json_object(document["raw_preflight_utf8"].encode("utf-8"), "original client preflight")
+    if original.get("source_commit") != capture_commit or original.get("run_id") != run_id:
+        fail("client capture original revision/run mismatch")
+    context = original.get("capture_context")
+    if not isinstance(context, dict) or context.get("traversal_outcome") != "parent_process_missing" or \
+       context.get("current_process_name") != "pwsh.exe" or context.get("powershell_edition") != "Core":
+        fail("client capture decision does not describe the bounded warning")
+    return original, True
+
+
 def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commit: str, server_ip: str,
                             client_ip: str, prefix_length: int, network_profile: str,
                             maximum_clock_offset_ms: int, minimum_mtu: int, minimum_cpu_cores: int,
@@ -419,19 +467,23 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
     label = f"Windows {role} preflight"
     if len(payload) > 65536:
         fail(f"{label} exceeds the closed report byte budget")
-    document, server_uac_warning = unwrap_server_uac_decision(decode_json_object(payload, label), role)
+    document, client_capture_warning = unwrap_client_capture_decision(
+        decode_json_object(payload, label), role, run_id, source_commit)
+    document, server_uac_warning = unwrap_server_uac_decision(document, role)
     if set(document) != WINDOWS_PREFLIGHT_KEYS:
         fail(f"{label} top-level schema is not closed")
     expected_mode = "mirrored" if role == "server" else "nat"
     expected = {
         "schema_version": 2, "report_kind": "teremoq-lan-windows-preflight-v2", "run_id": run_id,
-        "source_commit": source_commit, "role": role, "server_ipv4": server_ip, "client_ipv4": client_ip,
+        "source_commit": "77a299438039d2b5d7663743a18dca9cf828fef5" if client_capture_warning else source_commit,
+        "role": role, "server_ipv4": server_ip, "client_ipv4": client_ip,
         "prefix_length": prefix_length, "network_profile": network_profile, "expected_wsl_mode": expected_mode,
     }
     if any(document.get(key) != value for key, value in expected.items()):
         fail(f"{label} run/IP/profile/WSL/commit binding mismatch")
     if not server_uac_warning:
-        validate_capture_context(document["capture_context"], label, allow_interactive_client=role == "client")
+        validate_capture_context(document["capture_context"], label, allow_interactive_client=role == "client",
+                                 allow_core_client_warning=client_capture_warning)
     checks = validate_checks(
         document,
         SERVER_WINDOWS_CHECKS if role == "server" else CLIENT_WINDOWS_CHECKS,
@@ -451,6 +503,8 @@ def parse_windows_preflight(payload: bytes, role: str, run_id: str, source_commi
         "value": "warning:indirect-native-powershell",
         "evidence_quality": "real",
     }
+    if client_capture_warning and checks["capture_origin"] != interactive_capture_origin:
+        fail("client capture decision must preserve the observed warning, not claim proven origin")
     if not server_uac_warning and checks["capture_origin"] != exact_capture_origin and \
        (role != "client" or checks["capture_origin"] != interactive_capture_origin):
         fail(f"{label} capture origin check is not exact")
